@@ -361,9 +361,9 @@ def verification_tables(d: dict) -> str:
             + '<p class="note">Each level includes the next: replaced, then edge-verified, then verified.</p>\n'
               '</div>\n<div><h3>Verified functions by evidence</h3>\n'
             + table(['Measure', 'Count', 'Of', ''], ev, narrow_hide=(3,))
-            + '<p class="note">A function counts as verified when it passes on its edge cases and on inputs '
-              'recorded in the game, or matches the original bytes exactly, and an independent review has '
-              'approved it. A function can carry several kinds of evidence.</p>\n</div>\n</div>')
+            + '<p class="note">A function counts as verified when it passes edge-case verification, '
+              'matches the original x86-64 bytes exactly (<code>byte_exact=yes</code>), and an independent '
+              'review has approved it. A function can carry several kinds of evidence.</p>\n</div>\n</div>')
 
 
 def runtime_tables(d: dict) -> str:

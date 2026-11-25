@@ -4,7 +4,7 @@ TWD-Final is a clean-room decompilation of *The Walking Dead: The Final Season* 
 Android runtime: the game's code rewritten as readable C and C++, one verified function at a time.
 
 <!-- status:start -->
-The game doesn't run on TWD-Final yet: 17 of 38387 functions are verified (0.04%) and 17 replaced (0.04%). On [our native runtime](runtime/) the executable's boot gets as far as `MessageBoxW` (USER32.dll, called by WinMain (0x14002f7b0)), with 200 of 556 imports implemented.
+The game doesn't run on TWD-Final yet: 10 of 38387 functions are verified (0.03%) and 17 replaced (0.04%). On [our native runtime](runtime/) the executable's boot gets as far as `MessageBoxW` (USER32.dll, called by WinMain (0x14002f7b0)), with 200 of 556 imports implemented.
 <!-- status:end -->
 
 The goal is a complete native Android source port: every function rewritten and verified against the
@@ -37,8 +37,8 @@ A function's status in `symbols/functions.csv` goes through three levels:
 | Status | Means |
 |---|---|
 | `replaced` | registered in `game/hooks.csv` and builds |
-| `edge-verified` | passes differential tests on generated edge cases against the original |
-| `verified` | also passes on inputs recorded in a real run (or byte-exact match) and has an approving review in `symbols/reviews.csv` |
+| `edge-verified` | passes differential tests on generated edge cases (and any recorded live captures) against the original |
+| `verified` | also matches original x86-64 machine bytes (`byte_exact=yes` in `symbols/matching.csv`) and has an approving review in `symbols/reviews.csv` |
 
 ## Rules
 

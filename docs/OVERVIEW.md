@@ -9,10 +9,11 @@ in [STATUS.md](../STATUS.md).
 
 TWD-Final has two tracks built side by side:
 
-- **A functional decompilation.** `WalkingDead4.exe` (x86-64 Windows, Telltale Tool engine) is
-  rewritten function by function into readable C and C++. A replacement does not need to emit
-  identical x86-64 bytes; it must behave identically to the original on recorded and edge-case
-  inputs, and ultimately compile cleanly for **ARM64 / Android**.
+- **A matching & functional decompilation.** `WalkingDead4.exe` (x86-64 Windows, Telltale Tool
+  engine) is rewritten function by function into readable C and C++. A replacement earns
+  `edge-verified` once it behaves identically on generated edge cases (and live captures), earns
+  `verified` once it also matches the original x86-64 bytes (`byte_exact=yes` in
+  `symbols/matching.csv`) and passes review, and compiles cleanly for **ARM64 / Android**.
 - **A native Android runtime.** Platform APIs that the PC executable imports (`KERNEL32`, `USER32`,
   `d3d11`, `MFPlat`, `XINPUT9_1_0`, `DINPUT8`, `WS2_32`, plus audio/compression middleware) are
   mapped onto native Android equivalents (Android NDK, Vulkan / OpenGL ES, AAudio / OpenSL ES,

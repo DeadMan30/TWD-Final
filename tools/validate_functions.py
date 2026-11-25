@@ -177,7 +177,7 @@ def main() -> int:
 
     reviews = load(os.path.join(root, 'symbols', 'reviews.csv'), REVIEW_HEADER, errs)
     verifs = load(os.path.join(root, 'symbols', 'verification.csv'), VERIF_HEADER, errs)
-    load(os.path.join(root, 'symbols', 'matching.csv'), MATCH_HEADER, errs)
+    matches = load(os.path.join(root, 'symbols', 'matching.csv'), MATCH_HEADER, errs)
 
     approved = {r['address'] for r in reviews if r['verdict'] == 'approved'}
     passing_edge = {
@@ -185,11 +185,14 @@ def main() -> int:
         if r['cases'] == 'edge' and r['option'] == '' and r['total'].isdigit()
         and int(r['total']) > 0 and r['failed'] == '0' and r['passed'] == r['total']
     }
+    byte_exact = {r['address'] for r in matches if r['byte_exact'] == 'yes'}
     for r in funcs:
         if r['status'] in ('edge-verified', 'verified') and r['name'] not in passing_edge:
             errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is {r['status']} without passing edge verification")
         if r['status'] == 'verified' and r['address'] not in approved:
             errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is verified without an approved review")
+        if r['status'] == 'verified' and r['address'] not in byte_exact:
+            errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is verified without byte_exact=yes in symbols/matching.csv")
 
     fam.families(root)
 

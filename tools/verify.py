@@ -366,7 +366,8 @@ def parse_coff_text_symbols(obj_path: str) -> dict[str, bytes]:
     for i in range(nsec):
         off = 20 + opt_sz + i * 40
         _, _, rsz, rptr = struct.unpack_from('<IIII', raw, off + 8)
-        secs.append((rsz, rptr))
+        nrel, = struct.unpack_from('<H', raw, off + 32)
+        secs.append((rsz, rptr, nrel))
     str_off = sym_off + nsym * 18
 
     def sym_name(rec: bytes) -> str:
@@ -390,7 +391,10 @@ def parse_coff_text_symbols(obj_path: str) -> dict[str, bytes]:
     out: dict[str, bytes] = {}
     for sec_idx, items in by_sec.items():
         items.sort()
-        rsz, rptr = secs[sec_idx - 1]
+        rsz, rptr, nrel = secs[sec_idx - 1]
+        if nrel != 0:
+            # Skip sections containing unpatched link-time relocations so zeroed address fields cannot masquerade as matches.
+            continue
         for idx, (val, name) in enumerate(items):
             end = items[idx + 1][0] if idx + 1 < len(items) else rsz
             out[name] = raw[rptr + val:rptr + end]
