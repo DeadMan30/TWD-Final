@@ -50,6 +50,16 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_mat4_identity PRIVATE twdgame)
     add_test(NAME engine_mat4_identity COMMAND test_engine_mat4_identity)
 
+    add_executable(test_engine_handle_equals
+                   game/engine/tests/test_engine_handle_equals.c)
+    target_link_libraries(test_engine_handle_equals PRIVATE twdgame)
+    add_test(NAME engine_handle_equals COMMAND test_engine_handle_equals)
+
+    add_executable(test_engine_dlist_remove
+                   game/engine/tests/test_engine_dlist_remove.c)
+    target_link_libraries(test_engine_dlist_remove PRIVATE twdgame)
+    add_test(NAME engine_dlist_remove COMMAND test_engine_dlist_remove)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files
