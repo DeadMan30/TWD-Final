@@ -1,7 +1,13 @@
 function,cases,option,total,passed,failed,quarantined,source,date
 engine_dlist_remove,edge,,10,10,0,0,0b15e020f130b6b0,2026-11-25
+engine_dlist_remove,recorded,,4,4,0,0,0b15e020f130b6b0,2026-11-25
 engine_handle_equals,edge,,10,10,0,0,0b15e020f130b6b0,2026-11-25
+engine_handle_equals,recorded,,32,32,0,0,0b15e020f130b6b0,2026-11-25
 engine_mat4_identity,edge,,8,8,0,0,0b15e020f130b6b0,2026-11-25
+engine_mat4_identity,recorded,,32,32,0,0,0b15e020f130b6b0,2026-11-25
 engine_meta_op_find,edge,,10,10,0,0,0b15e020f130b6b0,2026-11-25
+engine_meta_op_find,recorded,,32,32,0,0,0b15e020f130b6b0,2026-11-25
 engine_meta_op_register,edge,,8,8,0,0,0b15e020f130b6b0,2026-11-25
+engine_meta_op_register,recorded,,32,32,0,0,0b15e020f130b6b0,2026-11-25
 engine_xorshift128_next,edge,,16,16,0,0,0b15e020f130b6b0,2026-11-25
+engine_xorshift128_next,recorded,,32,32,0,0,0b15e020f130b6b0,2026-11-25

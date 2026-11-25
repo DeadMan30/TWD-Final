@@ -1,7 +1,7 @@
 address,size,name,system,status,notes
-0x140032410,39,engine_meta_op_register,engine,edge-verified,MetaClassDescription operation insert-if-absent (1138 callers)
-0x140032620,37,engine_meta_op_find,engine,edge-verified,MetaClassDescription operation lookup by key (2114 callers)
-0x1400359f0,54,engine_mat4_identity,engine,edge-verified,Initialize 4x4 float matrix to identity (71 callers)
-0x140074930,59,engine_handle_equals,engine,edge-verified,Handle object equality via non-zero key at +0x28 or pointer (119 callers)
-0x1400b1970,166,engine_dlist_remove,engine,edge-verified,Intrusive doubly-linked list unlink and count decrement (78 callers)
-0x14034e1e0,47,engine_xorshift128_next,engine,edge-verified,Marsaglia xorshift128 PRNG step returning new state[3] (97 callers)
+0x140032410,39,engine_meta_op_register,engine,verified,MetaClassDescription operation insert-if-absent (1138 callers)
+0x140032620,37,engine_meta_op_find,engine,verified,MetaClassDescription operation lookup by key (2114 callers)
+0x1400359f0,54,engine_mat4_identity,engine,verified,Initialize 4x4 float matrix to identity (71 callers)
+0x140074930,59,engine_handle_equals,engine,verified,Handle object equality via non-zero key at +0x28 or pointer (119 callers)
+0x1400b1970,166,engine_dlist_remove,engine,verified,Intrusive doubly-linked list unlink and count decrement (78 callers)
+0x14034e1e0,47,engine_xorshift128_next,engine,verified,Marsaglia xorshift128 PRNG step returning new state[3] (97 callers)

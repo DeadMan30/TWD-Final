@@ -1,1 +1,7 @@
 address,name,date,reviewer,verdict,notes
+0x140032410,engine_meta_op_register,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and 100.00% byte-exact under MSVC 14.44.35207
+0x140032620,engine_meta_op_find,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and 100.00% byte-exact under MSVC 14.44.35207
+0x1400359f0,engine_mat4_identity,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and live-recorded replay verified (32/32) against WalkingDead4.exe
+0x140074930,engine_handle_equals,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (32/32) against WalkingDead4.exe
+0x1400b1970,engine_dlist_remove,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (4/4) against WalkingDead4.exe
+0x14034e1e0,engine_xorshift128_next,2026-11-25,DeadMan30,approved,Edge-verified (16/16) and live-recorded replay verified (32/32) against WalkingDead4.exe

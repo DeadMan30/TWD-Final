@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
 import datetime
 import hashlib
+import json
 import os
 import platform
 import re
@@ -197,7 +199,7 @@ def collect_system_sources(root: str, system: str) -> list[str]:
     return sorted(srcs)
 
 
-def record_edge_verification(root: str, func: str, system: str, total: int, passed: int) -> None:
+def upsert_verification_row(root: str, func: str, cases: str, system: str, total: int, passed: int) -> None:
     path = os.path.join(root, 'symbols', 'verification.csv')
     rows: list[dict[str, str]] = []
     if os.path.isfile(path):
@@ -205,7 +207,7 @@ def record_edge_verification(root: str, func: str, system: str, total: int, pass
             rows = list(csv.DictReader(f))
     new_row = {
         'function': func,
-        'cases': 'edge',
+        'cases': cases,
         'option': '',
         'total': str(total),
         'passed': str(passed),
@@ -216,7 +218,7 @@ def record_edge_verification(root: str, func: str, system: str, total: int, pass
     }
     replaced = False
     for i, r in enumerate(rows):
-        if r['function'] == func and r['cases'] == 'edge' and r['option'] == '':
+        if r['function'] == func and r['cases'] == cases and r['option'] == '':
             rows[i] = new_row
             replaced = True
             break
@@ -227,6 +229,10 @@ def record_edge_verification(root: str, func: str, system: str, total: int, pass
         w = csv.DictWriter(f, fieldnames=VERIF_HEADER, lineterminator='\n')
         w.writeheader()
         w.writerows(rows)
+
+
+def record_edge_verification(root: str, func: str, system: str, total: int, passed: int) -> None:
+    upsert_verification_row(root, func, 'edge', system, total, passed)
 
 
 def run_self_test() -> int:
@@ -496,12 +502,262 @@ def run_match(root: str, target_func: str | None, exe_path: str, record: bool) -
     return 0
 
 
+def run_replay(root: str, trace_path: str, exe_path: str, record: bool) -> int:
+    if platform.system() != 'Windows' or platform.machine().lower() not in ('amd64', 'x86_64'):
+        print('verify: recorded PE replay requires Windows x86-64', file=sys.stderr)
+        return 1
+    if not os.path.isfile(trace_path):
+        print(f'verify: capture trace not found: {trace_path}', file=sys.stderr)
+        return 1
+    if not os.path.isfile(exe_path):
+        print(f'verify: game executable not found at {exe_path}', file=sys.stderr)
+        return 1
+
+    with open(os.path.join(root, 'symbols', 'functions.csv'), newline='', encoding='utf-8') as f:
+        func_rows = {r['name']: r for r in csv.DictReader(f)}
+
+    cases_by_fn: dict[str, list[dict]] = {}
+    with open(trace_path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            cases_by_fn.setdefault(item['fn'], []).append(item)
+
+    if not cases_by_fn:
+        print('verify: capture trace has no recorded calls', file=sys.stderr)
+        return 1
+
+    k32 = ctypes.windll.kernel32
+    k32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32]
+    k32.VirtualAlloc.restype = ctypes.c_void_p
+    k32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+    k32.VirtualFree.restype = ctypes.c_int
+    k32.FreeLibrary.argtypes = [ctypes.c_void_p]
+    k32.FreeLibrary.restype = ctypes.c_int
+
+    sys_srcs = [
+        os.path.join(root, 'runtime', 'hooks.c'),
+        os.path.join(root, 'runtime', 'pal.c'),
+        os.path.join(root, 'runtime', 'platform_host.c'),
+        os.path.join(root, 'game', 'game_init.c'),
+    ]
+    game_dir = os.path.join(root, 'game')
+    for dp, _, fns in os.walk(game_dir):
+        if os.path.basename(dp) in ('tests', 'Archives', 'include'):
+            continue
+        if os.path.abspath(dp) == os.path.abspath(game_dir):
+            continue
+        for fn in sorted(fns):
+            if fn.endswith(('.c', '.cpp')):
+                sys_srcs.append(os.path.join(dp, fn))
+
+    allocs: list[int] = []
+    dll = None
+    with tempfile.TemporaryDirectory(prefix='twd_replay_') as tmp:
+        dll_path = os.path.join(tmp, 'twdgame.dll')
+        msvc = find_msvc(root)
+        if msvc:
+            cl_exe, _, env = msvc
+            subprocess.run([
+                cl_exe, '/nologo', '/LD', '/std:c11', '/O2', '/W4', '/WX', '/fp:precise', '/DNDEBUG',
+                f'/I{os.path.join(root, "runtime", "include")}',
+                f'/I{os.path.join(root, "game", "include")}',
+                *sys_srcs, f'/Fo:{tmp}\\', f'/Fe:{dll_path}',
+            ], env=env, check=True)
+        else:
+            cc = find_cc()
+            if not cc:
+                print('verify: no C compiler found', file=sys.stderr)
+                return 1
+            subprocess.run([
+                cc, '-std=c11', '-O3', '-DNDEBUG', '-Wall', '-Wextra', '-Werror',
+                '-ffp-contract=off', '-fno-fast-math', '-shared',
+                f'-I{os.path.join(root, "runtime", "include")}',
+                f'-I{os.path.join(root, "game", "include")}',
+                *sys_srcs, '-o', dll_path,
+            ], check=True)
+
+        try:
+            dll = ctypes.WinDLL(dll_path)
+
+            def load_orig(name: str, argtypes: list, restype):
+                r = func_rows[name]
+                raw = pe_extract_bytes(exe_path, int(r['address'], 16), int(r['size']))
+                mem = k32.VirtualAlloc(None, len(raw), 0x3000, 0x40)
+                if not mem:
+                    raise MemoryError(name)
+                allocs.append(mem)
+                ctypes.memmove(mem, raw, len(raw))
+                proto = ctypes.CFUNCTYPE(restype, *argtypes)
+                fn = proto(mem)
+                c_fn = getattr(dll, 'twd_' + name)
+                c_fn.argtypes = argtypes
+                c_fn.restype = restype
+                return fn, c_fn
+
+            results: dict[str, tuple[int, int]] = {}
+
+            if 'engine_xorshift128_next' in cases_by_fn:
+                orig, got = load_orig('engine_xorshift128_next', [ctypes.POINTER(ctypes.c_uint32)], ctypes.c_uint32)
+                cases = cases_by_fn['engine_xorshift128_next']
+                passed = 0
+                for c in cases:
+                    a = (ctypes.c_uint32 * 4)(*c['in'])
+                    b = (ctypes.c_uint32 * 4)(*c['in'])
+                    r_o = orig(a)
+                    r_g = got(b)
+                    if r_o == c['ret'] and r_g == c['ret'] and list(a) == c['out'] and list(b) == c['out']:
+                        passed += 1
+                results['engine_xorshift128_next'] = (len(cases), passed)
+
+            if 'engine_mat4_identity' in cases_by_fn:
+                orig, got = load_orig('engine_mat4_identity', [ctypes.POINTER(ctypes.c_uint32)], None)
+                cases = cases_by_fn['engine_mat4_identity']
+                passed = 0
+                for c in cases:
+                    a = (ctypes.c_uint32 * 16)(*c['in'])
+                    b = (ctypes.c_uint32 * 16)(*c['in'])
+                    orig(a)
+                    got(b)
+                    if list(a) == c['out'] and list(b) == c['out']:
+                        passed += 1
+                results['engine_mat4_identity'] = (len(cases), passed)
+
+            if 'engine_handle_equals' in cases_by_fn:
+                orig, got = load_orig(
+                    'engine_handle_equals',
+                    [ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)],
+                    ctypes.c_uint8,
+                )
+                cases = cases_by_fn['engine_handle_equals']
+                passed = 0
+                for c in cases:
+                    buf_a = (ctypes.c_uint8 * 0x30)()
+                    buf_b = (ctypes.c_uint8 * 0x30)()
+                    ctypes.c_uint64.from_buffer(buf_a, 0x28).value = c['a_key']
+                    ctypes.c_uint64.from_buffer(buf_b, 0x28).value = c['b_key']
+                    pa = ctypes.c_void_p(0 if c['a_null'] else ctypes.addressof(buf_a))
+                    pb = ctypes.c_void_p(0 if c['b_null'] else (pa.value if c['same_ptr'] else ctypes.addressof(buf_b)))
+                    r_o = orig(ctypes.byref(pa), ctypes.byref(pb)) & 1
+                    r_g = got(ctypes.byref(pa), ctypes.byref(pb)) & 1
+                    if r_o == c['ret'] and r_g == c['ret']:
+                        passed += 1
+                results['engine_handle_equals'] = (len(cases), passed)
+
+            if 'engine_meta_op_register' in cases_by_fn:
+                orig, got = load_orig('engine_meta_op_register', [ctypes.c_void_p, ctypes.c_void_p], None)
+                cases = cases_by_fn['engine_meta_op_register']
+                passed = 0
+
+                def build_desc_and_run(fn, existing_ids: list[int], new_id: int) -> list[int]:
+                    desc = (ctypes.c_uint8 * 0x38)()
+                    nodes = ((ctypes.c_uint8 * 24) * (len(existing_ids) + 1))()
+                    for idx, val in enumerate(existing_ids):
+                        ctypes.c_int32.from_buffer(nodes[idx], 0).value = val
+                        nxt = ctypes.addressof(nodes[idx + 1]) if idx + 1 < len(existing_ids) else 0
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x10).value = nxt
+                    head_ptr = ctypes.addressof(nodes[0]) if existing_ids else 0
+                    ctypes.c_uint64.from_buffer(desc, 0x30).value = head_ptr
+                    new_node = nodes[len(existing_ids)]
+                    ctypes.c_int32.from_buffer(new_node, 0).value = new_id
+                    fn(ctypes.addressof(desc), ctypes.addressof(new_node))
+                    out_ids: list[int] = []
+                    cur = ctypes.c_uint64.from_buffer(desc, 0x30).value
+                    seen_ptrs: set[int] = set()
+                    while cur and cur not in seen_ptrs and len(out_ids) < 64:
+                        seen_ptrs.add(cur)
+                        out_ids.append(ctypes.c_int32.from_address(cur).value)
+                        cur = ctypes.c_uint64.from_address(cur + 0x10).value
+                    return out_ids
+
+                for c in cases:
+                    o_ids = build_desc_and_run(orig, c['existing'], c['insert'])
+                    g_ids = build_desc_and_run(got, c['existing'], c['insert'])
+                    if o_ids == c['after'] and g_ids == c['after']:
+                        passed += 1
+                results['engine_meta_op_register'] = (len(cases), passed)
+
+            if 'engine_meta_op_find' in cases_by_fn:
+                orig, got = load_orig('engine_meta_op_find', [ctypes.c_void_p, ctypes.c_int32], ctypes.c_uint64)
+                cases = cases_by_fn['engine_meta_op_find']
+                passed = 0
+                for c in cases:
+                    ids, vals = c['ids'], c['vals']
+                    desc = (ctypes.c_uint8 * 0x38)()
+                    nodes = ((ctypes.c_uint8 * 24) * max(len(ids), 1))()
+                    for idx, (op_id, fn_val) in enumerate(zip(ids, vals)):
+                        ctypes.c_int32.from_buffer(nodes[idx], 0).value = op_id
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x08).value = fn_val
+                        nxt = ctypes.addressof(nodes[idx + 1]) if idx + 1 < len(ids) else 0
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x10).value = nxt
+                    ctypes.c_uint64.from_buffer(desc, 0x30).value = ctypes.addressof(nodes[0]) if ids else 0
+                    r_o = orig(ctypes.addressof(desc), c['query'])
+                    r_g = got(ctypes.addressof(desc), c['query'])
+                    if r_o == c['ret'] and r_g == c['ret']:
+                        passed += 1
+                results['engine_meta_op_find'] = (len(cases), passed)
+
+            if 'engine_dlist_remove' in cases_by_fn:
+                orig, got = load_orig('engine_dlist_remove', [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_uint8)
+                cases = cases_by_fn['engine_dlist_remove']
+                passed = 0
+
+                def run_dlist(fn, n: int, rm_pos: int, has_prev: int, has_next: int) -> tuple[int, int]:
+                    hdr = (ctypes.c_uint8 * 24)()
+                    nodes = ((ctypes.c_uint8 * 16) * (n + 1))()
+                    ctypes.c_int32.from_buffer(hdr, 0).value = n
+                    if n > 0:
+                        ctypes.c_uint64.from_buffer(hdr, 0x08).value = ctypes.addressof(nodes[0])
+                        ctypes.c_uint64.from_buffer(hdr, 0x10).value = ctypes.addressof(nodes[n - 1])
+                        for idx in range(n):
+                            p = ctypes.addressof(nodes[idx - 1]) if idx > 0 else 0
+                            nx = ctypes.addressof(nodes[idx + 1]) if idx + 1 < n else 0
+                            ctypes.c_uint64.from_buffer(nodes[idx], 0x00).value = p
+                            ctypes.c_uint64.from_buffer(nodes[idx], 0x08).value = nx
+                    if rm_pos >= 0:
+                        rm_ptr = ctypes.addressof(nodes[rm_pos])
+                    else:
+                        rm_ptr = ctypes.addressof(nodes[n])
+                        dummy = ctypes.addressof(nodes[0])
+                        ctypes.c_uint64.from_buffer(nodes[n], 0x00).value = dummy if has_prev else 0
+                        ctypes.c_uint64.from_buffer(nodes[n], 0x08).value = dummy if has_next else 0
+                    ret = fn(ctypes.addressof(hdr), rm_ptr) & 1
+                    cnt_after = ctypes.c_int32.from_buffer(hdr, 0).value
+                    return ret, cnt_after
+
+                for c in cases:
+                    ro, co = run_dlist(orig, c['n'], c['rm_pos'], c['has_prev'], c['has_next'])
+                    rg, cg = run_dlist(got, c['n'], c['rm_pos'], c['has_prev'], c['has_next'])
+                    if (ro, co) == (c['ret'], c['count_after']) and (rg, cg) == (c['ret'], c['count_after']):
+                        passed += 1
+                results['engine_dlist_remove'] = (len(cases), passed)
+
+            all_ok = True
+            for fn_name in sorted(results):
+                tot, ok = results[fn_name]
+                print(f'replay {fn_name:26s}: {ok}/{tot} recorded calls matched')
+                if ok != tot or tot == 0:
+                    all_ok = False
+                elif record:
+                    upsert_verification_row(root, fn_name, 'recorded', func_rows[fn_name]['system'], tot, ok)
+            if record and all_ok:
+                print('verify: recorded live captures in symbols/verification.csv')
+            return 0 if all_ok else 1
+        finally:
+            if dll is not None:
+                k32.FreeLibrary(ctypes.c_void_p(dll._handle))
+            for mem in allocs:
+                k32.VirtualFree(ctypes.c_void_p(mem), 0, 0x8000)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--root', default=DEFAULT_ROOT)
     ap.add_argument('--self-test', action='store_true')
     ap.add_argument('--exe', default=None, help='Path to WalkingDead4.exe')
-    ap.add_argument('--record', nargs='?', const='edge', choices=['edge', 'match'], default=None)
+    ap.add_argument('--record', nargs='?', const='edge', choices=['edge', 'match', 'recorded'], default=None)
     ap.add_argument('subcmd', nargs='*')
     a = ap.parse_args()
 
@@ -517,6 +773,9 @@ def main() -> int:
         exe = a.exe or os.path.join(a.root, 'game', 'WalkingDead4.exe')
         target = a.subcmd[1] if len(a.subcmd) == 2 else None
         return run_match(a.root, target, exe, a.record is not None)
+    if a.subcmd and a.subcmd[0] == 'replay' and len(a.subcmd) == 2:
+        exe = a.exe or os.path.join(a.root, 'game', 'WalkingDead4.exe')
+        return run_replay(a.root, a.subcmd[1], exe, a.record is not None)
     ap.print_help()
     return 0
 
