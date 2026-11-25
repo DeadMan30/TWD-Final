@@ -20,6 +20,9 @@ import tempfile
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SELF_TEST_C = r"""
+#ifndef _WIN32
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
