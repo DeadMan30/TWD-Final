@@ -33,6 +33,10 @@ const twd_hook_entry_t *twd_find_hook(uint64_t address) {
     return NULL;
 }
 
+const twd_hook_entry_t *twd_hook_at(uint32_t index) {
+    return (index < g_hook_count) ? &g_hooks[index] : NULL;
+}
+
 uint32_t twd_hook_count(void) {
     return g_hook_count;
 }

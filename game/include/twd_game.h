@@ -46,14 +46,47 @@ typedef struct twd_dlist {
     twd_dlist_node_t *tail;
 } twd_dlist_t;
 
+typedef struct twd_rbtree_node {
+    struct twd_rbtree_node *left;
+    struct twd_rbtree_node *parent;
+    struct twd_rbtree_node *right;
+    uint8_t color;
+    uint8_t is_nil;
+    uint8_t _pad[6];
+} twd_rbtree_node_t;
+
+typedef struct twd_lua_tvalue {
+    union {
+        uint64_t u64;
+        uint32_t u32;
+        float f;
+    } v;
+    int32_t tt;
+    uint32_t _pad;
+} twd_lua_tvalue_t;
+
+typedef struct twd_lua_state {
+    uint8_t _pad0[0x10];
+    twd_lua_tvalue_t *top;
+    uint8_t _pad1[0x08];
+    twd_lua_tvalue_t **base_ptr;
+} twd_lua_state_t;
+
 TWD_EXPORT void twd_game_register_hooks(void);
+TWD_EXPORT uint32_t twd_game_hook_count(void);
+TWD_EXPORT const twd_hook_entry_t *twd_game_hook_at(uint32_t index);
 TWD_EXPORT void twd_engine_meta_op_register(twd_meta_class_desc_t *desc, twd_meta_op_node_t *node);
 TWD_EXPORT void *twd_engine_meta_op_find(const twd_meta_class_desc_t *desc, int32_t op_id);
 TWD_EXPORT void twd_engine_mat4_identity(float mat[16]);
+TWD_EXPORT void twd_engine_rbtree_rotate_right(twd_rbtree_node_t **head_ptr,
+                                               twd_rbtree_node_t *where);
 TWD_EXPORT bool twd_engine_handle_equals(const twd_handle_obj_t *const *lhs,
                                          const twd_handle_obj_t *const *rhs);
 TWD_EXPORT bool twd_engine_dlist_remove(twd_dlist_t *list, twd_dlist_node_t *node);
 TWD_EXPORT uint32_t twd_engine_xorshift128_next(uint32_t state[4]);
+TWD_EXPORT void twd_engine_lua_settop(twd_lua_state_t *L, int32_t idx);
+TWD_EXPORT void twd_engine_lua_pushinteger(twd_lua_state_t *L, int64_t n);
+TWD_EXPORT void twd_engine_lua_pushboolean(twd_lua_state_t *L, int32_t b);
 
 #ifdef __cplusplus
 }

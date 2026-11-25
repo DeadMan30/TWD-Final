@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "imports_total": 556,
+  "imports_implemented": 49,
+  "imports_bundled": 138,
+  "imports_unresolved": 0,
+  "milestones": [
+    "Host runtime & hook registry",
+    "CRT init, sync & TLS",
+    "Memory, events & POSIX file I/O",
+    "WinMain & module/window init",
+    "Renderer (D3D11 -> Vulkan/GLES)",
+    "Audio & GameLoop"
+  ],
+  "milestone_index": 2,
+  "milestone": "Memory, events & POSIX file I/O",
+  "first_unimplemented": {
+    "library": "KERNEL32.dll",
+    "symbol": "GetModuleFileNameW",
+    "caller": "WinMain (0x14002f7b0)"
+  },
+  "outcome": "stopped_unimplemented_import"
+}

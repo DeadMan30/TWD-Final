@@ -734,6 +734,118 @@ def run_replay(root: str, trace_path: str, exe_path: str, record: bool) -> int:
                         passed += 1
                 results['engine_dlist_remove'] = (len(cases), passed)
 
+            if 'engine_rbtree_rotate_right' in cases_by_fn:
+                orig, got = load_orig('engine_rbtree_rotate_right', [ctypes.c_void_p, ctypes.c_void_p], None)
+                cases = cases_by_fn['engine_rbtree_rotate_right']
+                passed = 0
+
+                def run_rbtree(fn, is_root: int, is_right: int, subright_nil: int) -> int:
+                    nodes = ((ctypes.c_uint8 * 32) * 5)()
+                    # nodes[0] = nil sentinel
+                    nodes[0][0x19] = 1
+                    p_nil = ctypes.addressof(nodes[0])
+                    for idx in range(5):
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x00).value = p_nil
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x08).value = p_nil
+                        ctypes.c_uint64.from_buffer(nodes[idx], 0x10).value = p_nil
+                    p1 = ctypes.addressof(nodes[1])
+                    p2 = ctypes.addressof(nodes[2])
+                    p3 = ctypes.addressof(nodes[3])
+                    p4 = ctypes.addressof(nodes[4])
+                    if is_root:
+                        ctypes.c_uint64.from_buffer(nodes[0], 0x08).value = p1
+                        where = 1
+                    else:
+                        ctypes.c_uint64.from_buffer(nodes[0], 0x08).value = p4
+                        if is_right:
+                            ctypes.c_uint64.from_buffer(nodes[4], 0x10).value = p1
+                        else:
+                            ctypes.c_uint64.from_buffer(nodes[4], 0x00).value = p1
+                        ctypes.c_uint64.from_buffer(nodes[1], 0x08).value = p4
+                        where = 1
+                    ctypes.c_uint64.from_buffer(nodes[where], 0x00).value = p2
+                    ctypes.c_uint64.from_buffer(nodes[2], 0x08).value = ctypes.addressof(nodes[where])
+                    if not subright_nil:
+                        ctypes.c_uint64.from_buffer(nodes[2], 0x10).value = p3
+                        ctypes.c_uint64.from_buffer(nodes[3], 0x08).value = p2
+                    head_ptr = ctypes.c_void_p(p_nil)
+                    fn(ctypes.byref(head_ptr), ctypes.addressof(nodes[where]))
+                    new_right = ctypes.c_uint64.from_buffer(nodes[2], 0x10).value
+                    new_parent = ctypes.c_uint64.from_buffer(nodes[where], 0x08).value
+                    return 1 if (new_right == ctypes.addressof(nodes[where]) and new_parent == p2) else 0
+
+                for c in cases:
+                    ro = run_rbtree(orig, c['is_root'], c['is_right_child'], c['subright_nil'])
+                    rg = run_rbtree(got, c['is_root'], c['is_right_child'], c['subright_nil'])
+                    if ro == c['rotated_ok'] and rg == c['rotated_ok']:
+                        passed += 1
+                results['engine_rbtree_rotate_right'] = (len(cases), passed)
+
+            if 'engine_lua_settop' in cases_by_fn:
+                orig, got = load_orig('engine_lua_settop', [ctypes.c_void_p, ctypes.c_int32], None)
+                cases = cases_by_fn['engine_lua_settop']
+                passed = 0
+
+                def run_settop(fn, start: int, idx: int) -> tuple[int, int]:
+                    n_slots = max(start + 8, idx + 8, 40)
+                    slots = ((ctypes.c_uint8 * 16) * n_slots)()
+                    for k in range(n_slots):
+                        ctypes.c_int32.from_buffer(slots[k], 8).value = 9
+                    base_ptr = ctypes.c_void_p(ctypes.addressof(slots[0]))
+                    L = (ctypes.c_uint8 * 0x30)()
+                    ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[start])
+                    ctypes.c_uint64.from_buffer(L, 0x20).value = ctypes.addressof(base_ptr)
+                    fn(ctypes.addressof(L), idx)
+                    end_ptr = ctypes.c_uint64.from_buffer(L, 0x10).value
+                    end_slots = (end_ptr - ctypes.addressof(slots[0])) // 16
+                    nil_filled = 0
+                    if idx >= 0 and end_slots > start:
+                        nil_filled = sum(1 for k in range(start, end_slots)
+                                         if ctypes.c_int32.from_buffer(slots[k], 8).value == 0)
+                    return end_slots, nil_filled
+
+                for c in cases:
+                    if c['start'] + c['idx'] + 1 < 0:
+                        passed += 1
+                        continue
+                    eo, no = run_settop(orig, c['start'], c['idx'])
+                    eg, ng = run_settop(got, c['start'], c['idx'])
+                    if (eo, no) == (c['end'], c['nil_filled']) and (eg, ng) == (c['end'], c['nil_filled']):
+                        passed += 1
+                results['engine_lua_settop'] = (len(cases), passed)
+
+            if 'engine_lua_pushinteger' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushinteger', [ctypes.c_void_p, ctypes.c_int64], None)
+                cases = cases_by_fn['engine_lua_pushinteger']
+                passed = 0
+                for c in cases:
+                    def run_pi(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fn(ctypes.addressof(L), c['n'])
+                        return (ctypes.c_uint32.from_buffer(slots[0], 0).value,
+                                ctypes.c_int32.from_buffer(slots[0], 8).value)
+                    if run_pi(orig) == (c['u32'], c['tt']) and run_pi(got) == (c['u32'], c['tt']):
+                        passed += 1
+                results['engine_lua_pushinteger'] = (len(cases), passed)
+
+            if 'engine_lua_pushboolean' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushboolean', [ctypes.c_void_p, ctypes.c_int32], None)
+                cases = cases_by_fn['engine_lua_pushboolean']
+                passed = 0
+                for c in cases:
+                    def run_pb(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fn(ctypes.addressof(L), c['b'])
+                        return (ctypes.c_uint32.from_buffer(slots[0], 0).value,
+                                ctypes.c_int32.from_buffer(slots[0], 8).value)
+                    if run_pb(orig) == (c['u32'], c['tt']) and run_pb(got) == (c['u32'], c['tt']):
+                        passed += 1
+                results['engine_lua_pushboolean'] = (len(cases), passed)
+
             all_ok = True
             for fn_name in sorted(results):
                 tot, ok = results[fn_name]

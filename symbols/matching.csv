@@ -1,3 +1,4 @@
 address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
 0x140032410,engine_meta_op_register,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/meta.c,9d5a31b2e07004c8,2026-11-25
 0x140032620,engine_meta_op_find,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/meta.c,9d5a31b2e07004c8,2026-11-25
+0x140057650,engine_rbtree_rotate_right,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/rbtree.c,fdc542932c469ab6,2026-11-25

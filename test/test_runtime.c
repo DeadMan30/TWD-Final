@@ -2,6 +2,7 @@
 #include "twd_runtime.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define TWD_CHECK(cond)                                                     \
     do {                                                                    \
@@ -58,6 +59,54 @@ int main(void) {
     TWD_CHECK(twd_tls_free(tls_key) == 0);
 
     twd_debug_output("twd runtime selftest\n");
+
+    twd_set_last_error(0x1234u);
+    TWD_CHECK(twd_last_error() == 0x1234u);
+
+    uint8_t *vm = (uint8_t *)twd_vm_alloc(4096, 0);
+    TWD_CHECK(vm != NULL);
+    vm[0] = 0x42u;
+    vm[4095] = 0x99u;
+    TWD_CHECK(twd_vm_protect(vm, 4096, 0, 0) == 0);
+    TWD_CHECK(vm[0] == 0x42u);
+    twd_vm_free(vm, 4096);
+
+    char *hp = (char *)twd_heap_alloc(16);
+    TWD_CHECK(hp != NULL);
+    memcpy(hp, "twd", 4);
+    hp = (char *)twd_heap_realloc(hp, 64);
+    TWD_CHECK(hp != NULL && strcmp(hp, "twd") == 0);
+    twd_heap_free(hp);
+
+    twd_event_t ev;
+    TWD_CHECK(twd_event_init(&ev, 0, 0) == 0);
+    TWD_CHECK(twd_event_wait(&ev, 0) == TWD_WAIT_TIMEOUT);
+    TWD_CHECK(twd_event_set(&ev) == 0);
+    TWD_CHECK(twd_event_wait(&ev, 100) == TWD_WAIT_OK);
+    TWD_CHECK(twd_event_wait(&ev, 0) == TWD_WAIT_TIMEOUT); /* auto-reset check */
+    TWD_CHECK(twd_event_set(&ev) == 0);
+    TWD_CHECK(twd_event_reset(&ev) == 0);
+    TWD_CHECK(twd_event_wait(&ev, 0) == TWD_WAIT_TIMEOUT);
+    twd_event_destroy(&ev);
+
+    const char *tmp_file = "twd_pal_test.tmp";
+    twd_file_t tf;
+    TWD_CHECK(twd_file_open(tmp_file, TWD_FILE_OPEN_READ | TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &tf) == 0);
+    TWD_CHECK(twd_file_write(&tf, "TWD4", 4) == 4);
+    TWD_CHECK(twd_file_flush(&tf) == 0);
+    TWD_CHECK(twd_file_seek(&tf, 0, TWD_SEEK_SET) == 0);
+    char rbuf[5] = {0};
+    TWD_CHECK(twd_file_read(&tf, rbuf, 4) == 4);
+    TWD_CHECK(memcmp(rbuf, "TWD4", 4) == 0);
+    TWD_CHECK(twd_file_close(&tf) == 0);
+    TWD_CHECK(twd_file_delete(tmp_file) == 0);
+
+    uint16_t u16[16];
+    char u8[32];
+    int n16 = twd_utf8_to_utf16("TWD\xE2\x9C\x93", -1, u16, 16);
+    TWD_CHECK(n16 == 5 && u16[3] == 0x2713u && u16[4] == 0u);
+    int n8 = twd_utf16_to_utf8(u16, -1, u8, 32);
+    TWD_CHECK(n8 == 7 && strcmp(u8, "TWD\xE2\x9C\x93") == 0);
 
     twd_platform_shutdown();
     printf("test_runtime: ok\n");

@@ -2,6 +2,10 @@ address,replacement,system,returns
 0x140032410,twd_engine_meta_op_register,engine,void
 0x140032620,twd_engine_meta_op_find,engine,i64
 0x1400359f0,twd_engine_mat4_identity,engine,void
+0x140057650,twd_engine_rbtree_rotate_right,engine,void
 0x140074930,twd_engine_handle_equals,engine,i8
 0x1400b1970,twd_engine_dlist_remove,engine,i8
 0x14034e1e0,twd_engine_xorshift128_next,engine,i32
+0x1409519a0,twd_engine_lua_settop,engine,void
+0x1409523c0,twd_engine_lua_pushinteger,engine,void
+0x1409526a0,twd_engine_lua_pushboolean,engine,void

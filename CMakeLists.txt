@@ -60,6 +60,26 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_dlist_remove PRIVATE twdgame)
     add_test(NAME engine_dlist_remove COMMAND test_engine_dlist_remove)
 
+    add_executable(test_engine_rbtree_rotate_right
+                   game/engine/tests/test_engine_rbtree_rotate_right.c)
+    target_link_libraries(test_engine_rbtree_rotate_right PRIVATE twdgame)
+    add_test(NAME engine_rbtree_rotate_right COMMAND test_engine_rbtree_rotate_right)
+
+    add_executable(test_engine_lua_settop
+                   game/engine/tests/test_engine_lua_settop.c)
+    target_link_libraries(test_engine_lua_settop PRIVATE twdgame)
+    add_test(NAME engine_lua_settop COMMAND test_engine_lua_settop)
+
+    add_executable(test_engine_lua_pushinteger
+                   game/engine/tests/test_engine_lua_pushinteger.c)
+    target_link_libraries(test_engine_lua_pushinteger PRIVATE twdgame)
+    add_test(NAME engine_lua_pushinteger COMMAND test_engine_lua_pushinteger)
+
+    add_executable(test_engine_lua_pushboolean
+                   game/engine/tests/test_engine_lua_pushboolean.c)
+    target_link_libraries(test_engine_lua_pushboolean PRIVATE twdgame)
+    add_test(NAME engine_lua_pushboolean COMMAND test_engine_lua_pushboolean)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files
@@ -68,4 +88,6 @@ if(NOT ANDROID)
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check-blocks)
     add_test(NAME verify_self_test
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verify.py --self-test)
+    add_test(NAME boot_harness
+             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/boot_harness.py --check)
 endif()

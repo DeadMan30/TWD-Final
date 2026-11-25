@@ -28,6 +28,7 @@ static void dirname_of(const char *path, char *out, size_t cap) {
 int main(int argc, char **argv) {
     const char *exe_path = NULL;
     const char *dll_path = NULL;
+    const char *swap_dll_path = NULL;
     const char *out_path = NULL;
     DWORD timeout_ms = 8000;
 
@@ -36,6 +37,8 @@ int main(int argc, char **argv) {
             exe_path = argv[++i];
         } else if (strcmp(argv[i], "--dll") == 0 && i + 1 < argc) {
             dll_path = argv[++i];
+        } else if (strcmp(argv[i], "--swap-dll") == 0 && i + 1 < argc) {
+            swap_dll_path = argv[++i];
         } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
@@ -44,16 +47,25 @@ int main(int argc, char **argv) {
     }
 
     if (!exe_path || !dll_path || !out_path) {
-        fprintf(stderr, "usage: launcher --exe PATH --dll PATH --out PATH [--timeout-ms MS]\n");
+        fprintf(stderr, "usage: launcher --exe PATH --dll PATH --out PATH [--swap-dll PATH] [--timeout-ms MS]\n");
         return 2;
     }
 
-    char exe_full[MAX_PATH], dll_full[MAX_PATH], out_full[MAX_PATH], work_dir[MAX_PATH];
+    char exe_full[MAX_PATH], dll_full[MAX_PATH], out_full[MAX_PATH], work_dir[MAX_PATH], swap_full[MAX_PATH];
     if (!GetFullPathNameA(exe_path, MAX_PATH, exe_full, NULL) ||
         !GetFullPathNameA(dll_path, MAX_PATH, dll_full, NULL) ||
         !GetFullPathNameA(out_path, MAX_PATH, out_full, NULL)) {
         fprintf(stderr, "failed to resolve paths\n");
         return 2;
+    }
+    if (swap_dll_path) {
+        if (!GetFullPathNameA(swap_dll_path, MAX_PATH, swap_full, NULL)) {
+            fprintf(stderr, "failed to resolve --swap-dll path\n");
+            return 2;
+        }
+        SetEnvironmentVariableA("TWD_SWAP_DLL", swap_full);
+    } else {
+        SetEnvironmentVariableA("TWD_SWAP_DLL", NULL);
     }
     dirname_of(exe_full, work_dir, sizeof(work_dir));
 
