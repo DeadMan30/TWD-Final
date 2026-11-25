@@ -4,7 +4,7 @@ TWD-Final is a clean-room decompilation of *The Walking Dead: The Final Season* 
 Android runtime: the game's code rewritten as readable C and C++, one verified function at a time.
 
 <!-- status:start -->
-The game doesn't run on TWD-Final yet: 0 of 38387 functions are verified (0.00%) and 1 replaced (0.00%). 0 of 556 PE imports are mapped so far.
+The game doesn't run on TWD-Final yet: 0 of 38387 functions are verified (0.00%) and 4 replaced (0.01%). 138 of 556 PE imports are mapped so far.
 <!-- status:end -->
 
 The goal is a complete native Android source port: every function rewritten and verified against the

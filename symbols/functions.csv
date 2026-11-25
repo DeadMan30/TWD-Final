@@ -1,2 +1,5 @@
 address,size,name,system,status,notes
+0x140032410,39,engine_meta_op_register,engine,edge-verified,MetaClassDescription operation insert-if-absent (1138 callers)
+0x140032620,37,engine_meta_op_find,engine,edge-verified,MetaClassDescription operation lookup by key (2114 callers)
+0x1400359f0,54,engine_mat4_identity,engine,edge-verified,Initialize 4x4 float matrix to identity (71 callers)
 0x14034e1e0,47,engine_xorshift128_next,engine,edge-verified,Marsaglia xorshift128 PRNG step returning new state[3] (97 callers)

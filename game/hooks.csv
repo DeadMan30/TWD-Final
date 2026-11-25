@@ -1,2 +1,5 @@
 address,replacement,system,returns
+0x140032410,twd_engine_meta_op_register,engine,void
+0x140032620,twd_engine_meta_op_find,engine,i64
+0x1400359f0,twd_engine_mat4_identity,engine,void
 0x14034e1e0,twd_engine_xorshift128_next,engine,i32

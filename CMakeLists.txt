@@ -35,6 +35,21 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_xorshift128_next PRIVATE twdgame)
     add_test(NAME engine_xorshift128_next COMMAND test_engine_xorshift128_next)
 
+    add_executable(test_engine_meta_op_register
+                   game/engine/tests/test_engine_meta_op_register.c)
+    target_link_libraries(test_engine_meta_op_register PRIVATE twdgame)
+    add_test(NAME engine_meta_op_register COMMAND test_engine_meta_op_register)
+
+    add_executable(test_engine_meta_op_find
+                   game/engine/tests/test_engine_meta_op_find.c)
+    target_link_libraries(test_engine_meta_op_find PRIVATE twdgame)
+    add_test(NAME engine_meta_op_find COMMAND test_engine_meta_op_find)
+
+    add_executable(test_engine_mat4_identity
+                   game/engine/tests/test_engine_mat4_identity.c)
+    target_link_libraries(test_engine_mat4_identity PRIVATE twdgame)
+    add_test(NAME engine_mat4_identity COMMAND test_engine_mat4_identity)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files
