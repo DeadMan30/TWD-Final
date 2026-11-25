@@ -1,4 +1,4 @@
-# Repository policy and progress generation checks on pushes and pull requests.
+# Repository policy, build, and progress checks on pushes and pull requests.
 name: ci
 
 on:
@@ -18,11 +18,18 @@ jobs:
           fetch-depth: 0
       - name: Check no game data is tracked
         run: python3 tools/check_no_game_data.py --tracked
+      - name: Validate symbol and hook tables
+        run: python3 tools/validate_functions.py
       - name: Check generated markdown blocks and symbol tables
         run: |
           python3 tools/progress.py --check-blocks
           python3 tools/progress.py --check-touched
           python3 tools/source_files.py --check
+      - name: Build and run host tests (CMake + differential self-test)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
       - name: Smoke-test progress map and page generation
         run: |
           python3 tools/progress_map.py --out-dir "$RUNNER_TEMP/site"
