@@ -426,6 +426,18 @@ def record_matching_rows(root: str, updates: list[dict[str, str]]) -> None:
         w.writerows(merged)
 
 
+def msvc_cflags(compiler_id: str) -> list[str]:
+    parts = compiler_id.removeprefix('msvc-').split('.')
+    try:
+        ver = (int(parts[0]), int(parts[1]))
+    except (IndexError, ValueError):
+        ver = (19, 0)
+    flags = ['/O2', '/W4', '/WX', '/fp:precise', '/DNDEBUG']
+    if ver >= (14, 28):
+        flags.insert(0, '/std:c11')
+    return flags
+
+
 def run_match(root: str, target_func: str | None, exe_path: str, record: bool) -> int:
     msvc = find_msvc(root)
     if not msvc:
@@ -435,7 +447,8 @@ def run_match(root: str, target_func: str | None, exe_path: str, record: bool) -
         print(f'verify: game executable not found at {exe_path} (pass --exe PATH)', file=sys.stderr)
         return 1
     cl_exe, compiler_id, env = msvc
-    flags = '/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG'
+    c_flags = msvc_cflags(compiler_id)
+    flags = ' '.join(c_flags)
 
     with open(os.path.join(root, 'symbols', 'functions.csv'), newline='', encoding='utf-8') as f:
         funcs = [r for r in csv.DictReader(f) if target_func is None or r['name'] == target_func]
@@ -451,7 +464,7 @@ def run_match(root: str, target_func: str | None, exe_path: str, record: bool) -
             if not srcs:
                 continue
             cmd = [
-                cl_exe, '/nologo', '/std:c11', '/O2', '/W4', '/WX', '/fp:precise', '/DNDEBUG',
+                cl_exe, '/nologo', *c_flags,
                 f'/I{os.path.join(root, "runtime", "include")}',
                 f'/I{os.path.join(root, "game", "include")}',
                 f'/Fo:{tmp}\\', '/c', *srcs,
@@ -563,9 +576,9 @@ def run_replay(root: str, trace_path: str, exe_path: str, record: bool) -> int:
         dll_path = os.path.join(tmp, 'twdgame.dll')
         msvc = find_msvc(root)
         if msvc:
-            cl_exe, _, env = msvc
+            cl_exe, compiler_id, env = msvc
             subprocess.run([
-                cl_exe, '/nologo', '/LD', '/std:c11', '/O2', '/W4', '/WX', '/fp:precise', '/DNDEBUG',
+                cl_exe, '/nologo', '/LD', *msvc_cflags(compiler_id),
                 f'/I{os.path.join(root, "runtime", "include")}',
                 f'/I{os.path.join(root, "game", "include")}',
                 *sys_srcs, f'/Fo:{tmp}\\', f'/Fe:{dll_path}',

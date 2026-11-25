@@ -126,7 +126,9 @@ int main(void) {
     TWD_CHECK(twd_sem_init(&sem, 0, 4) == 0);
     TWD_CHECK(twd_sem_wait(&sem, 0) == TWD_WAIT_TIMEOUT);
 
-    thread_test_ctx_t tctx = {&sem, 34};
+    thread_test_ctx_t tctx;
+    tctx.sem = &sem;
+    tctx.value = 34;
     twd_thread_t th;
     TWD_CHECK(twd_thread_create(&th, worker_thread_fn, &tctx) == 0);
     TWD_CHECK(twd_sem_wait(&sem, 5000) == TWD_WAIT_OK);

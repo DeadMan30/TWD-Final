@@ -568,7 +568,9 @@ static uint8_t *alloc_near_slab(uintptr_t target) {
     uintptr_t base = target & ~(gran - 1);
 
     for (uintptr_t step = gran; step <= 0x20000000ULL; step += gran) {
-        uintptr_t cands[2] = {base + step, base > step ? base - step : 0};
+        uintptr_t cands[2];
+        cands[0] = base + step;
+        cands[1] = base > step ? base - step : 0;
         for (int k = 0; k < 2; k++) {
             uintptr_t cand = cands[k];
             if (cand < (uintptr_t)si.lpMinimumApplicationAddress ||

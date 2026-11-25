@@ -5,6 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if !defined(__cplusplus) && defined(_MSC_VER) && _MSC_VER < 1928
+#define _TWD_CAT2(a, b) a##b
+#define _TWD_CAT(a, b) _TWD_CAT2(a, b)
+#ifndef _Static_assert
+#define _Static_assert(cond, msg) typedef char _TWD_CAT(_twd_sa_, __COUNTER__)[(cond) ? 1 : -1]
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
