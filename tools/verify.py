@@ -25,6 +25,10 @@ import tempfile
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERIF_HEADER = ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date']
+MATCH_HEADER = [
+    'address', 'name', 'compiler', 'flags', 'match_percent', 'objdiff_percent',
+    'byte_exact', 'targets_checked', 'source', 'source_sha256', 'date',
+]
 RESULT_RE = re.compile(
     r'^VERIF_RESULT\s+total=(\d+)\s+passed=(\d+)\s+failed=(\d+)\s+mutant_killed=(\d+)\s+mode=(\S+)$',
     re.MULTILINE,
@@ -309,12 +313,195 @@ def run_function(root: str, func: str, exe_path: str, record: str | None) -> int
     return 0
 
 
+def find_msvc(root: str) -> tuple[str, str, dict[str, str]] | None:
+    msvc_root = os.path.join(root, '.tools', 'msvc')
+    vc_base = os.path.join(msvc_root, 'VC', 'Tools', 'MSVC')
+    sdk_inc_base = os.path.join(msvc_root, 'Windows Kits', '10', 'Include')
+    sdk_lib_base = os.path.join(msvc_root, 'Windows Kits', '10', 'Lib')
+    sdk_bin_base = os.path.join(msvc_root, 'Windows Kits', '10', 'bin')
+    if not os.path.isdir(vc_base) or not os.path.isdir(sdk_inc_base):
+        return None
+    vc_vers = sorted(os.listdir(vc_base))
+    sdk_vers = sorted(os.listdir(sdk_inc_base))
+    if not vc_vers or not sdk_vers:
+        return None
+    vc_ver = vc_vers[-1]
+    sdk_ver = sdk_vers[-1]
+    vc_dir = os.path.join(vc_base, vc_ver)
+    cl_exe = os.path.join(vc_dir, 'bin', 'Hostx64', 'x64', 'cl.exe')
+    if not os.path.isfile(cl_exe):
+        return None
+    env = os.environ.copy()
+    env['PATH'] = os.pathsep.join([
+        os.path.join(vc_dir, 'bin', 'Hostx64', 'x64'),
+        os.path.join(sdk_bin_base, sdk_ver, 'x64'),
+        os.path.join(sdk_bin_base, sdk_ver, 'x64', 'ucrt'),
+        env.get('PATH', ''),
+    ])
+    env['INCLUDE'] = os.pathsep.join([
+        os.path.join(vc_dir, 'include'),
+        os.path.join(sdk_inc_base, sdk_ver, 'ucrt'),
+        os.path.join(sdk_inc_base, sdk_ver, 'shared'),
+        os.path.join(sdk_inc_base, sdk_ver, 'um'),
+    ])
+    env['LIB'] = os.pathsep.join([
+        os.path.join(vc_dir, 'lib', 'x64'),
+        os.path.join(sdk_lib_base, sdk_ver, 'ucrt', 'x64'),
+        os.path.join(sdk_lib_base, sdk_ver, 'um', 'x64'),
+    ])
+    return cl_exe, f'msvc-{vc_ver}', env
+
+
+def parse_coff_text_symbols(obj_path: str) -> dict[str, bytes]:
+    with open(obj_path, 'rb') as f:
+        raw = f.read()
+    _, nsec, _, sym_off, nsym, opt_sz, _ = struct.unpack_from('<HHIIIHH', raw, 0)
+    secs = []
+    for i in range(nsec):
+        off = 20 + opt_sz + i * 40
+        _, _, rsz, rptr = struct.unpack_from('<IIII', raw, off + 8)
+        secs.append((rsz, rptr))
+    str_off = sym_off + nsym * 18
+
+    def sym_name(rec: bytes) -> str:
+        raw_n = rec[:8]
+        if raw_n[:4] == b'\x00\x00\x00\x00':
+            idx = struct.unpack_from('<I', raw_n, 4)[0]
+            end = raw.find(b'\x00', str_off + idx)
+            return raw[str_off + idx:end].decode('ascii', errors='replace')
+        return raw_n.rstrip(b'\x00').decode('ascii', errors='replace')
+
+    by_sec: dict[int, list[tuple[int, str]]] = {}
+    i = 0
+    while i < nsym:
+        rec = raw[sym_off + i * 18:sym_off + (i + 1) * 18]
+        name = sym_name(rec)
+        val, sec_idx, _, _, naux = struct.unpack_from('<IhHBB', rec, 8)
+        if sec_idx > 0 and name.startswith('twd_'):
+            by_sec.setdefault(sec_idx, []).append((val, name))
+        i += 1 + naux
+
+    out: dict[str, bytes] = {}
+    for sec_idx, items in by_sec.items():
+        items.sort()
+        rsz, rptr = secs[sec_idx - 1]
+        for idx, (val, name) in enumerate(items):
+            end = items[idx + 1][0] if idx + 1 < len(items) else rsz
+            out[name] = raw[rptr + val:rptr + end]
+    return out
+
+
+def find_definition_file(root: str, system: str, sym_name: str) -> str:
+    pat = re.compile(rf'\b{re.escape(sym_name)}\s*\(')
+    for p in collect_system_sources(root, system):
+        with open(p, encoding='utf-8', errors='replace') as f:
+            if pat.search(f.read()):
+                return p
+    return ''
+
+
+def record_matching_rows(root: str, updates: list[dict[str, str]]) -> None:
+    path = os.path.join(root, 'symbols', 'matching.csv')
+    rows: list[dict[str, str]] = []
+    if os.path.isfile(path):
+        with open(path, newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+    by_addr = {r['address']: r for r in rows}
+    for u in updates:
+        by_addr[u['address']] = u
+    merged = sorted(by_addr.values(), key=lambda r: int(r['address'], 16))
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=MATCH_HEADER, lineterminator='\n')
+        w.writeheader()
+        w.writerows(merged)
+
+
+def run_match(root: str, target_func: str | None, exe_path: str, record: bool) -> int:
+    msvc = find_msvc(root)
+    if not msvc:
+        print('verify: portable MSVC not found under .tools/msvc', file=sys.stderr)
+        return 1
+    if not os.path.isfile(exe_path):
+        print(f'verify: game executable not found at {exe_path} (pass --exe PATH)', file=sys.stderr)
+        return 1
+    cl_exe, compiler_id, env = msvc
+    flags = '/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG'
+
+    with open(os.path.join(root, 'symbols', 'functions.csv'), newline='', encoding='utf-8') as f:
+        funcs = [r for r in csv.DictReader(f) if target_func is None or r['name'] == target_func]
+    if not funcs:
+        print(f'verify: no matching functions in symbols/functions.csv', file=sys.stderr)
+        return 1
+
+    compiled: dict[str, bytes] = {}
+    with tempfile.TemporaryDirectory(prefix='twd_msvc_match_') as tmp:
+        systems = sorted({r['system'] for r in funcs})
+        for system in systems:
+            srcs = collect_system_sources(root, system)
+            if not srcs:
+                continue
+            cmd = [
+                cl_exe, '/nologo', '/std:c11', '/O2', '/W4', '/WX', '/fp:precise', '/DNDEBUG',
+                f'/I{os.path.join(root, "runtime", "include")}',
+                f'/I{os.path.join(root, "game", "include")}',
+                f'/Fo:{tmp}\\', '/c', *srcs,
+            ]
+            subprocess.run(cmd, env=env, check=True)
+            for src in srcs:
+                stem = os.path.splitext(os.path.basename(src))[0]
+                obj = os.path.join(tmp, stem + '.obj')
+                if os.path.isfile(obj):
+                    compiled.update(parse_coff_text_symbols(obj))
+
+    updates: list[dict[str, str]] = []
+    today = datetime.date.today().isoformat()
+    for r in funcs:
+        addr = int(r['address'], 16)
+        sz = int(r['size'])
+        name = r['name']
+        orig = pe_extract_bytes(exe_path, addr, sz)
+        got = compiled.get('twd_' + name, b'')
+        exact = (orig == got)
+        if exact:
+            pct = '100.00'
+        else:
+            common = min(len(orig), len(got))
+            same = sum(1 for i in range(common) if orig[i] == got[i])
+            pct = f'{100.0 * same / max(len(orig), len(got), 1):.2f}'
+        print(f'{name:28s} orig={len(orig):3d}B  cl={len(got):3d}B  exact={exact} ({pct}%)')
+        if exact and record:
+            src_abs = find_definition_file(root, r['system'], 'twd_' + name)
+            rel = os.path.relpath(src_abs, root).replace('\\', '/') if src_abs else ''
+            src_sha = ''
+            if src_abs and os.path.isfile(src_abs):
+                with open(src_abs, 'rb') as sf:
+                    src_sha = hashlib.sha256(sf.read()).hexdigest()[:16]
+            updates.append({
+                'address': r['address'],
+                'name': name,
+                'compiler': compiler_id,
+                'flags': flags,
+                'match_percent': pct,
+                'objdiff_percent': '',
+                'byte_exact': 'yes',
+                'targets_checked': 'x86_64',
+                'source': rel,
+                'source_sha256': src_sha,
+                'date': today,
+            })
+
+    if record and updates:
+        record_matching_rows(root, updates)
+        print(f'verify: recorded {len(updates)} byte-exact match(es) in symbols/matching.csv')
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--root', default=DEFAULT_ROOT)
     ap.add_argument('--self-test', action='store_true')
     ap.add_argument('--exe', default=None, help='Path to WalkingDead4.exe')
-    ap.add_argument('--record', choices=['edge'], default=None)
+    ap.add_argument('--record', nargs='?', const='edge', choices=['edge', 'match'], default=None)
     ap.add_argument('subcmd', nargs='*')
     a = ap.parse_args()
 
@@ -326,6 +513,10 @@ def main() -> int:
     if a.subcmd and a.subcmd[0] == 'run' and len(a.subcmd) == 2:
         exe = a.exe or os.path.join(a.root, 'game', 'WalkingDead4.exe')
         return run_function(a.root, a.subcmd[1], exe, a.record)
+    if a.subcmd and a.subcmd[0] == 'match' and len(a.subcmd) in (1, 2):
+        exe = a.exe or os.path.join(a.root, 'game', 'WalkingDead4.exe')
+        target = a.subcmd[1] if len(a.subcmd) == 2 else None
+        return run_match(a.root, target, exe, a.record is not None)
     ap.print_help()
     return 0
 
