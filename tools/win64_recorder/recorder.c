@@ -87,6 +87,13 @@ typedef uint32_t (*orig_xorshift_t)(uint32_t *);
 typedef void (*orig_lua_settop_t)(twd_lua_state_t *, int32_t);
 typedef void (*orig_lua_pushint_t)(twd_lua_state_t *, int64_t);
 typedef void (*orig_lua_pushbool_t)(twd_lua_state_t *, int32_t);
+typedef int32_t (*orig_lua_absidx_t)(const twd_lua_state_t *, int32_t);
+typedef int64_t (*orig_lua_gettop_t)(const twd_lua_state_t *);
+typedef void (*orig_lua_xmove_t)(twd_lua_state_t *, twd_lua_state_t *, int32_t);
+typedef void (*orig_lua_pushnil_t)(twd_lua_state_t *);
+typedef void (*orig_lua_pushnum_t)(twd_lua_state_t *, float);
+typedef void (*orig_lua_pushu_t)(twd_lua_state_t *, uint32_t);
+typedef void (*orig_lua_pushlud_t)(twd_lua_state_t *, void *);
 
 static orig_meta_reg_t g_orig_meta_reg = NULL;
 static orig_meta_find_t g_orig_meta_find = NULL;
@@ -98,6 +105,13 @@ static orig_xorshift_t g_orig_xorshift = NULL;
 static orig_lua_settop_t g_orig_lua_settop = NULL;
 static orig_lua_pushint_t g_orig_lua_pushint = NULL;
 static orig_lua_pushbool_t g_orig_lua_pushbool = NULL;
+static orig_lua_absidx_t g_orig_lua_absidx = NULL;
+static orig_lua_gettop_t g_orig_lua_gettop = NULL;
+static orig_lua_xmove_t g_orig_lua_xmove = NULL;
+static orig_lua_pushnil_t g_orig_lua_pushnil = NULL;
+static orig_lua_pushnum_t g_orig_lua_pushnum = NULL;
+static orig_lua_pushu_t g_orig_lua_pushu = NULL;
+static orig_lua_pushlud_t g_orig_lua_pushlud = NULL;
 
 static SRWLOCK g_log_lock = SRWLOCK_INIT;
 static HANDLE g_log_file = INVALID_HANDLE_VALUE;
@@ -111,6 +125,13 @@ static LONG g_cnt_xorshift = 0;
 static LONG g_cnt_lua_settop = 0;
 static LONG g_cnt_lua_pushint = 0;
 static LONG g_cnt_lua_pushbool = 0;
+static LONG g_cnt_lua_absidx = 0;
+static LONG g_cnt_lua_gettop = 0;
+static LONG g_cnt_lua_xmove = 0;
+static LONG g_cnt_lua_pushnil = 0;
+static LONG g_cnt_lua_pushnum = 0;
+static LONG g_cnt_lua_pushu = 0;
+static LONG g_cnt_lua_pushlud = 0;
 
 typedef struct fmt_buf {
     char data[LINE_BUF_SIZE];
@@ -424,6 +445,122 @@ static void detour_lua_pushboolean(twd_lua_state_t *L, int32_t v) {
     }
 }
 
+static int32_t detour_lua_absindex(const twd_lua_state_t *L, int32_t arg_idx) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_absidx);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->base_ptr != NULL && *L->base_ptr != NULL);
+    ptrdiff_t slots = rec ? (L->top - *L->base_ptr) : 0;
+    if (slots < 0 || slots > 64) rec = 0;
+    int32_t ret = g_orig_lua_absidx(L, arg_idx);
+    if (rec) {
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_absindex\",\"slots\":"); fb_i64(&b, (int64_t)slots);
+        fb_str(&b, ",\"idx\":"); fb_i64(&b, arg_idx);
+        fb_str(&b, ",\"ret\":"); fb_i64(&b, ret);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+    return ret;
+}
+
+static int64_t detour_lua_gettop(const twd_lua_state_t *L) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_gettop);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->base_ptr != NULL && *L->base_ptr != NULL);
+    ptrdiff_t slots = rec ? (L->top - *L->base_ptr) : 0;
+    if (slots < 0 || slots > 64) rec = 0;
+    int64_t ret = g_orig_lua_gettop(L);
+    if (rec) {
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_gettop\",\"slots\":"); fb_i64(&b, (int64_t)slots);
+        fb_str(&b, ",\"ret\":"); fb_i64(&b, ret);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+    return ret;
+}
+
+static void detour_lua_xmove(twd_lua_state_t *from, twd_lua_state_t *to, int32_t n) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_xmove);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && from != NULL && to != NULL);
+    int same = (from == to) ? 1 : 0;
+    g_orig_lua_xmove(from, to, n);
+    if (rec) {
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_xmove\",\"same\":"); fb_i64(&b, same);
+        fb_str(&b, ",\"n\":"); fb_i64(&b, n);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+}
+
+static void detour_lua_pushnil(twd_lua_state_t *L) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_pushnil);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->top != NULL);
+    g_orig_lua_pushnil(L);
+    if (rec) {
+        const twd_lua_tvalue_t *slot = L->top - 1;
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_pushnil\",\"tt\":"); fb_i64(&b, slot->tt);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+}
+
+static void detour_lua_pushnumber(twd_lua_state_t *L, float n) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_pushnum);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->top != NULL);
+    uint32_t in_u32 = 0;
+    if (rec) {
+        const volatile uint32_t *p = (const volatile uint32_t *)(const void *)&n;
+        in_u32 = *p;
+    }
+    g_orig_lua_pushnum(L, n);
+    if (rec) {
+        const twd_lua_tvalue_t *slot = L->top - 1;
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_pushnumber\",\"in_u32\":"); fb_u64(&b, in_u32);
+        fb_str(&b, ",\"u32\":"); fb_u64(&b, slot->v.u32);
+        fb_str(&b, ",\"tt\":"); fb_i64(&b, slot->tt);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+}
+
+static void detour_lua_pushunsigned(twd_lua_state_t *L, uint32_t n) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_pushu);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->top != NULL);
+    g_orig_lua_pushu(L, n);
+    if (rec) {
+        const twd_lua_tvalue_t *slot = L->top - 1;
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_pushunsigned\",\"n\":"); fb_u64(&b, n);
+        fb_str(&b, ",\"u32\":"); fb_u64(&b, slot->v.u32);
+        fb_str(&b, ",\"tt\":"); fb_i64(&b, slot->tt);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+}
+
+static void detour_lua_pushlightuserdata(twd_lua_state_t *L, void *p) {
+    LONG idx = InterlockedIncrement(&g_cnt_lua_pushlud);
+    int rec = (idx <= MAX_SAMPLES_PER_FN && L != NULL && L->top != NULL);
+    g_orig_lua_pushlud(L, p);
+    if (rec) {
+        const twd_lua_tvalue_t *slot = L->top - 1;
+        fmt_buf_t b;
+        b.len = 0;
+        fb_str(&b, "{\"fn\":\"engine_lua_pushlightuserdata\",\"p\":"); fb_u64(&b, slot->v.u64);
+        fb_str(&b, ",\"tt\":"); fb_i64(&b, slot->tt);
+        fb_str(&b, "}\n");
+        fb_write_line(&b);
+    }
+}
+
 static uint8_t *alloc_near_slab(uintptr_t target) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -572,9 +709,16 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
         install_detour(base + 0x00074930ULL, 6, -1, (void *)detour_handle_equals, (void **)&g_orig_handle_eq, &slab);
         install_detour(base + 0x000b1970ULL, 7, -1, (void *)detour_dlist_remove, (void **)&g_orig_dlist_rm, &slab);
         install_detour(base + 0x0034e1e0ULL, 6, -1, (void *)detour_xorshift128_next, (void **)&g_orig_xorshift, &slab);
+        install_detour(base + 0x00951950ULL, 6, -1, (void *)detour_lua_absindex, (void **)&g_orig_lua_absidx, &slab);
+        install_detour(base + 0x00951980ULL, 8, -1, (void *)detour_lua_gettop, (void **)&g_orig_lua_gettop, &slab);
         install_detour(base + 0x009519a0ULL, 8,  2, (void *)detour_lua_settop, (void **)&g_orig_lua_settop, &slab);
+        install_detour(base + 0x00951c60ULL, 6, -1, (void *)detour_lua_xmove, (void **)&g_orig_lua_xmove, &slab);
+        install_detour(base + 0x00952380ULL, 11, -1, (void *)detour_lua_pushnil, (void **)&g_orig_lua_pushnil, &slab);
+        install_detour(base + 0x009523a0ULL, 8, -1, (void *)detour_lua_pushnumber, (void **)&g_orig_lua_pushnum, &slab);
         install_detour(base + 0x009523c0ULL, 7, -1, (void *)detour_lua_pushinteger, (void **)&g_orig_lua_pushint, &slab);
+        install_detour(base + 0x009523f0ULL, 6, -1, (void *)detour_lua_pushunsigned, (void **)&g_orig_lua_pushu, &slab);
         install_detour(base + 0x009526a0ULL, 6, -1, (void *)detour_lua_pushboolean, (void **)&g_orig_lua_pushbool, &slab);
+        install_detour(base + 0x009526d0ULL, 7, -1, (void *)detour_lua_pushlightuserdata, (void **)&g_orig_lua_pushlud, &slab);
     } else if (reason == DLL_PROCESS_DETACH) {
         if (g_log_file != INVALID_HANDLE_VALUE) {
             FlushFileBuffers(g_log_file);

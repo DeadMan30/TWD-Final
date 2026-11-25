@@ -17,6 +17,17 @@ static int dummy_fn(void) {
     return 42;
 }
 
+typedef struct thread_test_ctx {
+    twd_sem_t *sem;
+    int value;
+} thread_test_ctx_t;
+
+static int worker_thread_fn(void *arg) {
+    thread_test_ctx_t *ctx = (thread_test_ctx_t *)arg;
+    twd_sem_post(ctx->sem, 1);
+    return ctx->value + 8;
+}
+
 int main(void) {
     TWD_CHECK(twd_platform_init() == 0);
     uint64_t t0 = twd_time_now_ns();
@@ -107,6 +118,28 @@ int main(void) {
     TWD_CHECK(n16 == 5 && u16[3] == 0x2713u && u16[4] == 0u);
     int n8 = twd_utf16_to_utf8(u16, -1, u8, 32);
     TWD_CHECK(n8 == 7 && strcmp(u8, "TWD\xE2\x9C\x93") == 0);
+
+    char exe_buf[512];
+    TWD_CHECK(twd_exe_path(exe_buf, sizeof(exe_buf)) > 0);
+
+    twd_sem_t sem;
+    TWD_CHECK(twd_sem_init(&sem, 0, 4) == 0);
+    TWD_CHECK(twd_sem_wait(&sem, 0) == TWD_WAIT_TIMEOUT);
+
+    thread_test_ctx_t tctx = {&sem, 34};
+    twd_thread_t th;
+    TWD_CHECK(twd_thread_create(&th, worker_thread_fn, &tctx) == 0);
+    TWD_CHECK(twd_sem_wait(&sem, 5000) == TWD_WAIT_OK);
+    int th_rc = 0;
+    TWD_CHECK(twd_thread_join(&th, &th_rc) == 0);
+    TWD_CHECK(th_rc == 42);
+    twd_sem_destroy(&sem);
+
+    void *self_mod = twd_dynlib_open(NULL);
+    TWD_CHECK(self_mod != NULL);
+    twd_dynlib_close(self_mod);
+
+    twd_alert("TWD-Final", "runtime alert check");
 
     twd_platform_shutdown();
     printf("test_runtime: ok\n");

@@ -27,6 +27,18 @@ typedef union twd_event {
     uint8_t bytes[128];
 } twd_event_t;
 
+typedef union twd_sem {
+    uint64_t align;
+    uint8_t bytes[128];
+} twd_sem_t;
+
+typedef struct twd_thread {
+    uintptr_t handle;
+    void *ctx;
+} twd_thread_t;
+
+typedef int (*twd_thread_fn)(void *arg);
+
 typedef struct twd_file {
     intptr_t handle;
 } twd_file_t;
@@ -93,6 +105,22 @@ int twd_mkdir(const char *path);
 
 int twd_utf8_to_utf16(const char *src, int src_len, uint16_t *dst, int dst_cap);
 int twd_utf16_to_utf8(const uint16_t *src, int src_len, char *dst, int dst_cap);
+
+int twd_exe_path(char *buf, size_t cap);
+
+int twd_sem_init(twd_sem_t *s, uint32_t initial, uint32_t max_count);
+void twd_sem_destroy(twd_sem_t *s);
+int twd_sem_post(twd_sem_t *s, uint32_t count);
+int twd_sem_wait(twd_sem_t *s, uint32_t timeout_ms);
+
+int twd_thread_create(twd_thread_t *th, twd_thread_fn fn, void *arg);
+int twd_thread_join(twd_thread_t *th, int *out_rc);
+
+void *twd_dynlib_open(const char *path_or_null);
+void *twd_dynlib_sym(void *lib, const char *name);
+void twd_dynlib_close(void *lib);
+
+void twd_alert(const char *title, const char *msg);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);

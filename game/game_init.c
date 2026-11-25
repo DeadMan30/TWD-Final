@@ -16,12 +16,26 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_dlist_remove);
     twd_register_hook(0x14034e1e0ULL, "engine_xorshift128_next",
                       (void *)twd_engine_xorshift128_next);
+    twd_register_hook(0x140951950ULL, "engine_lua_absindex",
+                      (void *)twd_engine_lua_absindex);
+    twd_register_hook(0x140951980ULL, "engine_lua_gettop",
+                      (void *)twd_engine_lua_gettop);
     twd_register_hook(0x1409519a0ULL, "engine_lua_settop",
                       (void *)twd_engine_lua_settop);
+    twd_register_hook(0x140951c60ULL, "engine_lua_xmove",
+                      (void *)twd_engine_lua_xmove);
+    twd_register_hook(0x140952380ULL, "engine_lua_pushnil",
+                      (void *)twd_engine_lua_pushnil);
+    twd_register_hook(0x1409523a0ULL, "engine_lua_pushnumber",
+                      (void *)twd_engine_lua_pushnumber);
     twd_register_hook(0x1409523c0ULL, "engine_lua_pushinteger",
                       (void *)twd_engine_lua_pushinteger);
+    twd_register_hook(0x1409523f0ULL, "engine_lua_pushunsigned",
+                      (void *)twd_engine_lua_pushunsigned);
     twd_register_hook(0x1409526a0ULL, "engine_lua_pushboolean",
                       (void *)twd_engine_lua_pushboolean);
+    twd_register_hook(0x1409526d0ULL, "engine_lua_pushlightuserdata",
+                      (void *)twd_engine_lua_pushlightuserdata);
 }
 
 TWD_EXPORT

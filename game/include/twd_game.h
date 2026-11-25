@@ -84,9 +84,16 @@ TWD_EXPORT bool twd_engine_handle_equals(const twd_handle_obj_t *const *lhs,
                                          const twd_handle_obj_t *const *rhs);
 TWD_EXPORT bool twd_engine_dlist_remove(twd_dlist_t *list, twd_dlist_node_t *node);
 TWD_EXPORT uint32_t twd_engine_xorshift128_next(uint32_t state[4]);
+TWD_EXPORT int32_t twd_engine_lua_absindex(const twd_lua_state_t *L, int32_t idx);
+TWD_EXPORT int64_t twd_engine_lua_gettop(const twd_lua_state_t *L);
 TWD_EXPORT void twd_engine_lua_settop(twd_lua_state_t *L, int32_t idx);
+TWD_EXPORT void twd_engine_lua_xmove(twd_lua_state_t *from, twd_lua_state_t *to, int32_t n);
+TWD_EXPORT void twd_engine_lua_pushnil(twd_lua_state_t *L);
+TWD_EXPORT void twd_engine_lua_pushnumber(twd_lua_state_t *L, float n);
 TWD_EXPORT void twd_engine_lua_pushinteger(twd_lua_state_t *L, int64_t n);
+TWD_EXPORT void twd_engine_lua_pushunsigned(twd_lua_state_t *L, uint32_t n);
 TWD_EXPORT void twd_engine_lua_pushboolean(twd_lua_state_t *L, int32_t b);
+TWD_EXPORT void twd_engine_lua_pushlightuserdata(twd_lua_state_t *L, void *p);
 
 #ifdef __cplusplus
 }

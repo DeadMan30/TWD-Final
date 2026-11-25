@@ -115,6 +115,16 @@ void twd_heap_free(void *ptr) {
     free(ptr);
 }
 
+void twd_alert(const char *title, const char *msg) {
+    twd_log("ALERT", "%s: %s", title ? title : "TWD-Final", msg ? msg : "");
+}
+
+typedef struct twd_thread_ctx {
+    twd_thread_fn fn;
+    void *arg;
+    int rc;
+} twd_thread_ctx_t;
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -327,7 +337,100 @@ int twd_mkdir(const char *path) {
     return (GetLastError() == ERROR_ALREADY_EXISTS) ? 0 : -1;
 }
 
+int twd_exe_path(char *buf, size_t cap) {
+    if (!buf || cap == 0) return -1;
+    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)cap);
+    if (n == 0 || n >= cap) return -1;
+    return (int)n;
+}
+
+int twd_sem_init(twd_sem_t *s, uint32_t initial, uint32_t max_count) {
+    if (!s || max_count == 0) return -1;
+    HANDLE h = CreateSemaphoreW(NULL, (LONG)initial, (LONG)max_count, NULL);
+    if (!h) return -1;
+    memcpy(s->bytes, &h, sizeof(h));
+    return 0;
+}
+
+void twd_sem_destroy(twd_sem_t *s) {
+    if (!s) return;
+    HANDLE h = NULL;
+    memcpy(&h, s->bytes, sizeof(h));
+    if (h) {
+        CloseHandle(h);
+        h = NULL;
+        memcpy(s->bytes, &h, sizeof(h));
+    }
+}
+
+int twd_sem_post(twd_sem_t *s, uint32_t count) {
+    if (!s) return -1;
+    HANDLE h = NULL;
+    memcpy(&h, s->bytes, sizeof(h));
+    return ReleaseSemaphore(h, (LONG)count, NULL) ? 0 : -1;
+}
+
+int twd_sem_wait(twd_sem_t *s, uint32_t timeout_ms) {
+    if (!s) return TWD_WAIT_ERROR;
+    HANDLE h = NULL;
+    memcpy(&h, s->bytes, sizeof(h));
+    DWORD rc = WaitForSingleObject(h, (timeout_ms == TWD_WAIT_INFINITE) ? INFINITE : (DWORD)timeout_ms);
+    if (rc == WAIT_OBJECT_0) return TWD_WAIT_OK;
+    if (rc == WAIT_TIMEOUT) return TWD_WAIT_TIMEOUT;
+    return TWD_WAIT_ERROR;
+}
+
+static DWORD WINAPI win_thread_tramp(LPVOID param) {
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)param;
+    ctx->rc = ctx->fn(ctx->arg);
+    return 0;
+}
+
+int twd_thread_create(twd_thread_t *th, twd_thread_fn fn, void *arg) {
+    if (!th || !fn) return -1;
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)calloc(1, sizeof(*ctx));
+    if (!ctx) return -1;
+    ctx->fn = fn;
+    ctx->arg = arg;
+    HANDLE h = CreateThread(NULL, 0, win_thread_tramp, ctx, 0, NULL);
+    if (!h) {
+        free(ctx);
+        return -1;
+    }
+    th->handle = (uintptr_t)h;
+    th->ctx = ctx;
+    return 0;
+}
+
+int twd_thread_join(twd_thread_t *th, int *out_rc) {
+    if (!th || !th->handle) return -1;
+    WaitForSingleObject((HANDLE)th->handle, INFINITE);
+    CloseHandle((HANDLE)th->handle);
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)th->ctx;
+    if (out_rc && ctx) *out_rc = ctx->rc;
+    free(ctx);
+    th->handle = 0;
+    th->ctx = NULL;
+    return 0;
+}
+
+void *twd_dynlib_open(const char *path_or_null) {
+    if (!path_or_null) return (void *)GetModuleHandleW(NULL);
+    return (void *)LoadLibraryA(path_or_null);
+}
+
+void *twd_dynlib_sym(void *lib, const char *name) {
+    if (!lib || !name) return NULL;
+    return (void *)(uintptr_t)GetProcAddress((HMODULE)lib, name);
+}
+
+void twd_dynlib_close(void *lib) {
+    if (!lib || lib == (void *)GetModuleHandleW(NULL)) return;
+    FreeLibrary((HMODULE)lib);
+}
+
 #else
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -579,5 +682,144 @@ int twd_mkdir(const char *path) {
     if (!path) return -1;
     if (mkdir(path, 0755) == 0) return 0;
     return (errno == EEXIST) ? 0 : -1;
+}
+
+int twd_exe_path(char *buf, size_t cap) {
+    if (!buf || cap < 2) return -1;
+    ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
+    if (n <= 0 || (size_t)n >= cap) return -1;
+    buf[n] = '\0';
+    return (int)n;
+}
+
+typedef struct posix_sem {
+    pthread_mutex_t mtx;
+    pthread_cond_t cv;
+    uint32_t count;
+    uint32_t max_count;
+} posix_sem_t;
+
+_Static_assert(sizeof(posix_sem_t) <= sizeof(((twd_sem_t *)0)->bytes),
+               "twd_sem_t storage too small for posix_sem_t");
+_Static_assert(sizeof(pthread_t) <= sizeof(uintptr_t),
+               "uintptr_t too small for pthread_t");
+
+int twd_sem_init(twd_sem_t *s, uint32_t initial, uint32_t max_count) {
+    if (!s || max_count == 0 || initial > max_count) return -1;
+    posix_sem_t *ps = (posix_sem_t *)(void *)s->bytes;
+    if (pthread_mutex_init(&ps->mtx, NULL) != 0) return -1;
+    pthread_condattr_t cattr;
+    if (pthread_condattr_init(&cattr) != 0) {
+        pthread_mutex_destroy(&ps->mtx);
+        return -1;
+    }
+    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+    int rc = pthread_cond_init(&ps->cv, &cattr);
+    pthread_condattr_destroy(&cattr);
+    if (rc != 0) {
+        pthread_mutex_destroy(&ps->mtx);
+        return -1;
+    }
+    ps->count = initial;
+    ps->max_count = max_count;
+    return 0;
+}
+
+void twd_sem_destroy(twd_sem_t *s) {
+    if (!s) return;
+    posix_sem_t *ps = (posix_sem_t *)(void *)s->bytes;
+    pthread_cond_destroy(&ps->cv);
+    pthread_mutex_destroy(&ps->mtx);
+}
+
+int twd_sem_post(twd_sem_t *s, uint32_t count) {
+    if (!s || count == 0) return -1;
+    posix_sem_t *ps = (posix_sem_t *)(void *)s->bytes;
+    pthread_mutex_lock(&ps->mtx);
+    if (ps->count > ps->max_count - count) {
+        pthread_mutex_unlock(&ps->mtx);
+        return -1;
+    }
+    ps->count += count;
+    pthread_cond_broadcast(&ps->cv);
+    pthread_mutex_unlock(&ps->mtx);
+    return 0;
+}
+
+int twd_sem_wait(twd_sem_t *s, uint32_t timeout_ms) {
+    if (!s) return TWD_WAIT_ERROR;
+    posix_sem_t *ps = (posix_sem_t *)(void *)s->bytes;
+    pthread_mutex_lock(&ps->mtx);
+    int res = TWD_WAIT_OK;
+    if (ps->count == 0) {
+        if (timeout_ms == 0) {
+            res = TWD_WAIT_TIMEOUT;
+        } else if (timeout_ms == TWD_WAIT_INFINITE) {
+            while (ps->count == 0) pthread_cond_wait(&ps->cv, &ps->mtx);
+        } else {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ts.tv_sec += (time_t)(timeout_ms / 1000u);
+            ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) {
+                ts.tv_sec += 1;
+                ts.tv_nsec -= 1000000000L;
+            }
+            while (ps->count == 0) {
+                if (pthread_cond_timedwait(&ps->cv, &ps->mtx, &ts) == ETIMEDOUT) {
+                    res = (ps->count > 0) ? TWD_WAIT_OK : TWD_WAIT_TIMEOUT;
+                    break;
+                }
+            }
+        }
+    }
+    if (res == TWD_WAIT_OK) ps->count--;
+    pthread_mutex_unlock(&ps->mtx);
+    return res;
+}
+
+static void *posix_thread_tramp(void *param) {
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)param;
+    ctx->rc = ctx->fn(ctx->arg);
+    return NULL;
+}
+
+int twd_thread_create(twd_thread_t *th, twd_thread_fn fn, void *arg) {
+    if (!th || !fn) return -1;
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)calloc(1, sizeof(*ctx));
+    if (!ctx) return -1;
+    ctx->fn = fn;
+    ctx->arg = arg;
+    pthread_t pt;
+    if (pthread_create(&pt, NULL, posix_thread_tramp, ctx) != 0) {
+        free(ctx);
+        return -1;
+    }
+    th->handle = (uintptr_t)pt;
+    th->ctx = ctx;
+    return 0;
+}
+
+int twd_thread_join(twd_thread_t *th, int *out_rc) {
+    if (!th || !th->handle) return -1;
+    pthread_join((pthread_t)th->handle, NULL);
+    twd_thread_ctx_t *ctx = (twd_thread_ctx_t *)th->ctx;
+    if (out_rc && ctx) *out_rc = ctx->rc;
+    free(ctx);
+    th->handle = 0;
+    th->ctx = NULL;
+    return 0;
+}
+
+void *twd_dynlib_open(const char *path_or_null) {
+    return dlopen(path_or_null, RTLD_NOW);
+}
+
+void *twd_dynlib_sym(void *lib, const char *name) {
+    return (lib && name) ? dlsym(lib, name) : NULL;
+}
+
+void twd_dynlib_close(void *lib) {
+    if (lib) dlclose(lib);
 }
 #endif

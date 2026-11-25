@@ -58,7 +58,9 @@ def build_boot_report(root: str) -> dict:
             first_missing = {'library': lib, 'symbol': sym, 'caller': caller}
             break
 
-    milestone_idx = 2 if rt >= 40 else (1 if rt > 0 else 0)
+    milestone_idx = 3 if (rt >= 60 and by_pair.get(('KERNEL32.dll', 'GetModuleFileNameW')) == 'runtime') else (
+        2 if rt >= 40 else (1 if rt > 0 else 0)
+    )
     return {
         'schema': 1,
         'imports_total': total,

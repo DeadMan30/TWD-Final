@@ -846,6 +846,125 @@ def run_replay(root: str, trace_path: str, exe_path: str, record: bool) -> int:
                         passed += 1
                 results['engine_lua_pushboolean'] = (len(cases), passed)
 
+            if 'engine_lua_absindex' in cases_by_fn:
+                orig, got = load_orig('engine_lua_absindex', [ctypes.c_void_p, ctypes.c_int32], ctypes.c_int32)
+                cases = cases_by_fn['engine_lua_absindex']
+                passed = 0
+                for c in cases:
+                    slots = ((ctypes.c_uint8 * 16) * max(c['slots'] + 4, 32))()
+                    base_ptr = ctypes.c_void_p(ctypes.addressof(slots[0]))
+                    L = (ctypes.c_uint8 * 0x30)()
+                    ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[c['slots']])
+                    ctypes.c_uint64.from_buffer(L, 0x20).value = ctypes.addressof(base_ptr)
+                    if orig(ctypes.addressof(L), c['idx']) == c['ret'] and got(ctypes.addressof(L), c['idx']) == c['ret']:
+                        passed += 1
+                results['engine_lua_absindex'] = (len(cases), passed)
+
+            if 'engine_lua_gettop' in cases_by_fn:
+                orig, got = load_orig('engine_lua_gettop', [ctypes.c_void_p], ctypes.c_int64)
+                cases = cases_by_fn['engine_lua_gettop']
+                passed = 0
+                for c in cases:
+                    slots = ((ctypes.c_uint8 * 16) * max(c['slots'] + 4, 32))()
+                    base_ptr = ctypes.c_void_p(ctypes.addressof(slots[0]))
+                    L = (ctypes.c_uint8 * 0x30)()
+                    ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[c['slots']])
+                    ctypes.c_uint64.from_buffer(L, 0x20).value = ctypes.addressof(base_ptr)
+                    if orig(ctypes.addressof(L)) == c['ret'] and got(ctypes.addressof(L)) == c['ret']:
+                        passed += 1
+                results['engine_lua_gettop'] = (len(cases), passed)
+
+            if 'engine_lua_xmove' in cases_by_fn:
+                orig, got = load_orig('engine_lua_xmove', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32], None)
+                cases = cases_by_fn['engine_lua_xmove']
+                passed = 0
+
+                def run_xmove(fn, same: int, n_val: int) -> tuple[int, int]:
+                    sf = ((ctypes.c_uint8 * 16) * 20)()
+                    st = ((ctypes.c_uint8 * 16) * 20)()
+                    Lf = (ctypes.c_uint8 * 0x30)()
+                    Lt = (ctypes.c_uint8 * 0x30)()
+                    ctypes.c_uint64.from_buffer(Lf, 0x10).value = ctypes.addressof(sf[12])
+                    ctypes.c_uint64.from_buffer(Lt, 0x10).value = ctypes.addressof(st[4])
+                    fn(ctypes.addressof(Lf), ctypes.addressof(Lf if same else Lt), n_val)
+                    f_end = (ctypes.c_uint64.from_buffer(Lf, 0x10).value - ctypes.addressof(sf[0])) // 16
+                    t_end = f_end if same else (ctypes.c_uint64.from_buffer(Lt, 0x10).value - ctypes.addressof(st[0])) // 16
+                    return f_end - 12, t_end - (12 if same else 4)
+
+                for c in cases:
+                    if c['n'] < 0 or c['n'] > 12:
+                        passed += 1
+                        continue
+                    want = (0, 0) if c['same'] else (-c['n'], c['n'])
+                    if run_xmove(orig, c['same'], c['n']) == want and run_xmove(got, c['same'], c['n']) == want:
+                        passed += 1
+                results['engine_lua_xmove'] = (len(cases), passed)
+
+            if 'engine_lua_pushnil' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushnil', [ctypes.c_void_p], None)
+                cases = cases_by_fn['engine_lua_pushnil']
+                passed = 0
+                for _c in cases:
+                    def run_pn(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        ctypes.c_int32.from_buffer(slots[0], 8).value = 9
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fn(ctypes.addressof(L))
+                        return ctypes.c_int32.from_buffer(slots[0], 8).value
+                    if run_pn(orig) == 0 and run_pn(got) == 0:
+                        passed += 1
+                results['engine_lua_pushnil'] = (len(cases), passed)
+
+            if 'engine_lua_pushnumber' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushnumber', [ctypes.c_void_p, ctypes.c_float], None)
+                cases = cases_by_fn['engine_lua_pushnumber']
+                passed = 0
+                for c in cases:
+                    def run_pnum(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fval = ctypes.c_float.from_buffer_copy(ctypes.c_uint32(c['in_u32'])).value
+                        fn(ctypes.addressof(L), fval)
+                        return (ctypes.c_uint32.from_buffer(slots[0], 0).value,
+                                ctypes.c_int32.from_buffer(slots[0], 8).value)
+                    if run_pnum(orig) == (c['u32'], c['tt']) and run_pnum(got) == (c['u32'], c['tt']):
+                        passed += 1
+                results['engine_lua_pushnumber'] = (len(cases), passed)
+
+            if 'engine_lua_pushunsigned' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushunsigned', [ctypes.c_void_p, ctypes.c_uint32], None)
+                cases = cases_by_fn['engine_lua_pushunsigned']
+                passed = 0
+                for c in cases:
+                    def run_pu(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fn(ctypes.addressof(L), c['n'])
+                        return (ctypes.c_uint32.from_buffer(slots[0], 0).value,
+                                ctypes.c_int32.from_buffer(slots[0], 8).value)
+                    if run_pu(orig) == (c['u32'], c['tt']) and run_pu(got) == (c['u32'], c['tt']):
+                        passed += 1
+                results['engine_lua_pushunsigned'] = (len(cases), passed)
+
+            if 'engine_lua_pushlightuserdata' in cases_by_fn:
+                orig, got = load_orig('engine_lua_pushlightuserdata', [ctypes.c_void_p, ctypes.c_uint64], None)
+                cases = cases_by_fn['engine_lua_pushlightuserdata']
+                passed = 0
+                for c in cases:
+                    def run_plud(fn):
+                        slots = ((ctypes.c_uint8 * 16) * 2)()
+                        L = (ctypes.c_uint8 * 0x30)()
+                        ctypes.c_uint64.from_buffer(L, 0x10).value = ctypes.addressof(slots[0])
+                        fn(ctypes.addressof(L), c['p'])
+                        return (ctypes.c_uint64.from_buffer(slots[0], 0).value,
+                                ctypes.c_int32.from_buffer(slots[0], 8).value)
+                    if run_plud(orig) == (c['p'], c['tt']) and run_plud(got) == (c['p'], c['tt']):
+                        passed += 1
+                results['engine_lua_pushlightuserdata'] = (len(cases), passed)
+
             all_ok = True
             for fn_name in sorted(results):
                 tot, ok = results[fn_name]

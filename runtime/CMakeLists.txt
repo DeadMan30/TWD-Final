@@ -9,7 +9,7 @@ target_include_directories(twdrt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if(UNIX AND NOT ANDROID)
     find_package(Threads REQUIRED)
-    target_link_libraries(twdrt PUBLIC Threads::Threads)
+    target_link_libraries(twdrt PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 if(ANDROID)

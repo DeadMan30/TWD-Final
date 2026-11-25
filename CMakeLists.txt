@@ -80,6 +80,41 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_lua_pushboolean PRIVATE twdgame)
     add_test(NAME engine_lua_pushboolean COMMAND test_engine_lua_pushboolean)
 
+    add_executable(test_engine_lua_absindex
+                   game/engine/tests/test_engine_lua_absindex.c)
+    target_link_libraries(test_engine_lua_absindex PRIVATE twdgame)
+    add_test(NAME engine_lua_absindex COMMAND test_engine_lua_absindex)
+
+    add_executable(test_engine_lua_gettop
+                   game/engine/tests/test_engine_lua_gettop.c)
+    target_link_libraries(test_engine_lua_gettop PRIVATE twdgame)
+    add_test(NAME engine_lua_gettop COMMAND test_engine_lua_gettop)
+
+    add_executable(test_engine_lua_xmove
+                   game/engine/tests/test_engine_lua_xmove.c)
+    target_link_libraries(test_engine_lua_xmove PRIVATE twdgame)
+    add_test(NAME engine_lua_xmove COMMAND test_engine_lua_xmove)
+
+    add_executable(test_engine_lua_pushnil
+                   game/engine/tests/test_engine_lua_pushnil.c)
+    target_link_libraries(test_engine_lua_pushnil PRIVATE twdgame)
+    add_test(NAME engine_lua_pushnil COMMAND test_engine_lua_pushnil)
+
+    add_executable(test_engine_lua_pushnumber
+                   game/engine/tests/test_engine_lua_pushnumber.c)
+    target_link_libraries(test_engine_lua_pushnumber PRIVATE twdgame)
+    add_test(NAME engine_lua_pushnumber COMMAND test_engine_lua_pushnumber)
+
+    add_executable(test_engine_lua_pushunsigned
+                   game/engine/tests/test_engine_lua_pushunsigned.c)
+    target_link_libraries(test_engine_lua_pushunsigned PRIVATE twdgame)
+    add_test(NAME engine_lua_pushunsigned COMMAND test_engine_lua_pushunsigned)
+
+    add_executable(test_engine_lua_pushlightuserdata
+                   game/engine/tests/test_engine_lua_pushlightuserdata.c)
+    target_link_libraries(test_engine_lua_pushlightuserdata PRIVATE twdgame)
+    add_test(NAME engine_lua_pushlightuserdata COMMAND test_engine_lua_pushlightuserdata)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files
