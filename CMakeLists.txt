@@ -30,6 +30,11 @@ if(NOT ANDROID)
     target_link_libraries(test_runtime PRIVATE twdrt)
     add_test(NAME runtime_abi COMMAND test_runtime)
 
+    add_executable(test_engine_xorshift128_next
+                   game/engine/tests/test_engine_xorshift128_next.c)
+    target_link_libraries(test_engine_xorshift128_next PRIVATE twdgame)
+    add_test(NAME engine_xorshift128_next COMMAND test_engine_xorshift128_next)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files

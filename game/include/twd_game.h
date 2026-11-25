@@ -15,6 +15,7 @@ extern "C" {
 #endif
 
 TWD_EXPORT void twd_game_register_hooks(void);
+TWD_EXPORT uint32_t twd_engine_xorshift128_next(uint32_t state[4]);
 
 #ifdef __cplusplus
 }

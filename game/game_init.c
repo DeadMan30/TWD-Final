@@ -2,5 +2,6 @@
 #include "twd_game.h"
 
 void twd_game_register_hooks(void) {
-    /* Hook registrations from game/hooks.csv will be wired here as functions are replaced. */
+    twd_register_hook(0x14034e1e0ULL, "engine_xorshift128_next",
+                      (void *)twd_engine_xorshift128_next);
 }
