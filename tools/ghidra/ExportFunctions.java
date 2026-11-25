@@ -1,43 +1,62 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Export all discovered functions (address,size) from Ghidra to symbols/ghidra_functions.csv.
-// Run from Ghidra Script Manager or analyzeHeadless:
-//   analyzeHeadless <project_dir> <project_name> -process WalkingDead4.exe -noanalysis -postScript ExportFunctions.java symbols/ghidra_functions.csv
+// Export address,size of every real function in the .text block of WalkingDead4.exe.
+//
+//   analyzeHeadless ghidra_projects TWD-Final -process WalkingDead4.exe -noanalysis ^
+//       -scriptPath tools/ghidra -postScript ExportFunctions.java symbols/ghidra_functions.csv
 //@category TWD-Final
 
-import ghidra.app.script.GhidraScript;
-import ghidra.program.model.listing.Function;
-import ghidra.program.model.listing.FunctionIterator;
-import java.io.FileWriter;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.mem.Memory;
+import ghidra.program.model.mem.MemoryBlock;
+
 public class ExportFunctions extends GhidraScript {
+    private static final long IMAGE_BASE = 0x140000000L;
+
     @Override
     public void run() throws Exception {
         String outPath = getScriptArgs().length > 0
             ? getScriptArgs()[0]
             : askFile("Output CSV", "Save").getAbsolutePath();
 
-        List<Function> list = new ArrayList<>();
-        FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
-        while (it.hasNext()) {
-            Function fn = it.next();
-            if (!fn.isExternal() && !fn.isThunk()) {
-                list.add(fn);
-            }
+        long base = currentProgram.getImageBase().getOffset();
+        if (base != IMAGE_BASE) {
+            throw new IllegalStateException(String.format(
+                "image base is 0x%x, expected 0x%x", base, IMAGE_BASE));
         }
-        list.sort(Comparator.comparing(f -> f.getEntryPoint().getOffset()));
+        Memory mem = currentProgram.getMemory();
+        MemoryBlock text = mem.getBlock(".text");
+        if (text == null) {
+            throw new IllegalStateException("no .text block found");
+        }
 
-        try (PrintWriter out = new PrintWriter(new FileWriter(outPath))) {
-            out.println("address,size");
-            for (Function fn : list) {
-                long addr = fn.getEntryPoint().getOffset();
-                long size = fn.getBody().getNumAddresses();
-                out.printf("0x%09x,%d%n", addr, size);
+        List<long[]> rows = new ArrayList<>();
+        int outside = 0, thunks = 0, external = 0, empty = 0;
+        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+            if (f.isExternal()) { external++; continue; }
+            if (f.isThunk()) { thunks++; continue; }
+            Address entry = f.getEntryPoint();
+            if (!text.contains(entry)) { outside++; continue; }
+            long size = f.getBody().getNumAddresses();
+            if (size < 1) { empty++; continue; }
+            rows.add(new long[] { entry.getOffset(), size });
+        }
+        rows.sort((a, b) -> Long.compareUnsigned(a[0], b[0]));
+
+        try (PrintWriter out = new PrintWriter(outPath, "UTF-8")) {
+            out.print("address,size\n");
+            for (long[] r : rows) {
+                out.print(String.format("0x%09x,%d\n", r[0], r[1]));
             }
         }
-        println("Exported " + list.size() + " functions to " + outPath);
+        println(String.format(".text %s-%s", text.getStart(), text.getEnd()));
+        println("EXPORT functions=" + rows.size() + " thunks_skipped=" + thunks
+            + " external_skipped=" + external + " outside_text_skipped=" + outside
+            + " empty_skipped=" + empty);
     }
 }
