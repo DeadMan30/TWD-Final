@@ -1,0 +1,5 @@
+pattern,library,prefix
+(?i)/thirdpartyshipping/openssl-cmake/(?P<file>.+),openssl,
+(?i)/thirdpartyshipping/enlightensdk/src/(?P<file>.+),enlighten,
+(?i)/thirdpartyshipping/curl-[^/]+/(?P<file>.+),curl,
+(?i)/walkingdead4/engine/gameengine/(?P<file>.+),engine,

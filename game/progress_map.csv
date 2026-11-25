@@ -1,8 +1,10 @@
 library,group,group_short,name,short
 engine,Telltale Tool engine and game code,Engine and game,Telltale Tool engine and game,Engine and game
-lua,Middleware and third-party libraries,Middleware,Lua scripting runtime,Lua
-fmod,Middleware and third-party libraries,Middleware,FMOD Studio / LowLevel (audio),FMOD
-oodle,Middleware and third-party libraries,Middleware,Oodle (compression),Oodle
-ttmedia,Middleware and third-party libraries,Middleware,TTMediaEngine (video),TTMedia
-crt,Middleware and third-party libraries,Middleware,MSVC C/C++ Runtime,CRT
+bullet,Middleware and third-party libraries,Middleware,Bullet Physics,Bullet
+enlighten,Middleware and third-party libraries,Middleware,Geomerics Enlighten SDK,Enlighten
+openssl,Middleware and third-party libraries,Middleware,OpenSSL (crypto and TLS),OpenSSL
+curl,Middleware and third-party libraries,Middleware,libcurl,libcurl
+zlib,Middleware and third-party libraries,Middleware,zlib compression,zlib
+jsoncpp,Middleware and third-party libraries,Middleware,JsonCpp,JsonCpp
+crt,Runtime and compiler support,CRT,MSVC C/C++ Runtime,CRT
 ,Not attributed to a library yet,Unattributed,Not attributed to a library yet,Unattributed
