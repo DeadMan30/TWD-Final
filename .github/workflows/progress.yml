@@ -1,0 +1,38 @@
+# Verifies that main's generated progress blocks in STATUS.md, CONTRIBUTING.md, and
+# docs/OVERVIEW.md match symbols/ and target.sha256.
+name: progress
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: progress
+  cancel-in-progress: true
+
+jobs:
+  main-current:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated progress text matches symbols/ on main
+        run: |
+          if python3 tools/progress.py --check 2>"$RUNNER_TEMP/stale"; then
+            echo "Main's generated progress text is current." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$RUNNER_TEMP/stale" >&2
+            {
+              echo "### Main's generated progress text is behind symbols/"
+              echo
+              cat "$RUNNER_TEMP/stale"
+              echo
+              echo 'Run `python3 tools/progress.py --update-readme` on main to refresh STATUS.md / CONTRIBUTING.md / docs/OVERVIEW.md.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

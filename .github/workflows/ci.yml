@@ -1,0 +1,32 @@
+# Repository policy and progress generation checks on pushes and pull requests.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check no game data is tracked
+        run: python3 tools/check_no_game_data.py --tracked
+      - name: Check generated markdown blocks
+        run: |
+          python3 tools/progress.py --check-blocks
+          python3 tools/progress.py --check-touched
+      - name: Smoke-test progress map and page generation
+        run: |
+          python3 tools/progress_map.py --out-dir "$RUNNER_TEMP/site"
+          python3 tools/progress_page.py --out-dir "$RUNNER_TEMP/site" --source-sha "$GITHUB_SHA" \
+            --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          for f in progress.svg badge-verified.svg badge-replaced.svg badge-code.svg badge-week.svg progress.html progress.json; do
+            test -s "$RUNNER_TEMP/site/$f"
+          done

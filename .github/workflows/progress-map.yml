@@ -1,0 +1,65 @@
+# Builds the README's progress map and badges, plus progress.html and progress.json,
+# from symbols/ (no game data) on every push to main and deploys them to GitHub Pages.
+name: progress-map
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: progress-map
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read open pull requests' function tables (data only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/progress_page.py --fetch-open-prs "$RUNNER_TEMP/open-prs.json" --repo "$GITHUB_REPOSITORY" \
+            || { echo "progress-page: open pull requests not read; building without them" >&2; rm -f "$RUNNER_TEMP/open-prs.json"; }
+      - name: Build the map, badges and progress page from symbols/
+        run: |
+          set -euo pipefail
+          python3 tools/progress_map.py --out-dir "$RUNNER_TEMP/site"
+          open_prs=()
+          if [ -s "$RUNNER_TEMP/open-prs.json" ]; then open_prs=(--open-prs "$RUNNER_TEMP/open-prs.json"); fi
+          python3 tools/progress_page.py --out-dir "$RUNNER_TEMP/site" "${open_prs[@]}" \
+            --source-sha "$GITHUB_SHA" \
+            --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          cp "$RUNNER_TEMP/site/progress.html" "$RUNNER_TEMP/site/index.html"
+          for f in progress.svg badge-verified.svg badge-replaced.svg badge-code.svg badge-week.svg progress.html progress.json index.html; do
+            test -s "$RUNNER_TEMP/site/$f" || { echo "progress-map: $f was not generated" >&2; exit 1; }
+          done
+          {
+            echo '### Progress map'
+            echo
+            echo "Built from main ${GITHUB_SHA::12}:"
+            python3 tools/progress.py --status-line
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,8 @@
+library,group,group_short,name,short
+engine,Telltale Tool engine and game code,Engine and game,Telltale Tool engine and game,Engine and game
+lua,Middleware and third-party libraries,Middleware,Lua scripting runtime,Lua
+fmod,Middleware and third-party libraries,Middleware,FMOD Studio / LowLevel (audio),FMOD
+oodle,Middleware and third-party libraries,Middleware,Oodle (compression),Oodle
+ttmedia,Middleware and third-party libraries,Middleware,TTMediaEngine (video),TTMedia
+crt,Middleware and third-party libraries,Middleware,MSVC C/C++ Runtime,CRT
+,Not attributed to a library yet,Unattributed,Not attributed to a library yet,Unattributed

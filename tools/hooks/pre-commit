@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+# SPDX-License-Identifier: GPL-2.0-only
+set -eu
+ROOT="$(git rev-parse --show-toplevel)"
+PY=""
+for cand in "${PYTHON:-}" python3 python "/c/Program Files/msys64/ucrt64/bin/python3.exe"; do
+    if [ -n "$cand" ] && "$cand" -c "import sys" >/dev/null 2>&1; then
+        PY="$cand"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "pre-commit: python3 not found" >&2
+    exit 1
+fi
+"$PY" "$ROOT/tools/check_no_game_data.py" --staged --root "$ROOT"
+"$PY" "$ROOT/tools/progress.py" --check-blocks --root "$ROOT"
+"$PY" "$ROOT/tools/progress.py" --check-touched --root "$ROOT"

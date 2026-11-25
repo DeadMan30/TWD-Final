@@ -1,0 +1,53 @@
+# Local session files (never committed)
+AGENTS.md
+CLAUDE.md
+.claude/
+notes/
+SESSION*.md
+KICKOFF*.md
+.handoff/
+
+# Game data, executables, archives, and derived artifacts: never committed
+game/*.exe
+game/*.dll
+game/*.rne
+game/*.ini
+game/*.vdf
+game/Archives/
+*.exe
+*.dll
+*.so
+*.dylib
+*.apk
+*.aab
+*.ttarch2
+*.bk2
+*.fsb
+*.bank
+*.dump
+captures/
+dumps/
+extracted/
+
+# Decompiler projects and raw dumps
+*.gpr
+*.rep/
+*.gzf
+*.i64
+*.idb
+*.lock
+*.lock~
+ghidra_projects/
+
+# Build, Android NDK, and generated output
+build/
+build-*/
+out/
+.cxx/
+android/.gradle/
+android/build/
+android/*/build/
+__pycache__/
+*.pyc
+.cache/
+compile_commands.json
