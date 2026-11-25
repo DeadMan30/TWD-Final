@@ -39,7 +39,8 @@ extracted/
 *.lock~
 ghidra_projects/
 
-# Build, Android NDK, and generated output
+# Build, Android NDK, local toolchains, and generated output
+.tools/
 build/
 build-*/
 out/
