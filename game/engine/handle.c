@@ -17,11 +17,11 @@ bool twd_engine_handle_equals(const twd_handle_obj_t *const *lhs,
                               const twd_handle_obj_t *const *rhs) {
     const twd_handle_obj_t *a = *lhs;
     const twd_handle_obj_t *b = *rhs;
-    if (a == NULL || b == NULL) {
+    if (a != NULL && b != NULL) {
+        if (a->key != 0 && b->key != 0) {
+            return a->key == b->key;
+        }
         return a == b;
     }
-    if (a->key != 0 && b->key != 0) {
-        return a->key == b->key;
-    }
-    return a == b;
+    return a == NULL && b == NULL;
 }

@@ -17,33 +17,41 @@ _Static_assert(offsetof(twd_dlist_t, tail) == 0x10, "dlist tail offset");
  */
 TWD_EXPORT
 bool twd_engine_dlist_remove(twd_dlist_t *list, twd_dlist_node_t *node) {
-    if (node == list->head) {
-        twd_dlist_node_t *next = node->next;
+    twd_dlist_node_t *head = list->head;
+    if (node == head) {
+        twd_dlist_node_t *next = head->next;
         list->head = next;
         if (next != NULL) {
             next->prev = NULL;
         } else {
             list->tail = NULL;
         }
-    } else if (node == list->tail) {
-        twd_dlist_node_t *prev = node->prev;
+        head->prev = NULL;
+        head->next = NULL;
+        list->count--;
+        return true;
+    }
+    twd_dlist_node_t *tail = list->tail;
+    if (node == tail) {
+        twd_dlist_node_t *prev = tail->prev;
         list->tail = prev;
         if (prev != NULL) {
             prev->next = NULL;
         } else {
             list->head = NULL;
         }
-    } else {
-        twd_dlist_node_t *next = node->next;
-        twd_dlist_node_t *prev = node->prev;
-        if (next == NULL || prev == NULL) {
-            return false;
-        }
-        next->prev = prev;
-        prev->next = next;
+        tail->prev = NULL;
+        tail->next = NULL;
+        list->count--;
+        return true;
     }
+    if (node->next == NULL || node->prev == NULL) {
+        return false;
+    }
+    node->next->prev = node->prev;
+    node->prev->next = node->next;
+    list->count--;
     node->prev = NULL;
     node->next = NULL;
-    list->count--;
     return true;
 }

@@ -29,7 +29,7 @@ int32_t twd_engine_lua_absindex(const twd_lua_state_t *L, int32_t idx) {
  */
 TWD_EXPORT
 int64_t twd_engine_lua_gettop(const twd_lua_state_t *L) {
-    return (int64_t)((L->top - *L->base_ptr) - 1);
+    return (int64_t)(L->top - (*L->base_ptr + 1));
 }
 
 /*
@@ -40,17 +40,15 @@ int64_t twd_engine_lua_gettop(const twd_lua_state_t *L) {
  */
 TWD_EXPORT
 void twd_engine_lua_settop(twd_lua_state_t *L, int32_t idx) {
-    if (idx < 0) {
-        int32_t delta = (int32_t)((uint32_t)idx + 1u);
-        L->top += (ptrdiff_t)delta;
-        return;
+    if (idx >= 0) {
+        twd_lua_tvalue_t *func = *L->base_ptr;
+        while (L->top < func + 1 + idx) {
+            (L->top++)->tt = 0;
+        }
+        L->top = func + 1 + idx;
+    } else {
+        L->top += idx + 1;
     }
-    twd_lua_tvalue_t *new_top = *L->base_ptr + ((ptrdiff_t)idx + 1);
-    while (L->top < new_top) {
-        L->top->tt = 0;
-        L->top++;
-    }
-    L->top = new_top;
 }
 
 /*
@@ -63,11 +61,12 @@ void twd_engine_lua_xmove(twd_lua_state_t *from, twd_lua_state_t *to, int32_t n)
     if (from == to) {
         return;
     }
-    from->top -= n;
+    from->top += -(ptrdiff_t)n;
     for (int32_t i = 0; i < n; i++) {
-        twd_lua_tvalue_t *dst = to->top++;
-        dst->v.u64 = from->top[i].v.u64;
-        dst->tt = from->top[i].tt;
+        const twd_lua_tvalue_t *io2 = from->top + i;
+        twd_lua_tvalue_t *io1 = to->top++;
+        io1->v.u64 = io2->v.u64;
+        io1->tt = io2->tt;
     }
 }
 

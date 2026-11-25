@@ -11,12 +11,14 @@
  */
 TWD_EXPORT
 uint32_t twd_engine_xorshift128_next(uint32_t state[4]) {
-    uint32_t t = state[0] ^ (state[0] << 11);
-    uint32_t w = state[3];
+    uint32_t s0 = state[0];
+    uint32_t t = s0 ^ (s0 << 11);
     state[0] = state[1];
     state[1] = state[2];
+    uint32_t w = state[3];
     state[2] = w;
-    w = w ^ (w >> 19) ^ t ^ (t >> 8);
+    uint32_t tmp = ((w >> 11) ^ t) >> 8;
+    w = tmp ^ w ^ t;
     state[3] = w;
     return w;
 }

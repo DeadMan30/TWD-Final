@@ -1,11 +1,14 @@
 address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
 0x140032410,engine_meta_op_register,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/meta.c,9d5a31b2e07004c8,2026-11-25
 0x140032620,engine_meta_op_find,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/meta.c,9d5a31b2e07004c8,2026-11-25
+0x1400359f0,engine_mat4_identity,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/math.c,8b8cdd42c24492b5,2026-11-25
 0x140057650,engine_rbtree_rotate_right,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/rbtree.c,fdc542932c469ab6,2026-11-25
-0x140951950,engine_lua_absindex,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x140952380,engine_lua_pushnil,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x1409523a0,engine_lua_pushnumber,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x1409523c0,engine_lua_pushinteger,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x1409523f0,engine_lua_pushunsigned,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x1409526a0,engine_lua_pushboolean,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
-0x1409526d0,engine_lua_pushlightuserdata,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,4cf9f80426b1d339,2026-11-25
+0x14034e1e0,engine_xorshift128_next,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/rand.c,03596dbe4502853d,2026-11-25
+0x140951950,engine_lua_absindex,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x140951980,engine_lua_gettop,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x140952380,engine_lua_pushnil,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x1409523a0,engine_lua_pushnumber,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x1409523c0,engine_lua_pushinteger,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x1409523f0,engine_lua_pushunsigned,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x1409526a0,engine_lua_pushboolean,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
+0x1409526d0,engine_lua_pushlightuserdata,msvc-14.44.35207,/std:c11 /O2 /W4 /WX /fp:precise /DNDEBUG,100.00,,yes,x86_64,game/engine/lua_api.c,9b6c9e6f40a9cf3b,2026-11-25
