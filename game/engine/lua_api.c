@@ -92,7 +92,7 @@ void twd_engine_lua_pushnumber(twd_lua_state_t *L, float n) {
     twd_lua_tvalue_t *top = L->top;
     top->v.f = n;
     top->tt = 3;
-    L->top = top + 1;
+    L->top++;
 }
 
 /*
@@ -106,7 +106,7 @@ void twd_engine_lua_pushinteger(twd_lua_state_t *L, int64_t n) {
     twd_lua_tvalue_t *top = L->top;
     top->tt = 3;
     top->v.f = (float)n;
-    L->top = top + 1;
+    L->top++;
 }
 
 /*
@@ -121,7 +121,7 @@ void twd_engine_lua_pushunsigned(twd_lua_state_t *L, uint32_t n) {
     twd_lua_tvalue_t *top = L->top;
     top->v.f = fv;
     top->tt = 3;
-    L->top = top + 1;
+    L->top++;
 }
 
 /*
@@ -134,7 +134,7 @@ void twd_engine_lua_pushboolean(twd_lua_state_t *L, int32_t b) {
     twd_lua_tvalue_t *top = L->top;
     top->v.u32 = (b != 0) ? 1u : 0u;
     top->tt = 1;
-    L->top = top + 1;
+    L->top++;
 }
 
 /*
@@ -147,5 +147,5 @@ void twd_engine_lua_pushlightuserdata(twd_lua_state_t *L, void *p) {
     twd_lua_tvalue_t *top = L->top;
     top->v.u64 = (uint64_t)(uintptr_t)p;
     top->tt = 2;
-    L->top = top + 1;
+    L->top++;
 }

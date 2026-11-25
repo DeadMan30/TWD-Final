@@ -13,6 +13,6 @@ address,size,name,system,status,notes
 0x140952380,17,engine_lua_pushnil,engine,verified,Push LUA_TNIL onto Lua stack (332 callers)
 0x1409523a0,21,engine_lua_pushnumber,engine,verified,Push single-precision float LUA_TNUMBER onto Lua stack (140 callers)
 0x1409523c0,29,engine_lua_pushinteger,engine,verified,Push integer converted to single-precision float LUA_TNUMBER onto Lua stack (155 callers)
-0x1409523f0,48,engine_lua_pushunsigned,engine,edge-verified,Push uint32 converted to single-precision float LUA_TNUMBER onto Lua stack (14 callers)
+0x1409523f0,48,engine_lua_pushunsigned,engine,verified,Push uint32 converted to single-precision float LUA_TNUMBER onto Lua stack (14 callers)
 0x1409526a0,28,engine_lua_pushboolean,engine,verified,Push normalized LUA_TBOOLEAN (0 or 1) onto Lua stack (332 callers)
 0x1409526d0,20,engine_lua_pushlightuserdata,engine,verified,Push light userdata pointer (LUA_TLIGHTUSERDATA == 2) onto Lua stack (7 callers)
