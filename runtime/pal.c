@@ -119,6 +119,169 @@ void twd_alert(const char *title, const char *msg) {
     twd_log("ALERT", "%s: %s", title ? title : "TWD-Final", msg ? msg : "");
 }
 
+int twd_alert_box(const char *title, const char *msg, uint32_t flags) {
+    twd_alert(title, msg);
+    if ((flags & 0x0fu) == 4u) return TWD_ALERT_YES;
+    return TWD_ALERT_OK;
+}
+
+size_t twd_utf16_len(const uint16_t *s) {
+    size_t n = 0;
+    if (!s) return 0;
+    while (s[n] != 0) n++;
+    return n;
+}
+
+int twd_utf16_cmp(const uint16_t *a, const uint16_t *b, int ignore_case) {
+    if (!a && !b) return 0;
+    if (!a) return -1;
+    if (!b) return 1;
+    while (*a != 0 && *b != 0) {
+        uint16_t ca = *a++;
+        uint16_t cb = *b++;
+        if (ignore_case) {
+            if (ca >= 'A' && ca <= 'Z') ca = (uint16_t)(ca + ('a' - 'A'));
+            if (cb >= 'A' && cb <= 'Z') cb = (uint16_t)(cb + ('a' - 'A'));
+        }
+        if (ca != cb) return (ca < cb) ? -1 : 1;
+    }
+    if (*a == *b) return 0;
+    return (*a < *b) ? -1 : 1;
+}
+
+#define TWD_WINDOW_MAGIC 0x54574457u
+#define TWD_EVT_RING_CAP 64u
+
+static twd_win_event_t g_evt_ring[TWD_EVT_RING_CAP];
+static uint32_t g_evt_head = 0;
+static uint32_t g_evt_tail = 0;
+static int g_quit_flag = 0;
+static int g_quit_code = 0;
+static twd_mutex_t g_evt_mtx;
+static int g_evt_mtx_ready = 0;
+
+static void ensure_evt_lock(void) {
+    if (!g_evt_mtx_ready) {
+        twd_mutex_init(&g_evt_mtx);
+        g_evt_mtx_ready = 1;
+    }
+}
+
+twd_window_t *twd_window_create(const char *title, int x, int y, int width, int height, uint32_t style) {
+    twd_window_t *w = (twd_window_t *)calloc(1, sizeof(*w));
+    if (!w) return NULL;
+    w->magic = TWD_WINDOW_MAGIC;
+    w->x = x;
+    w->y = y;
+    w->width = (width > 0) ? width : 1280;
+    w->height = (height > 0) ? height : 720;
+    w->style = style;
+    w->visible = 0;
+    twd_window_set_title(w, title ? title : "The Walking Dead: The Final Season");
+    return w;
+}
+
+void twd_window_destroy(twd_window_t *win) {
+    if (!twd_window_is_valid(win)) return;
+    win->magic = 0;
+    free(win);
+}
+
+int twd_window_is_valid(const twd_window_t *win) {
+    return (win && win->magic == TWD_WINDOW_MAGIC) ? 1 : 0;
+}
+
+void twd_window_show(twd_window_t *win, int visible) {
+    if (twd_window_is_valid(win)) win->visible = (visible != 0) ? 1 : 0;
+}
+
+void twd_window_set_title(twd_window_t *win, const char *title) {
+    if (!twd_window_is_valid(win)) return;
+    if (!title) {
+        win->title[0] = '\0';
+        return;
+    }
+    size_t n = strlen(title);
+    if (n >= sizeof(win->title)) n = sizeof(win->title) - 1;
+    memcpy(win->title, title, n);
+    win->title[n] = '\0';
+}
+
+int twd_window_get_title(const twd_window_t *win, char *buf, size_t cap) {
+    if (!twd_window_is_valid(win)) return -1;
+    size_t n = strlen(win->title);
+    if (!buf || cap == 0) return (int)n;
+    size_t copy = (n < cap - 1) ? n : (cap - 1);
+    memcpy(buf, win->title, copy);
+    buf[copy] = '\0';
+    return (int)copy;
+}
+
+void twd_window_set_rect(twd_window_t *win, int x, int y, int width, int height) {
+    if (!twd_window_is_valid(win)) return;
+    win->x = x;
+    win->y = y;
+    if (width >= 0) win->width = width;
+    if (height >= 0) win->height = height;
+}
+
+void twd_window_get_client_rect(const twd_window_t *win, int *out_w, int *out_h) {
+    if (!twd_window_is_valid(win)) {
+        if (out_w) *out_w = 0;
+        if (out_h) *out_h = 0;
+        return;
+    }
+    if (out_w) *out_w = win->width;
+    if (out_h) *out_h = win->height;
+}
+
+void twd_window_push_event(const twd_win_event_t *evt) {
+    if (!evt) return;
+    ensure_evt_lock();
+    twd_mutex_lock(&g_evt_mtx);
+    uint32_t next = (g_evt_tail + 1u) % TWD_EVT_RING_CAP;
+    if (next == g_evt_head) {
+        g_evt_head = (g_evt_head + 1u) % TWD_EVT_RING_CAP;
+    }
+    g_evt_ring[g_evt_tail] = *evt;
+    g_evt_tail = next;
+    twd_mutex_unlock(&g_evt_mtx);
+}
+
+int twd_window_poll_event(twd_win_event_t *out_evt) {
+    ensure_evt_lock();
+    twd_mutex_lock(&g_evt_mtx);
+    if (g_evt_head == g_evt_tail) {
+        twd_mutex_unlock(&g_evt_mtx);
+        return 0;
+    }
+    twd_win_event_t ev = g_evt_ring[g_evt_head];
+    g_evt_head = (g_evt_head + 1u) % TWD_EVT_RING_CAP;
+    twd_mutex_unlock(&g_evt_mtx);
+    if (ev.kind == TWD_EVT_QUIT) {
+        g_quit_flag = 1;
+        g_quit_code = (int)ev.param2;
+    }
+    if (out_evt) *out_evt = ev;
+    return 1;
+}
+
+void twd_post_quit(int exit_code) {
+    twd_win_event_t ev;
+    ev.kind = TWD_EVT_QUIT;
+    ev.window_id = 0;
+    ev.param1 = 0;
+    ev.param2 = (int64_t)exit_code;
+    g_quit_flag = 1;
+    g_quit_code = exit_code;
+    twd_window_push_event(&ev);
+}
+
+int twd_quit_requested(int *out_code) {
+    if (out_code) *out_code = g_quit_code;
+    return g_quit_flag;
+}
+
 typedef struct twd_thread_ctx {
     twd_thread_fn fn;
     void *arg;
@@ -337,6 +500,10 @@ int twd_mkdir(const char *path) {
     return (GetLastError() == ERROR_ALREADY_EXISTS) ? 0 : -1;
 }
 
+int twd_rmdir(const char *path) {
+    return (path && RemoveDirectoryA(path)) ? 0 : -1;
+}
+
 int twd_exe_path(char *buf, size_t cap) {
     if (!buf || cap == 0) return -1;
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)cap);
@@ -429,12 +596,165 @@ void twd_dynlib_close(void *lib) {
     FreeLibrary((HMODULE)lib);
 }
 
+int twd_getcwd(char *buf, size_t cap) {
+    if (!buf || cap == 0) return -1;
+    DWORD n = GetCurrentDirectoryA((DWORD)cap, buf);
+    return (n > 0 && n < cap) ? (int)n : -1;
+}
+
+int twd_chdir(const char *path) {
+    return (path && SetCurrentDirectoryA(path)) ? 0 : -1;
+}
+
+int twd_getenv(const char *name, char *buf, size_t cap) {
+    if (!name || !buf || cap == 0) return -1;
+    DWORD n = GetEnvironmentVariableA(name, buf, (DWORD)cap);
+    if (n == 0 || n >= cap) return -1;
+    return (int)n;
+}
+
+int twd_setenv(const char *name, const char *val) {
+    if (!name) return -1;
+    return SetEnvironmentVariableA(name, val) ? 0 : -1;
+}
+
+int twd_file_exists(const char *path) {
+    if (!path) return 0;
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES) ? 1 : 0;
+}
+
+int twd_path_is_dir(const char *path) {
+    if (!path) return 0;
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+}
+
+int twd_file_rename(const char *src, const char *dst) {
+    if (!src || !dst) return -1;
+    return MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+}
+
+int twd_file_truncate(twd_file_t *f, int64_t size) {
+    if (!f || f->handle == -1 || size < 0) return -1;
+    if (twd_file_seek(f, size, TWD_SEEK_SET) < 0) return -1;
+    return SetEndOfFile((HANDLE)f->handle) ? 0 : -1;
+}
+
+int twd_dir_open(const char *path, twd_dir_t *out) {
+    if (!path || !out) return -1;
+    char pat[300];
+    size_t n = strlen(path);
+    if (n + 3 >= sizeof(pat)) return -1;
+    memcpy(pat, path, n);
+    if (n > 0 && pat[n - 1] != '/' && pat[n - 1] != '\\') pat[n++] = '/';
+    pat[n++] = '*';
+    pat[n] = '\0';
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        out->handle = 0;
+        out->first_pending = 0;
+        return -1;
+    }
+    out->handle = (uintptr_t)h;
+    out->first_pending = 1;
+    size_t fn = strlen(fd.cFileName);
+    if (fn >= sizeof(out->pending_name)) fn = sizeof(out->pending_name) - 1;
+    memcpy(out->pending_name, fd.cFileName, fn);
+    out->pending_name[fn] = '\0';
+    return 0;
+}
+
+int twd_dir_next(twd_dir_t *d, twd_dir_entry_t *out) {
+    if (!d || !d->handle || !out) return -1;
+    WIN32_FIND_DATAA fd;
+    for (;;) {
+        if (d->first_pending) {
+            d->first_pending = 0;
+            size_t fn = strlen(d->pending_name);
+            memcpy(out->name, d->pending_name, fn + 1);
+            out->is_dir = twd_path_is_dir(out->name);
+            out->size = 0;
+        } else {
+            if (!FindNextFileA((HANDLE)d->handle, &fd)) return 0;
+            size_t fn = strlen(fd.cFileName);
+            if (fn >= sizeof(out->name)) fn = sizeof(out->name) - 1;
+            memcpy(out->name, fd.cFileName, fn);
+            out->name[fn] = '\0';
+            out->is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ? 1 : 0;
+            out->size = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
+        }
+        if (strcmp(out->name, ".") == 0 || strcmp(out->name, "..") == 0) continue;
+        return 1;
+    }
+}
+
+void twd_dir_close(twd_dir_t *d) {
+    if (d && d->handle) {
+        FindClose((HANDLE)d->handle);
+        d->handle = 0;
+        d->first_pending = 0;
+    }
+}
+
+uint32_t twd_cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors ? (uint32_t)si.dwNumberOfProcessors : 1u;
+}
+
+uint32_t twd_page_size(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwPageSize ? (uint32_t)si.dwPageSize : 4096u;
+}
+
+uint64_t twd_unix_time_ns(void) {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
+    const uint64_t epoch_diff_100ns = 116444736000000000ULL;
+    return (t > epoch_diff_100ns) ? (t - epoch_diff_100ns) * 100ULL : 0ULL;
+}
+
+void twd_icache_flush(void *addr, size_t size) {
+    if (addr && size) FlushInstructionCache(GetCurrentProcess(), addr, size);
+}
+
+int twd_timer_begin_period(uint32_t ms) {
+    typedef UINT (WINAPI *mm_fn_t)(UINT);
+    void *mod = twd_dynlib_open("winmm.dll");
+    mm_fn_t fn = mod ? (mm_fn_t)(uintptr_t)twd_dynlib_sym(mod, "timeBeginPeriod") : NULL;
+    return (fn && fn((UINT)ms) == 0) ? 0 : -1;
+}
+
+int twd_timer_end_period(uint32_t ms) {
+    typedef UINT (WINAPI *mm_fn_t)(UINT);
+    void *mod = twd_dynlib_open("winmm.dll");
+    mm_fn_t fn = mod ? (mm_fn_t)(uintptr_t)twd_dynlib_sym(mod, "timeEndPeriod") : NULL;
+    return (fn && fn((UINT)ms) == 0) ? 0 : -1;
+}
+
+int twd_system_metric(int metric_id) {
+    typedef int (WINAPI *sm_fn_t)(int);
+    void *mod = twd_dynlib_open("user32.dll");
+    sm_fn_t fn = mod ? (sm_fn_t)(uintptr_t)twd_dynlib_sym(mod, "GetSystemMetrics") : NULL;
+    if (fn) return fn(metric_id);
+    if (metric_id == TWD_METRIC_SCREEN_W) return 1920;
+    if (metric_id == TWD_METRIC_SCREEN_H) return 1080;
+    if (metric_id == TWD_METRIC_MOUSE_PRESENT) return 1;
+    return 0;
+}
+
 #else
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -684,6 +1004,10 @@ int twd_mkdir(const char *path) {
     return (errno == EEXIST) ? 0 : -1;
 }
 
+int twd_rmdir(const char *path) {
+    return (path && rmdir(path) == 0) ? 0 : -1;
+}
+
 int twd_exe_path(char *buf, size_t cap) {
     if (!buf || cap < 2) return -1;
     ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
@@ -821,5 +1145,128 @@ void *twd_dynlib_sym(void *lib, const char *name) {
 
 void twd_dynlib_close(void *lib) {
     if (lib) dlclose(lib);
+}
+
+int twd_getcwd(char *buf, size_t cap) {
+    if (!buf || cap == 0) return -1;
+    return getcwd(buf, cap) ? (int)strlen(buf) : -1;
+}
+
+int twd_chdir(const char *path) {
+    return (path && chdir(path) == 0) ? 0 : -1;
+}
+
+int twd_getenv(const char *name, char *buf, size_t cap) {
+    if (!name || !buf || cap == 0) return -1;
+    const char *v = getenv(name);
+    if (!v) return -1;
+    size_t n = strlen(v);
+    if (n >= cap) return -1;
+    memcpy(buf, v, n + 1);
+    return (int)n;
+}
+
+int twd_setenv(const char *name, const char *val) {
+    if (!name) return -1;
+    return val ? setenv(name, val, 1) : unsetenv(name);
+}
+
+int twd_file_exists(const char *path) {
+    struct stat st;
+    return (path && stat(path, &st) == 0) ? 1 : 0;
+}
+
+int twd_path_is_dir(const char *path) {
+    struct stat st;
+    return (path && stat(path, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+}
+
+int twd_file_rename(const char *src, const char *dst) {
+    return (src && dst && rename(src, dst) == 0) ? 0 : -1;
+}
+
+int twd_file_truncate(twd_file_t *f, int64_t size) {
+    if (!f || f->handle < 0 || size < 0) return -1;
+    return ftruncate((int)f->handle, (off_t)size) == 0 ? 0 : -1;
+}
+
+int twd_dir_open(const char *path, twd_dir_t *out) {
+    if (!path || !out) return -1;
+    DIR *dp = opendir(path);
+    if (!dp) {
+        out->handle = 0;
+        return -1;
+    }
+    out->handle = (uintptr_t)dp;
+    out->first_pending = 0;
+    return 0;
+}
+
+int twd_dir_next(twd_dir_t *d, twd_dir_entry_t *out) {
+    if (!d || !d->handle || !out) return -1;
+    DIR *dp = (DIR *)d->handle;
+    for (;;) {
+        struct dirent *ent = readdir(dp);
+        if (!ent) return 0;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        size_t n = strlen(ent->d_name);
+        if (n >= sizeof(out->name)) n = sizeof(out->name) - 1;
+        memcpy(out->name, ent->d_name, n);
+        out->name[n] = '\0';
+        out->is_dir = (ent->d_type == DT_DIR) ? 1 : 0;
+        out->size = 0;
+        return 1;
+    }
+}
+
+void twd_dir_close(twd_dir_t *d) {
+    if (d && d->handle) {
+        closedir((DIR *)d->handle);
+        d->handle = 0;
+    }
+}
+
+uint32_t twd_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return (n > 0) ? (uint32_t)n : 1u;
+}
+
+uint32_t twd_page_size(void) {
+    long n = sysconf(_SC_PAGESIZE);
+    return (n > 0) ? (uint32_t)n : 4096u;
+}
+
+uint64_t twd_unix_time_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+void twd_icache_flush(void *addr, size_t size) {
+    if (addr && size) {
+#if defined(__GNUC__) || defined(__clang__)
+        __builtin___clear_cache((char *)addr, (char *)addr + size);
+#else
+        (void)addr;
+        (void)size;
+#endif
+    }
+}
+
+int twd_timer_begin_period(uint32_t ms) {
+    (void)ms;
+    return 0;
+}
+
+int twd_timer_end_period(uint32_t ms) {
+    (void)ms;
+    return 0;
+}
+
+int twd_system_metric(int metric_id) {
+    if (metric_id == TWD_METRIC_SCREEN_W) return 1920;
+    if (metric_id == TWD_METRIC_SCREEN_H) return 1080;
+    if (metric_id == TWD_METRIC_MOUSE_PRESENT) return 0;
+    return 0;
 }
 #endif

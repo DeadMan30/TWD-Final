@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "imports_total": 556,
-  "imports_implemented": 62,
+  "imports_implemented": 110,
   "imports_bundled": 138,
   "imports_unresolved": 0,
   "milestones": [
@@ -12,12 +12,12 @@
     "Renderer (D3D11 -> Vulkan/GLES)",
     "Audio & GameLoop"
   ],
-  "milestone_index": 3,
-  "milestone": "WinMain & module/window init",
+  "milestone_index": 4,
+  "milestone": "Renderer (D3D11 -> Vulkan/GLES)",
   "first_unimplemented": {
-    "library": "USER32.dll",
-    "symbol": "MessageBoxW",
-    "caller": "WinMain (0x14002f7b0)"
+    "library": "d3d11.dll",
+    "symbol": "D3D11CreateDevice",
+    "caller": "Renderer init"
   },
   "outcome": "stopped_unimplemented_import"
 }

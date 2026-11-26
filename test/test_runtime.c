@@ -141,6 +141,83 @@ int main(void) {
     TWD_CHECK(self_mod != NULL);
     twd_dynlib_close(self_mod);
 
+    TWD_CHECK(twd_alert_box("TWD-Final", "alert test", 0u) == TWD_ALERT_OK);
+    TWD_CHECK(twd_alert_box("TWD-Final", "yesno test", 4u) == TWD_ALERT_YES);
+
+    twd_window_t *win = twd_window_create("TWD4 Test Window", 10, 20, 1280, 720, 0u);
+    TWD_CHECK(win != NULL && twd_window_is_valid(win) == 1);
+    twd_window_show(win, 1);
+    TWD_CHECK(win->visible == 1);
+    twd_window_set_rect(win, 0, 0, 1920, 1080);
+    int cw = 0, ch = 0;
+    twd_window_get_client_rect(win, &cw, &ch);
+    TWD_CHECK(cw == 1920 && ch == 1080);
+    char wtitle[64];
+    TWD_CHECK(twd_window_get_title(win, wtitle, sizeof(wtitle)) > 0);
+    TWD_CHECK(strcmp(wtitle, "TWD4 Test Window") == 0);
+
+    twd_win_event_t ev_in;
+    ev_in.kind = TWD_EVT_KEY;
+    ev_in.window_id = (uintptr_t)win;
+    ev_in.param1 = 0x41u;
+    ev_in.param2 = 1;
+    twd_window_push_event(&ev_in);
+    twd_win_event_t ev_out;
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1);
+    TWD_CHECK(ev_out.kind == TWD_EVT_KEY && ev_out.param1 == 0x41u);
+    twd_post_quit(7);
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_QUIT);
+    int qcode = 0;
+    TWD_CHECK(twd_quit_requested(&qcode) == 1 && qcode == 7);
+    twd_window_destroy(win);
+    TWD_CHECK(twd_window_is_valid(win) == 0);
+
+    TWD_CHECK(twd_system_metric(TWD_METRIC_SCREEN_W) > 0);
+    TWD_CHECK(twd_system_metric(TWD_METRIC_SCREEN_H) > 0);
+    TWD_CHECK(twd_cpu_count() >= 1u);
+    TWD_CHECK(twd_page_size() >= 4096u);
+    TWD_CHECK(twd_unix_time_ns() > 1000000000000000000ULL);
+    TWD_CHECK(twd_timer_begin_period(1u) == 0);
+    TWD_CHECK(twd_timer_end_period(1u) == 0);
+
+    uint8_t ic_buf[16];
+    memset(ic_buf, 0x90, sizeof(ic_buf));
+    twd_icache_flush(ic_buf, sizeof(ic_buf));
+
+    char cwd_buf[512];
+    TWD_CHECK(twd_getcwd(cwd_buf, sizeof(cwd_buf)) > 0);
+    TWD_CHECK(twd_setenv("TWD_PAL_ENV_TEST", "ok42") == 0);
+    char env_buf[32];
+    TWD_CHECK(twd_getenv("TWD_PAL_ENV_TEST", env_buf, sizeof(env_buf)) == 4);
+    TWD_CHECK(strcmp(env_buf, "ok42") == 0);
+
+    const uint16_t u16_a[] = {'A', 'b', 'c', 0};
+    const uint16_t u16_b[] = {'a', 'B', 'C', 0};
+    TWD_CHECK(twd_utf16_len(u16_a) == 3u);
+    TWD_CHECK(twd_utf16_cmp(u16_a, u16_b, 0) != 0);
+    TWD_CHECK(twd_utf16_cmp(u16_a, u16_b, 1) == 0);
+
+    TWD_CHECK(twd_mkdir("twd_pal_dir_tmp") == 0);
+    TWD_CHECK(twd_path_is_dir("twd_pal_dir_tmp") == 1);
+    twd_file_t df;
+    TWD_CHECK(twd_file_open("twd_pal_dir_tmp/a.bin", TWD_FILE_OPEN_READ | TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &df) == 0);
+    TWD_CHECK(twd_file_write(&df, "ABCDEFGH", 8) == 8);
+    TWD_CHECK(twd_file_truncate(&df, 4) == 0);
+    TWD_CHECK(twd_file_close(&df) == 0);
+    TWD_CHECK(twd_file_rename("twd_pal_dir_tmp/a.bin", "twd_pal_dir_tmp/b.bin") == 0);
+    TWD_CHECK(twd_file_exists("twd_pal_dir_tmp/b.bin") == 1);
+    twd_dir_t dir;
+    TWD_CHECK(twd_dir_open("twd_pal_dir_tmp", &dir) == 0);
+    twd_dir_entry_t dent;
+    int saw_b = 0;
+    while (twd_dir_next(&dir, &dent) > 0) {
+        if (strcmp(dent.name, "b.bin") == 0) saw_b = 1;
+    }
+    twd_dir_close(&dir);
+    TWD_CHECK(saw_b == 1);
+    TWD_CHECK(twd_file_delete("twd_pal_dir_tmp/b.bin") == 0);
+    TWD_CHECK(twd_rmdir("twd_pal_dir_tmp") == 0);
+
     twd_alert("TWD-Final", "runtime alert check");
 
     twd_platform_shutdown();

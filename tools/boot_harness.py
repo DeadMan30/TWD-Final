@@ -38,6 +38,8 @@ STARTUP_PROBE_CHAIN = [
     ('KERNEL32.dll', 'CreateSemaphoreW', 'WinMain (0x14002f7b0)'),
     ('KERNEL32.dll', 'LoadLibraryW', 'WinMain (0x14002f7b0)'),
     ('USER32.dll', 'MessageBoxW', 'WinMain (0x14002f7b0)'),
+    ('USER32.dll', 'CreateWindowExW', 'WinMain (0x14002f7b0)'),
+    ('USER32.dll', 'PeekMessageW', 'WinMain message loop'),
     ('d3d11.dll', 'D3D11CreateDevice', 'Renderer init'),
 ]
 
@@ -58,8 +60,15 @@ def build_boot_report(root: str) -> dict:
             first_missing = {'library': lib, 'symbol': sym, 'caller': caller}
             break
 
-    milestone_idx = 3 if (rt >= 60 and by_pair.get(('KERNEL32.dll', 'GetModuleFileNameW')) == 'runtime') else (
-        2 if rt >= 40 else (1 if rt > 0 else 0)
+    win_ready = (
+        by_pair.get(('USER32.dll', 'MessageBoxW')) == 'runtime'
+        and by_pair.get(('USER32.dll', 'CreateWindowExW')) == 'runtime'
+        and by_pair.get(('USER32.dll', 'PeekMessageW')) == 'runtime'
+    )
+    milestone_idx = 4 if (rt >= 100 and win_ready) else (
+        3 if (rt >= 60 and by_pair.get(('KERNEL32.dll', 'GetModuleFileNameW')) == 'runtime') else (
+            2 if rt >= 40 else (1 if rt > 0 else 0)
+        )
     )
     return {
         'schema': 1,

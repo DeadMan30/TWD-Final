@@ -4,7 +4,7 @@ TWD-Final is a clean-room decompilation of *The Walking Dead: The Final Season* 
 Android runtime: the game's code rewritten as readable C and C++, one verified function at a time.
 
 <!-- status:start -->
-The game doesn't run on TWD-Final yet: 28 of 38387 functions are verified (0.07%) and 28 replaced (0.07%). On [our native runtime](runtime/) the executable's boot gets as far as `MessageBoxW` (USER32.dll, called by WinMain (0x14002f7b0)), with 200 of 556 imports implemented.
+The game doesn't run on TWD-Final yet: 28 of 38387 functions are verified (0.07%) and 28 replaced (0.07%). On [our native runtime](runtime/) the executable's boot gets as far as `D3D11CreateDevice` (d3d11.dll, called by Renderer init), with 248 of 556 imports implemented.
 <!-- status:end -->
 
 The goal is a complete native Android source port: every function rewritten and verified against the

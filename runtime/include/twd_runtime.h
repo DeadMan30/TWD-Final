@@ -51,6 +51,51 @@ typedef struct twd_file {
     intptr_t handle;
 } twd_file_t;
 
+typedef struct twd_dir {
+    uintptr_t handle;
+    int first_pending;
+    char pending_name[260];
+} twd_dir_t;
+
+typedef struct twd_dir_entry {
+    char name[260];
+    int is_dir;
+    uint64_t size;
+} twd_dir_entry_t;
+
+typedef struct twd_window {
+    uint32_t magic;
+    int x;
+    int y;
+    int width;
+    int height;
+    uint32_t style;
+    int visible;
+    char title[128];
+} twd_window_t;
+
+typedef struct twd_win_event {
+    uint32_t kind;
+    uintptr_t window_id;
+    uint64_t param1;
+    int64_t param2;
+} twd_win_event_t;
+
+#define TWD_EVT_NONE    0u
+#define TWD_EVT_CLOSE   1u
+#define TWD_EVT_RESIZE  2u
+#define TWD_EVT_KEY     3u
+#define TWD_EVT_POINTER 4u
+#define TWD_EVT_QUIT    5u
+
+#define TWD_ALERT_OK     1
+#define TWD_ALERT_CANCEL 2
+#define TWD_ALERT_YES    6
+
+#define TWD_METRIC_SCREEN_W      0
+#define TWD_METRIC_SCREEN_H      1
+#define TWD_METRIC_MOUSE_PRESENT 19
+
 #define TWD_FILE_OPEN_READ   1u
 #define TWD_FILE_OPEN_WRITE  2u
 #define TWD_FILE_CREATE      4u
@@ -110,11 +155,33 @@ int twd_file_flush(twd_file_t *f);
 int twd_file_close(twd_file_t *f);
 int twd_file_delete(const char *path);
 int twd_mkdir(const char *path);
+int twd_rmdir(const char *path);
 
 int twd_utf8_to_utf16(const char *src, int src_len, uint16_t *dst, int dst_cap);
 int twd_utf16_to_utf8(const uint16_t *src, int src_len, char *dst, int dst_cap);
+size_t twd_utf16_len(const uint16_t *s);
+int twd_utf16_cmp(const uint16_t *a, const uint16_t *b, int ignore_case);
 
 int twd_exe_path(char *buf, size_t cap);
+int twd_getcwd(char *buf, size_t cap);
+int twd_chdir(const char *path);
+int twd_getenv(const char *name, char *buf, size_t cap);
+int twd_setenv(const char *name, const char *val);
+
+int twd_file_exists(const char *path);
+int twd_path_is_dir(const char *path);
+int twd_file_rename(const char *src, const char *dst);
+int twd_file_truncate(twd_file_t *f, int64_t size);
+int twd_dir_open(const char *path, twd_dir_t *out);
+int twd_dir_next(twd_dir_t *d, twd_dir_entry_t *out);
+void twd_dir_close(twd_dir_t *d);
+
+uint32_t twd_cpu_count(void);
+uint32_t twd_page_size(void);
+uint64_t twd_unix_time_ns(void);
+void twd_icache_flush(void *addr, size_t size);
+int twd_timer_begin_period(uint32_t ms);
+int twd_timer_end_period(uint32_t ms);
 
 int twd_sem_init(twd_sem_t *s, uint32_t initial, uint32_t max_count);
 void twd_sem_destroy(twd_sem_t *s);
@@ -129,6 +196,21 @@ void *twd_dynlib_sym(void *lib, const char *name);
 void twd_dynlib_close(void *lib);
 
 void twd_alert(const char *title, const char *msg);
+int twd_alert_box(const char *title, const char *msg, uint32_t flags);
+
+twd_window_t *twd_window_create(const char *title, int x, int y, int width, int height, uint32_t style);
+void twd_window_destroy(twd_window_t *win);
+int twd_window_is_valid(const twd_window_t *win);
+void twd_window_show(twd_window_t *win, int visible);
+void twd_window_set_title(twd_window_t *win, const char *title);
+int twd_window_get_title(const twd_window_t *win, char *buf, size_t cap);
+void twd_window_set_rect(twd_window_t *win, int x, int y, int width, int height);
+void twd_window_get_client_rect(const twd_window_t *win, int *out_w, int *out_h);
+void twd_window_push_event(const twd_win_event_t *evt);
+int twd_window_poll_event(twd_win_event_t *out_evt);
+void twd_post_quit(int exit_code);
+int twd_quit_requested(int *out_code);
+int twd_system_metric(int metric_id);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
