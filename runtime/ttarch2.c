@@ -1,0 +1,543 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * TTArchive2 (.ttarch2) container, chunked Oodle/raw decompression, TTA3/TTA4
+ * TOC parser, and mounted asset lookup for the portable TWD runtime.
+ *
+ * Binary layout verified against WalkingDead4.exe (DataStreamContainer
+ * 0x1402b3c10 / 0x1402c1130 and WD4 .ttarch2 archives):
+ *   Container header:
+ *     - "NCTT" (0x5454434E): u64 payload_size; payload starts at +0x0C.
+ *     - "ZCTT" (0x5454435A) / "ECTT" (0x54544345):
+ *         u32 chunk_size, u32 chunk_count, u64 chunk_offsets[chunk_count + 1].
+ *         Chunk i occupies [chunk_offsets[i], chunk_offsets[i + 1]).
+ *     - "zCTT" (0x5454437A) / "eCTT" (0x54544365):
+ *         u32 compress_mode, u32 chunk_size, u32 chunk_count,
+ *         u64 chunk_offsets[chunk_count + 1].
+ *   Decompressed TOC (at logical offset 0):
+ *     - u32 magic ("4ATT" = 0x54544134 or "3ATT" = 0x54544133)
+ *     - u32 names_size
+ *     - u32 entry_count
+ *     - entry_count * 28-byte records:
+ *         u64 name_crc64, u64 offset (from data_base), u32 size, u32 flags,
+ *         u16 name_page, u16 name_offset
+ *     - names_size bytes of NUL-terminated filenames
+ *     - entry data starting at data_base = 12 + entry_count * 28 + names_size
+ */
+#include "twd_runtime.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#define TWD_TTARCH2_MAX_CHUNKS  0x100000u
+#define TWD_TTARCH2_MAX_CHUNK_SZ 0x100000u
+#define TWD_TTARCH2_MAX_ENTRIES 250000u
+#define TWD_TTARCH2_MAX_NAMES   (64u * 1024u * 1024u)
+#define TWD_TTARCH2_MOUNT_MAX   64u
+
+struct twd_ttarch2_record {
+    uint64_t name_crc64;
+    uint64_t offset;
+    uint32_t size;
+    uint32_t flags;
+    uint32_t name_pos;
+};
+
+struct twd_ttarch2_archive {
+    twd_ttarch2_header_t hdr;
+    int has_file;
+    twd_file_t file;
+    uint8_t *mem_copy;
+    size_t mem_len;
+
+    uint64_t *chunk_offsets; /* chunk_count + 1 entries for ZCTT/ECTT */
+    uint8_t *chunk_raw;      /* cached decompressed chunk */
+    uint32_t cached_chunk;
+    uint32_t cached_raw_len;
+
+    uint32_t toc_magic;
+    uint32_t names_size;
+    uint32_t entry_count;
+    uint64_t data_base;
+    uint64_t max_logical_end;
+    struct twd_ttarch2_record *entries;
+    char *names;
+};
+
+static twd_ttarch2_decrypt_fn g_decrypt_fn = NULL;
+static void *g_decrypt_user = NULL;
+static twd_ttarch2_archive_t *g_mounted[TWD_TTARCH2_MOUNT_MAX];
+static size_t g_mounted_count = 0u;
+
+static uint16_t rd_u16(const uint8_t *p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint32_t rd_u32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t rd_u64(const uint8_t *p) {
+    return (uint64_t)rd_u32(p) | ((uint64_t)rd_u32(p + 4u) << 32);
+}
+
+static char ascii_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c + ('a' - 'A'));
+    if (c == '\\') return '/';
+    return c;
+}
+
+static int path_eq_icase(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        if (ascii_lower(*a) != ascii_lower(*b)) return 0;
+        ++a;
+        ++b;
+    }
+    return (*a == '\0' && *b == '\0') ? 1 : 0;
+}
+
+void twd_ttarch2_set_decrypt_callback(twd_ttarch2_decrypt_fn fn, void *user) {
+    g_decrypt_fn = fn;
+    g_decrypt_user = user;
+}
+
+int twd_ttarch2_parse_header(const void *data, size_t len, twd_ttarch2_header_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!data || len < 12u) return -1;
+
+    const uint8_t *b = (const uint8_t *)data;
+    uint32_t magic = rd_u32(b);
+    if (magic == 0x5454434Eu) { /* "NCTT" */
+        out->container_kind = TWD_TTARCH2_NCTT;
+        out->encrypted = 0;
+        out->compressed = 0;
+        out->payload_size = rd_u64(b + 4u);
+        out->header_size = 12u;
+        return 0;
+    }
+
+    int is_lower = (magic == 0x5454437Au || magic == 0x54544365u); /* "zCTT" / "eCTT" */
+    int is_zctt = (magic == 0x5454435Au || magic == 0x5454437Au);
+    int is_ectt = (magic == 0x54544345u || magic == 0x54544365u);
+    if (!is_zctt && !is_ectt) return -1;
+
+    if (is_lower && len < 16u) return -1;
+    size_t off = is_lower ? 8u : 4u;
+    out->container_kind = is_ectt ? TWD_TTARCH2_ECTT : TWD_TTARCH2_ZCTT;
+    out->encrypted = is_ectt ? 1 : 0;
+    out->compressed = 1;
+    out->compress_mode = is_lower ? rd_u32(b + 4u) : 0u;
+    out->chunk_size = rd_u32(b + off);
+    out->chunk_count = rd_u32(b + off + 4u);
+    out->version = out->compress_mode;
+
+    uint64_t table_base = is_lower ? 16u : 12u;
+    if (out->chunk_count <= TWD_TTARCH2_MAX_CHUNKS) {
+        out->header_size = table_base + ((uint64_t)out->chunk_count + 1u) * 8u;
+    }
+    if (out->chunk_count > 0u && out->chunk_count <= TWD_TTARCH2_MAX_CHUNKS &&
+        len >= (size_t)out->header_size) {
+        uint64_t first_off = rd_u64(b + (size_t)table_base);
+        uint64_t last_off = rd_u64(b + (size_t)table_base + (size_t)out->chunk_count * 8u);
+        out->payload_size = (last_off >= first_off) ? (last_off - first_off) : 0u;
+    } else {
+        out->payload_size = (uint64_t)out->chunk_size;
+    }
+    return 0;
+}
+
+static int raw_read_at(twd_ttarch2_archive_t *arch, uint64_t file_off, void *dst, size_t len) {
+    if (len == 0u) return 0;
+    if (arch->mem_copy) {
+        if (file_off > (uint64_t)arch->mem_len ||
+            (uint64_t)len > (uint64_t)arch->mem_len - file_off) {
+            return -1;
+        }
+        memcpy(dst, arch->mem_copy + (size_t)file_off, len);
+        return 0;
+    }
+    if (!arch->has_file) return -1;
+    if (twd_file_seek(&arch->file, (int64_t)file_off, 0 /* SEEK_SET */) < 0) return -1;
+    size_t got = 0u;
+    uint8_t *p = (uint8_t *)dst;
+    while (got < len) {
+        int64_t r = twd_file_read(&arch->file, p + got, len - got);
+        if (r <= 0) return -1;
+        got += (size_t)r;
+    }
+    return 0;
+}
+
+static int ensure_chunk(twd_ttarch2_archive_t *arch, uint32_t chunk_idx) {
+    if (chunk_idx >= arch->hdr.chunk_count) return -1;
+    if (arch->cached_chunk == chunk_idx && arch->chunk_raw != NULL) return 0;
+
+    uint64_t c0 = arch->chunk_offsets[chunk_idx];
+    uint64_t c1 = arch->chunk_offsets[chunk_idx + 1u];
+    if (c1 < c0) return -1;
+    uint64_t comp_len_u64 = c1 - c0;
+    if (comp_len_u64 == 0u || comp_len_u64 > (uint64_t)arch->hdr.chunk_size * 2u + 4096u) {
+        return -1;
+    }
+    size_t comp_len = (size_t)comp_len_u64;
+
+    uint8_t *comp = (uint8_t *)malloc(comp_len);
+    if (!comp) return -1;
+    if (raw_read_at(arch, c0, comp, comp_len) != 0) {
+        free(comp);
+        return -1;
+    }
+
+    if (arch->hdr.encrypted) {
+        if (!g_decrypt_fn || g_decrypt_fn(chunk_idx, comp, comp_len, g_decrypt_user) != 0) {
+            free(comp);
+            return -2;
+        }
+    }
+
+    uint32_t target_raw = arch->hdr.chunk_size;
+    int is_last = (chunk_idx + 1u == arch->hdr.chunk_count);
+    if (is_last) {
+        uint64_t chunk_start = (uint64_t)chunk_idx * (uint64_t)arch->hdr.chunk_size;
+        if (arch->max_logical_end > chunk_start) {
+            uint64_t rem = arch->max_logical_end - chunk_start;
+            if (rem <= (uint64_t)arch->hdr.chunk_size) target_raw = (uint32_t)rem;
+        } else if (!twd_oodle_is_available() && comp_len <= (size_t)arch->hdr.chunk_size) {
+            target_raw = (uint32_t)comp_len;
+        }
+    }
+
+    if (!arch->chunk_raw) {
+        arch->chunk_raw = (uint8_t *)malloc((size_t)arch->hdr.chunk_size);
+        if (!arch->chunk_raw) {
+            free(comp);
+            return -1;
+        }
+    }
+
+    int64_t dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)target_raw);
+    if (dec < 0 && is_last && target_raw != arch->hdr.chunk_size) {
+        dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)arch->hdr.chunk_size);
+    }
+    free(comp);
+    if (dec <= 0 || dec > (int64_t)arch->hdr.chunk_size) return -1;
+
+    arch->cached_chunk = chunk_idx;
+    arch->cached_raw_len = (uint32_t)dec;
+    return 0;
+}
+
+static int stream_read(twd_ttarch2_archive_t *arch, uint64_t logical_off, void *dst, size_t len) {
+    if (len == 0u) return 0;
+    if (arch->hdr.container_kind == TWD_TTARCH2_NCTT) {
+        if (logical_off > arch->hdr.payload_size ||
+            (uint64_t)len > arch->hdr.payload_size - logical_off) {
+            return -1;
+        }
+        return raw_read_at(arch, arch->hdr.header_size + logical_off, dst, len);
+    }
+
+    uint32_t csz = arch->hdr.chunk_size;
+    if (csz == 0u) return -1;
+    uint8_t *out = (uint8_t *)dst;
+    size_t pos = 0u;
+    while (pos < len) {
+        uint64_t cur = logical_off + (uint64_t)pos;
+        uint64_t idx64 = cur / (uint64_t)csz;
+        if (idx64 >= (uint64_t)arch->hdr.chunk_count) return -1;
+        int rc = ensure_chunk(arch, (uint32_t)idx64);
+        if (rc != 0) return rc;
+
+        uint32_t in_chunk = (uint32_t)(cur % (uint64_t)csz);
+        if (in_chunk >= arch->cached_raw_len) return -1;
+        uint32_t avail = arch->cached_raw_len - in_chunk;
+        size_t take = len - pos;
+        if (take > (size_t)avail) take = (size_t)avail;
+        memcpy(out + pos, arch->chunk_raw + in_chunk, take);
+        pos += take;
+    }
+    return 0;
+}
+
+static int parse_toc(twd_ttarch2_archive_t *arch) {
+    uint8_t toc_hdr[12];
+    int rc = stream_read(arch, 0u, toc_hdr, sizeof(toc_hdr));
+    if (rc != 0) return rc;
+
+    arch->toc_magic = rd_u32(toc_hdr);
+    if (arch->toc_magic != TWD_TTARCH2_TOC_TTA4 &&
+        arch->toc_magic != TWD_TTARCH2_TOC_TTA3) {
+        return -1;
+    }
+
+    arch->names_size = rd_u32(toc_hdr + 4u);
+    arch->entry_count = rd_u32(toc_hdr + 8u);
+    if (arch->entry_count > TWD_TTARCH2_MAX_ENTRIES ||
+        arch->names_size > TWD_TTARCH2_MAX_NAMES) {
+        return -1;
+    }
+
+    uint64_t rec_bytes_u64 = (uint64_t)arch->entry_count * 28u;
+    arch->data_base = 12u + rec_bytes_u64 + (uint64_t)arch->names_size;
+    arch->max_logical_end = arch->data_base;
+
+    if (arch->entry_count > 0u) {
+        size_t rec_bytes = (size_t)rec_bytes_u64;
+        uint8_t *raw_rec = (uint8_t *)malloc(rec_bytes);
+        arch->entries = (struct twd_ttarch2_record *)calloc(
+            (size_t)arch->entry_count, sizeof(struct twd_ttarch2_record));
+        if (!raw_rec || !arch->entries) {
+            free(raw_rec);
+            return -1;
+        }
+        rc = stream_read(arch, 12u, raw_rec, rec_bytes);
+        if (rc != 0) {
+            free(raw_rec);
+            return rc;
+        }
+        for (uint32_t i = 0u; i < arch->entry_count; ++i) {
+            const uint8_t *p = raw_rec + (size_t)i * 28u;
+            struct twd_ttarch2_record *e = &arch->entries[i];
+            e->name_crc64 = rd_u64(p);
+            e->offset = rd_u64(p + 8u);
+            e->size = rd_u32(p + 16u);
+            e->flags = rd_u32(p + 20u);
+            uint16_t page = rd_u16(p + 24u);
+            uint16_t noff = rd_u16(p + 26u);
+            e->name_pos = ((uint32_t)page << 16) | (uint32_t)noff;
+            uint64_t end = arch->data_base + e->offset + (uint64_t)e->size;
+            if (end > arch->max_logical_end) arch->max_logical_end = end;
+        }
+        free(raw_rec);
+    }
+
+    if (arch->names_size > 0u) {
+        arch->names = (char *)malloc((size_t)arch->names_size + 1u);
+        if (!arch->names) return -1;
+        rc = stream_read(arch, 12u + rec_bytes_u64, arch->names, (size_t)arch->names_size);
+        if (rc != 0) return rc;
+        arch->names[arch->names_size] = '\0';
+    }
+    return 0;
+}
+
+static int init_container(twd_ttarch2_archive_t *arch) {
+    uint8_t probe[16];
+    memset(probe, 0, sizeof(probe));
+    size_t probe_len = 12u;
+    uint8_t tmp4[4];
+    if (raw_read_at(arch, 0u, tmp4, 4u) != 0) return -1;
+    uint32_t m = rd_u32(tmp4);
+    if (m == 0x5454437Au || m == 0x54544365u) probe_len = 16u;
+    if (raw_read_at(arch, 0u, probe, probe_len) != 0) return -1;
+
+    if (twd_ttarch2_parse_header(probe, probe_len, &arch->hdr) != 0) return -1;
+    arch->cached_chunk = UINT32_MAX;
+
+    if (arch->hdr.container_kind != TWD_TTARCH2_NCTT) {
+        if (arch->hdr.chunk_size == 0u || arch->hdr.chunk_size > TWD_TTARCH2_MAX_CHUNK_SZ ||
+            arch->hdr.chunk_count == 0u || arch->hdr.chunk_count > TWD_TTARCH2_MAX_CHUNKS) {
+            return -1;
+        }
+        uint32_t n_off = arch->hdr.chunk_count + 1u;
+        size_t tbl_bytes = (size_t)n_off * 8u;
+        uint8_t *raw_tbl = (uint8_t *)malloc(tbl_bytes);
+        arch->chunk_offsets = (uint64_t *)calloc((size_t)n_off, sizeof(uint64_t));
+        if (!raw_tbl || !arch->chunk_offsets) {
+            free(raw_tbl);
+            return -1;
+        }
+        uint64_t table_off = (m == 0x5454437Au || m == 0x54544365u) ? 16u : 12u;
+        if (raw_read_at(arch, table_off, raw_tbl, tbl_bytes) != 0) {
+            free(raw_tbl);
+            return -1;
+        }
+        for (uint32_t i = 0u; i < n_off; ++i) {
+            arch->chunk_offsets[i] = rd_u64(raw_tbl + (size_t)i * 8u);
+        }
+        free(raw_tbl);
+        arch->hdr.payload_size =
+            arch->chunk_offsets[arch->hdr.chunk_count] - arch->chunk_offsets[0];
+    }
+
+    return parse_toc(arch);
+}
+
+twd_ttarch2_archive_t *twd_ttarch2_open(const char *path) {
+    if (!path || path[0] == '\0') return NULL;
+    twd_ttarch2_archive_t *arch =
+        (twd_ttarch2_archive_t *)calloc(1u, sizeof(twd_ttarch2_archive_t));
+    if (!arch) return NULL;
+    if (twd_file_open(path, TWD_FILE_OPEN_READ, &arch->file) != 0) {
+        free(arch);
+        return NULL;
+    }
+    arch->has_file = 1;
+    if (init_container(arch) != 0) {
+        twd_ttarch2_close(arch);
+        return NULL;
+    }
+    return arch;
+}
+
+twd_ttarch2_archive_t *twd_ttarch2_open_memory(const void *data, size_t len) {
+    if (!data || len < 12u) return NULL;
+    twd_ttarch2_archive_t *arch =
+        (twd_ttarch2_archive_t *)calloc(1u, sizeof(twd_ttarch2_archive_t));
+    if (!arch) return NULL;
+    arch->mem_copy = (uint8_t *)malloc(len);
+    if (!arch->mem_copy) {
+        free(arch);
+        return NULL;
+    }
+    memcpy(arch->mem_copy, data, len);
+    arch->mem_len = len;
+    if (init_container(arch) != 0) {
+        twd_ttarch2_close(arch);
+        return NULL;
+    }
+    return arch;
+}
+
+void twd_ttarch2_close(twd_ttarch2_archive_t *arch) {
+    if (!arch) return;
+    twd_asset_unmount_ttarch2(arch);
+    if (arch->has_file) {
+        twd_file_close(&arch->file);
+        arch->has_file = 0;
+    }
+    free(arch->mem_copy);
+    free(arch->chunk_offsets);
+    free(arch->chunk_raw);
+    free(arch->entries);
+    free(arch->names);
+    free(arch);
+}
+
+uint32_t twd_ttarch2_container_kind(const twd_ttarch2_archive_t *arch) {
+    return arch ? arch->hdr.container_kind : TWD_TTARCH2_NONE;
+}
+
+uint32_t twd_ttarch2_toc_magic(const twd_ttarch2_archive_t *arch) {
+    return arch ? arch->toc_magic : 0u;
+}
+
+uint32_t twd_ttarch2_entry_count(const twd_ttarch2_archive_t *arch) {
+    return arch ? arch->entry_count : 0u;
+}
+
+static const char *entry_name_ptr(const twd_ttarch2_archive_t *arch, uint32_t index) {
+    if (!arch || index >= arch->entry_count || !arch->names) return "";
+    uint32_t pos = arch->entries[index].name_pos;
+    if (pos >= arch->names_size) return "";
+    return arch->names + pos;
+}
+
+int twd_ttarch2_get_entry(
+    const twd_ttarch2_archive_t *arch, uint32_t index, twd_ttarch2_entry_t *out) {
+    if (!arch || !out || index >= arch->entry_count) return -1;
+    const struct twd_ttarch2_record *e = &arch->entries[index];
+    out->name = entry_name_ptr(arch, index);
+    out->name_crc64 = e->name_crc64;
+    out->offset = e->offset;
+    out->size = e->size;
+    out->flags = e->flags;
+    return 0;
+}
+
+int twd_ttarch2_find(
+    const twd_ttarch2_archive_t *arch, const char *name, uint32_t *out_index,
+    twd_ttarch2_entry_t *out) {
+    if (!arch || !name) return -1;
+    for (uint32_t i = 0u; i < arch->entry_count; ++i) {
+        const char *en = entry_name_ptr(arch, i);
+        if (path_eq_icase(en, name)) {
+            if (out_index) *out_index = i;
+            if (out) twd_ttarch2_get_entry(arch, i, out);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int twd_ttarch2_find_crc64(
+    const twd_ttarch2_archive_t *arch, uint64_t crc64, uint32_t *out_index,
+    twd_ttarch2_entry_t *out) {
+    if (!arch) return -1;
+    for (uint32_t i = 0u; i < arch->entry_count; ++i) {
+        if (arch->entries[i].name_crc64 == crc64) {
+            if (out_index) *out_index = i;
+            if (out) twd_ttarch2_get_entry(arch, i, out);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void *twd_ttarch2_read_entry_alloc(
+    twd_ttarch2_archive_t *arch, uint32_t index, size_t *out_size) {
+    if (out_size) *out_size = 0u;
+    if (!arch || index >= arch->entry_count) return NULL;
+    const struct twd_ttarch2_record *e = &arch->entries[index];
+    size_t sz = (size_t)e->size;
+    uint8_t *buf = (uint8_t *)malloc(sz + 1u);
+    if (!buf) return NULL;
+    if (sz > 0u) {
+        if (stream_read(arch, arch->data_base + e->offset, buf, sz) != 0) {
+            free(buf);
+            return NULL;
+        }
+    }
+    buf[sz] = '\0';
+    if (out_size) *out_size = sz;
+    return buf;
+}
+
+void twd_ttarch2_free(void *ptr) {
+    free(ptr);
+}
+
+int twd_asset_mount_ttarch2(twd_ttarch2_archive_t *arch) {
+    if (!arch) return -1;
+    for (size_t i = 0u; i < g_mounted_count; ++i) {
+        if (g_mounted[i] == arch) return 0;
+    }
+    if (g_mounted_count >= TWD_TTARCH2_MOUNT_MAX) return -1;
+    g_mounted[g_mounted_count++] = arch;
+    return 0;
+}
+
+void twd_asset_unmount_ttarch2(const twd_ttarch2_archive_t *arch) {
+    if (!arch) return;
+    for (size_t i = 0u; i < g_mounted_count; ++i) {
+        if (g_mounted[i] == arch) {
+            for (size_t j = i + 1u; j < g_mounted_count; ++j) {
+                g_mounted[j - 1u] = g_mounted[j];
+            }
+            --g_mounted_count;
+            g_mounted[g_mounted_count] = NULL;
+            return;
+        }
+    }
+}
+
+void twd_asset_unmount_all_ttarch2(void) {
+    for (size_t i = 0u; i < g_mounted_count; ++i) g_mounted[i] = NULL;
+    g_mounted_count = 0u;
+}
+
+void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size) {
+    if (out_size) *out_size = 0u;
+    if (!rel_path || rel_path[0] == '\0') return NULL;
+    for (size_t i = g_mounted_count; i > 0u; --i) {
+        twd_ttarch2_archive_t *a = g_mounted[i - 1u];
+        uint32_t idx = 0u;
+        if (twd_ttarch2_find(a, rel_path, &idx, NULL) == 0) {
+            void *p = twd_ttarch2_read_entry_alloc(a, idx, out_size);
+            if (p) return p;
+        }
+    }
+    return NULL;
+}

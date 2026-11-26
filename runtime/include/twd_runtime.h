@@ -592,11 +592,14 @@ int twd_oodle_is_available(void);
 int64_t twd_oodle_decompress(
     const void *comp_buf, size_t comp_len, void *raw_buf, size_t raw_len);
 
-/* TTArchive2 (.ttarch2) Container Header Parser */
+/* TTArchive2 (.ttarch2) Container, Chunk Decompressor & TOC Reader */
 #define TWD_TTARCH2_NONE      0u
 #define TWD_TTARCH2_NCTT      1u
 #define TWD_TTARCH2_ZCTT      2u
 #define TWD_TTARCH2_ECTT      3u
+
+#define TWD_TTARCH2_TOC_TTA3  0x54544133u /* "3ATT" LE */
+#define TWD_TTARCH2_TOC_TTA4  0x54544134u /* "4ATT" LE */
 
 typedef struct twd_ttarch2_header {
     uint32_t container_kind;
@@ -604,9 +607,50 @@ typedef struct twd_ttarch2_header {
     int compressed;
     uint64_t payload_size;
     uint32_t version;
+    uint32_t compress_mode;
+    uint32_t chunk_size;
+    uint32_t chunk_count;
+    uint64_t header_size;
 } twd_ttarch2_header_t;
 
+typedef struct twd_ttarch2_entry {
+    const char *name;
+    uint64_t name_crc64;
+    uint64_t offset;
+    uint32_t size;
+    uint32_t flags;
+} twd_ttarch2_entry_t;
+
+typedef struct twd_ttarch2_archive twd_ttarch2_archive_t;
+
+typedef int (*twd_ttarch2_decrypt_fn)(
+    uint32_t chunk_index, void *buf, size_t len, void *user);
+
+void twd_ttarch2_set_decrypt_callback(twd_ttarch2_decrypt_fn fn, void *user);
 int twd_ttarch2_parse_header(const void *data, size_t len, twd_ttarch2_header_t *out);
+twd_ttarch2_archive_t *twd_ttarch2_open(const char *path);
+twd_ttarch2_archive_t *twd_ttarch2_open_memory(const void *data, size_t len);
+void twd_ttarch2_close(twd_ttarch2_archive_t *arch);
+uint32_t twd_ttarch2_container_kind(const twd_ttarch2_archive_t *arch);
+uint32_t twd_ttarch2_toc_magic(const twd_ttarch2_archive_t *arch);
+uint32_t twd_ttarch2_entry_count(const twd_ttarch2_archive_t *arch);
+int twd_ttarch2_get_entry(
+    const twd_ttarch2_archive_t *arch, uint32_t index, twd_ttarch2_entry_t *out);
+int twd_ttarch2_find(
+    const twd_ttarch2_archive_t *arch, const char *name, uint32_t *out_index,
+    twd_ttarch2_entry_t *out);
+int twd_ttarch2_find_crc64(
+    const twd_ttarch2_archive_t *arch, uint64_t crc64, uint32_t *out_index,
+    twd_ttarch2_entry_t *out);
+void *twd_ttarch2_read_entry_alloc(
+    twd_ttarch2_archive_t *arch, uint32_t index, size_t *out_size);
+void twd_ttarch2_free(void *ptr);
+
+/* Mount/unmount opened .ttarch2 archives as lookup fallback inside twd_asset_read_alloc */
+int twd_asset_mount_ttarch2(twd_ttarch2_archive_t *arch);
+void twd_asset_unmount_ttarch2(const twd_ttarch2_archive_t *arch);
+void twd_asset_unmount_all_ttarch2(void);
+void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size);
 
 /* Video Playback PAL (TTMediaEngine64 / TTIMFMediaEngine replacement) */
 typedef struct twd_video_player twd_video_player_t;

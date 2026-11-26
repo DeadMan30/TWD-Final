@@ -60,6 +60,30 @@ static int worker_thread_fn(void *arg) {
     return ctx->value + 8;
 }
 
+static void ttarch_wr_u16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void ttarch_wr_u32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void ttarch_wr_u64(uint8_t *p, uint64_t v) {
+    ttarch_wr_u32(p, (uint32_t)(v & 0xFFFFFFFFULL));
+    ttarch_wr_u32(p + 4u, (uint32_t)((v >> 32) & 0xFFFFFFFFULL));
+}
+
+static int synthetic_xor_decrypt(uint32_t chunk_index, void *buf, size_t len, void *user) {
+    uint8_t key = (uint8_t)((uintptr_t)user ^ (uintptr_t)chunk_index);
+    uint8_t *p = (uint8_t *)buf;
+    for (size_t i = 0u; i < len; ++i) p[i] ^= key;
+    return 0;
+}
+
 int main(void) {
     TWD_CHECK(twd_platform_init() == 0);
     uint64_t t0 = twd_time_now_ns();
@@ -606,19 +630,142 @@ int main(void) {
     TWD_CHECK(twd_oodle_decompress("TWD!", 4u, raw_oodle, 4u) == 4 && strcmp(raw_oodle, "TWD!") == 0);
     twd_oodle_shutdown();
 
-    /* TTArchive2 container header & Video playback PAL */
-    static const uint8_t nctt_hdr[16] = {
-        'N','C','T','T', 0x00,0x10,0x00,0x00, 0,0,0,0, 2,0,0,0
+    /* TTArchive2 container header, NCTT/ZCTT/ECTT TOC reader, mount fallback & Video PAL */
+    static const uint8_t nctt_hdr[12] = {
+        'N','C','T','T', 0x00,0x10,0x00,0x00, 0,0,0,0
     };
     twd_ttarch2_header_t tah;
     TWD_CHECK(twd_ttarch2_parse_header(nctt_hdr, sizeof(nctt_hdr), &tah) == 0);
     TWD_CHECK(tah.container_kind == TWD_TTARCH2_NCTT && tah.encrypted == 0 &&
-              tah.compressed == 0 && tah.payload_size == 0x1000ULL);
+              tah.compressed == 0 && tah.payload_size == 0x1000ULL && tah.header_size == 12u);
+    static const uint8_t zctt_hdr[28] = {
+        'Z','C','T','T', 0x00,0x00,0x01,0x00, 1,0,0,0,
+        0x1C,0,0,0, 0,0,0,0, 0x3C,0,0,0, 0,0,0,0
+    };
+    TWD_CHECK(twd_ttarch2_parse_header(zctt_hdr, sizeof(zctt_hdr), &tah) == 0);
+    TWD_CHECK(tah.container_kind == TWD_TTARCH2_ZCTT && tah.encrypted == 0 &&
+              tah.compressed == 1 && tah.chunk_size == 0x10000u &&
+              tah.chunk_count == 1u && tah.payload_size == 0x20ULL);
     static const uint8_t ectt_hdr[16] = {
-        'E','C','T','T', 0x20,0x00,0x00,0x00, 0,0,0,0, 2,0,0,0
+        'e','C','T','T', 1,0,0,0, 0x20,0,0,0, 0,0,0,0
     };
     TWD_CHECK(twd_ttarch2_parse_header(ectt_hdr, sizeof(ectt_hdr), &tah) == 0);
-    TWD_CHECK(tah.container_kind == TWD_TTARCH2_ECTT && tah.encrypted == 1 && tah.compressed == 1);
+    TWD_CHECK(tah.container_kind == TWD_TTARCH2_ECTT && tah.encrypted == 1 &&
+              tah.compressed == 1 && tah.compress_mode == 1u && tah.chunk_size == 0x20u);
+
+    /* Build synthetic TTA4 logical payload: 2 entries ("scripts/_boot.lua", "config\\prefs.prop") */
+    static const char s_boot_lua[] = "print('boot_ok')";
+    static const char s_prefs[] = "volume=0.8";
+    static const char n_tab[] = "scripts/_boot.lua\0config\\prefs.prop\0";
+    enum {
+        TOC_ENTRIES = 2,
+        NAMES_SZ = sizeof(n_tab) - 1,
+        DATA_BASE = 12 + TOC_ENTRIES * 28 + NAMES_SZ,
+        BOOT_LEN = sizeof(s_boot_lua) - 1,
+        PREFS_LEN = sizeof(s_prefs) - 1,
+        LOGICAL_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN
+    };
+    uint8_t logical_tt[LOGICAL_SZ];
+    memset(logical_tt, 0, sizeof(logical_tt));
+    ttarch_wr_u32(logical_tt + 0u, TWD_TTARCH2_TOC_TTA4);
+    ttarch_wr_u32(logical_tt + 4u, (uint32_t)NAMES_SZ);
+    ttarch_wr_u32(logical_tt + 8u, (uint32_t)TOC_ENTRIES);
+    /* Entry 0 */
+    ttarch_wr_u64(logical_tt + 12u + 0u, 0x1111222233334444ULL);
+    ttarch_wr_u64(logical_tt + 12u + 8u, 0ULL);
+    ttarch_wr_u32(logical_tt + 12u + 16u, (uint32_t)BOOT_LEN);
+    ttarch_wr_u32(logical_tt + 12u + 20u, 0u);
+    ttarch_wr_u16(logical_tt + 12u + 24u, 0u);
+    ttarch_wr_u16(logical_tt + 12u + 26u, 0u);
+    /* Entry 1 */
+    ttarch_wr_u64(logical_tt + 40u + 0u, 0x5555666677778888ULL);
+    ttarch_wr_u64(logical_tt + 40u + 8u, (uint64_t)BOOT_LEN);
+    ttarch_wr_u32(logical_tt + 40u + 16u, (uint32_t)PREFS_LEN);
+    ttarch_wr_u32(logical_tt + 40u + 20u, 0u);
+    ttarch_wr_u16(logical_tt + 40u + 24u, 0u);
+    ttarch_wr_u16(logical_tt + 40u + 26u, 18u);
+    memcpy(logical_tt + 12u + 56u, n_tab, NAMES_SZ);
+    memcpy(logical_tt + DATA_BASE, s_boot_lua, BOOT_LEN);
+    memcpy(logical_tt + DATA_BASE + BOOT_LEN, s_prefs, PREFS_LEN);
+
+    /* 1. NCTT archive file + mount fallback */
+    uint8_t nctt_blob[12 + LOGICAL_SZ];
+    memcpy(nctt_blob, "NCTT", 4u);
+    ttarch_wr_u64(nctt_blob + 4u, (uint64_t)LOGICAL_SZ);
+    memcpy(nctt_blob + 12u, logical_tt, LOGICAL_SZ);
+
+    twd_file_t ttf;
+    TWD_CHECK(twd_file_open("twd_synth_test.ttarch2", TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &ttf) == 0);
+    TWD_CHECK(twd_file_write(&ttf, nctt_blob, sizeof(nctt_blob)) == (int64_t)sizeof(nctt_blob));
+    TWD_CHECK(twd_file_close(&ttf) == 0);
+
+    twd_ttarch2_archive_t *arch = twd_ttarch2_open("twd_synth_test.ttarch2");
+    TWD_CHECK(arch != NULL);
+    TWD_CHECK(twd_ttarch2_container_kind(arch) == TWD_TTARCH2_NCTT);
+    TWD_CHECK(twd_ttarch2_toc_magic(arch) == TWD_TTARCH2_TOC_TTA4);
+    TWD_CHECK(twd_ttarch2_entry_count(arch) == 2u);
+    uint32_t found_idx = 99u;
+    twd_ttarch2_entry_t te;
+    TWD_CHECK(twd_ttarch2_find(arch, "CONFIG/PREFS.PROP", &found_idx, &te) == 0 &&
+              found_idx == 1u && te.size == (uint32_t)PREFS_LEN);
+    TWD_CHECK(twd_ttarch2_find_crc64(arch, 0x1111222233334444ULL, &found_idx, NULL) == 0 &&
+              found_idx == 0u);
+
+    TWD_CHECK(twd_asset_mount_ttarch2(arch) == 0);
+    size_t boot_sz = 0u;
+    char *boot_txt = (char *)twd_asset_read_alloc("SCRIPTS\\_BOOT.LUA", &boot_sz);
+    TWD_CHECK(boot_txt != NULL && boot_sz == (size_t)BOOT_LEN &&
+              strcmp(boot_txt, s_boot_lua) == 0);
+    twd_asset_free(boot_txt);
+    twd_ttarch2_close(arch);
+    TWD_CHECK(twd_file_delete("twd_synth_test.ttarch2") == 0);
+
+    /* 2. ZCTT multi-chunk container spanning TOC + payloads across 32-byte chunks */
+    enum {
+        TEST_CHUNK_SZ = 32u,
+        TEST_N_CHUNKS = (LOGICAL_SZ + TEST_CHUNK_SZ - 1u) / TEST_CHUNK_SZ,
+        ZCTT_HDR_SZ = 12u + (TEST_N_CHUNKS + 1u) * 8u
+    };
+    uint8_t zctt_blob[ZCTT_HDR_SZ + LOGICAL_SZ];
+    memcpy(zctt_blob, "ZCTT", 4u);
+    ttarch_wr_u32(zctt_blob + 4u, TEST_CHUNK_SZ);
+    ttarch_wr_u32(zctt_blob + 8u, TEST_N_CHUNKS);
+    for (uint32_t ci = 0u; ci < TEST_N_CHUNKS; ++ci) {
+        uint64_t off = (uint64_t)ZCTT_HDR_SZ + (uint64_t)ci * TEST_CHUNK_SZ;
+        ttarch_wr_u64(zctt_blob + 12u + (size_t)ci * 8u, off);
+    }
+    ttarch_wr_u64(zctt_blob + 12u + (size_t)TEST_N_CHUNKS * 8u, (uint64_t)(ZCTT_HDR_SZ + LOGICAL_SZ));
+    memcpy(zctt_blob + ZCTT_HDR_SZ, logical_tt, LOGICAL_SZ);
+
+    twd_ttarch2_archive_t *zarch = twd_ttarch2_open_memory(zctt_blob, sizeof(zctt_blob));
+    TWD_CHECK(zarch != NULL && twd_ttarch2_container_kind(zarch) == TWD_TTARCH2_ZCTT);
+    TWD_CHECK(twd_ttarch2_find(zarch, "config/prefs.prop", &found_idx, NULL) == 0);
+    size_t pr_sz = 0u;
+    char *pr_txt = (char *)twd_ttarch2_read_entry_alloc(zarch, found_idx, &pr_sz);
+    TWD_CHECK(pr_txt != NULL && pr_sz == (size_t)PREFS_LEN && strcmp(pr_txt, s_prefs) == 0);
+    twd_ttarch2_free(pr_txt);
+    twd_ttarch2_close(zarch);
+
+    /* 3. ECTT encrypted multi-chunk container via decrypt callback */
+    uint8_t ectt_blob[ZCTT_HDR_SZ + LOGICAL_SZ];
+    memcpy(ectt_blob, zctt_blob, sizeof(ectt_blob));
+    memcpy(ectt_blob, "ECTT", 4u);
+    for (uint32_t ci = 0u; ci < TEST_N_CHUNKS; ++ci) {
+        size_t pos = (size_t)ZCTT_HDR_SZ + (size_t)ci * TEST_CHUNK_SZ;
+        size_t clen = (pos + TEST_CHUNK_SZ <= sizeof(ectt_blob))
+                          ? TEST_CHUNK_SZ
+                          : (sizeof(ectt_blob) - pos);
+        synthetic_xor_decrypt(ci, ectt_blob + pos, clen, (void *)(uintptr_t)0x5Au);
+    }
+    TWD_CHECK(twd_ttarch2_open_memory(ectt_blob, sizeof(ectt_blob)) == NULL);
+    twd_ttarch2_set_decrypt_callback(synthetic_xor_decrypt, (void *)(uintptr_t)0x5Au);
+    twd_ttarch2_archive_t *earch = twd_ttarch2_open_memory(ectt_blob, sizeof(ectt_blob));
+    TWD_CHECK(earch != NULL && twd_ttarch2_container_kind(earch) == TWD_TTARCH2_ECTT);
+    char *eb_txt = (char *)twd_ttarch2_read_entry_alloc(earch, 0u, &boot_sz);
+    TWD_CHECK(eb_txt != NULL && boot_sz == (size_t)BOOT_LEN && strcmp(eb_txt, s_boot_lua) == 0);
+    twd_ttarch2_free(eb_txt);
+    twd_ttarch2_close(earch);
+    twd_ttarch2_set_decrypt_callback(NULL, NULL);
 
     TWD_CHECK(twd_gfx_has_gl_dispatch(rgfx) == 0);
     TWD_CHECK(twd_gfx_gl_compile_glsl(rgfx, TWD_SHADER_STAGE_VS, "void main(){}") == 0u);

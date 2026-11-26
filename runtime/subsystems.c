@@ -823,6 +823,8 @@ void *twd_asset_read_alloc(const char *rel_path, size_t *out_size) {
     }
     void *direct = read_local_file_alloc(rel_path, out_size);
     if (direct) return direct;
+    void *packed = twd_ttarch2_lookup_mounted_alloc(rel_path, out_size);
+    if (packed) return packed;
 #ifdef __ANDROID__
     AAssetManager *mgr = (AAssetManager *)twd_android_get_asset_manager();
     if (mgr) {
@@ -918,50 +920,6 @@ int64_t twd_oodle_decompress(
     if (comp_len == raw_len) {
         memcpy(raw_buf, comp_buf, raw_len);
         return (int64_t)raw_len;
-    }
-    return -1;
-}
-
-/* ---------- TTArchive2 (.ttarch2) Container Header Parser ---------- */
-
-static uint32_t rd_tt_u32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static uint64_t rd_tt_u64(const uint8_t *p) {
-    return (uint64_t)rd_tt_u32(p) | ((uint64_t)rd_tt_u32(p + 4u) << 32);
-}
-
-int twd_ttarch2_parse_header(const void *data, size_t len, twd_ttarch2_header_t *out) {
-    if (!out) return -1;
-    memset(out, 0, sizeof(*out));
-    if (!data || len < 16u) return -1;
-    const uint8_t *b = (const uint8_t *)data;
-    uint32_t magic = rd_tt_u32(b);
-    if (magic == 0x5454434Eu) { /* 'NCTT' little-endian */
-        out->container_kind = TWD_TTARCH2_NCTT;
-        out->encrypted = 0;
-        out->compressed = 0;
-        out->payload_size = rd_tt_u64(b + 4u);
-        out->version = rd_tt_u32(b + 12u);
-        return 0;
-    }
-    if (magic == 0x5454435Au) { /* 'ZCTT' little-endian */
-        out->container_kind = TWD_TTARCH2_ZCTT;
-        out->encrypted = 0;
-        out->compressed = 1;
-        out->payload_size = rd_tt_u64(b + 4u);
-        out->version = rd_tt_u32(b + 12u);
-        return 0;
-    }
-    if (magic == 0x54544345u) { /* 'ECTT' little-endian */
-        out->container_kind = TWD_TTARCH2_ECTT;
-        out->encrypted = 1;
-        out->compressed = 1;
-        out->payload_size = rd_tt_u64(b + 4u);
-        out->version = rd_tt_u32(b + 12u);
-        return 0;
     }
     return -1;
 }

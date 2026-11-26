@@ -5,6 +5,7 @@ add_library(twdrt STATIC
     gfx_shim.c
     shader_cache.c
     subsystems.c
+    ttarch2.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>
