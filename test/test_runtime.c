@@ -767,6 +767,60 @@ int main(void) {
     twd_ttarch2_close(earch);
     twd_ttarch2_set_decrypt_callback(NULL, NULL);
 
+    /* 4. Directory auto-mount helper (twd_ttarch2_mount_dir + unmount_all cleanup) */
+    TWD_CHECK(twd_mkdir("twd_synth_dir") == 0);
+    twd_file_t dir_tf;
+    TWD_CHECK(twd_file_open("twd_synth_dir/pack0.ttarch2", TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &dir_tf) == 0);
+    TWD_CHECK(twd_file_write(&dir_tf, nctt_blob, sizeof(nctt_blob)) == (int64_t)sizeof(nctt_blob));
+    TWD_CHECK(twd_file_close(&dir_tf) == 0);
+    TWD_CHECK(twd_ttarch2_mount_dir("twd_synth_dir") == 1);
+    boot_txt = (char *)twd_asset_read_alloc("scripts/_boot.lua", &boot_sz);
+    TWD_CHECK(boot_txt != NULL && boot_sz == (size_t)BOOT_LEN && strcmp(boot_txt, s_boot_lua) == 0);
+    twd_asset_free(boot_txt);
+    twd_asset_unmount_all_ttarch2();
+    TWD_CHECK(twd_file_delete("twd_synth_dir/pack0.ttarch2") == 0);
+    TWD_CHECK(twd_rmdir("twd_synth_dir") == 0);
+
+    /* 5. Audio & FMOD Studio / Core PAL */
+    TWD_CHECK((twd_audio_init(NULL, NULL) & TWD_AUDIO_CAP_MIXER) != 0);
+    twd_audio_system_t *asys = twd_audio_system_create();
+    TWD_CHECK(asys != NULL);
+    TWD_CHECK(twd_audio_system_initialize(asys, 64u, 48000u, 0u) == 0);
+    static const uint8_t fake_bank[16] = {'R','I','F','F', 8,0,0,0, 'F','E','V',' ', 1,0,0,0};
+    twd_audio_bank_t *abank = twd_audio_load_bank_memory(asys, "Master.bank", fake_bank, sizeof(fake_bank));
+    TWD_CHECK(abank != NULL && twd_audio_bank_is_valid(abank) == 1 && twd_audio_bank_count(asys) == 1u);
+    twd_audio_bus_t *mbus = twd_audio_get_bus(asys, "bus:/Music");
+    TWD_CHECK(mbus != NULL && twd_audio_bus_set_volume(mbus, 0.5f) == 0);
+    twd_audio_event_desc_t *ed = twd_audio_register_event(asys, "event:/Menu/Theme", 200u, 1, "bus:/Music");
+    TWD_CHECK(ed != NULL);
+    twd_audio_event_instance_t *einst = twd_audio_create_instance(asys, ed);
+    TWD_CHECK(einst != NULL && twd_audio_instance_start(einst) == 0);
+    TWD_CHECK(twd_audio_instance_set_parameter(einst, "Tension", 0.75f) == 0);
+    float pval = 0.0f;
+    TWD_CHECK(twd_audio_instance_get_parameter(einst, "Tension", &pval) == 0 && pval == 0.75f);
+    TWD_CHECK(twd_audio_system_update(asys, 100u) == 0);
+    TWD_CHECK(twd_audio_instance_get_timeline_ms(einst) == 100u &&
+              twd_audio_instance_get_state(einst) == TWD_AUDIO_PLAYING);
+    TWD_CHECK(twd_audio_system_update(asys, 100u) == 0);
+    TWD_CHECK(twd_audio_instance_get_timeline_ms(einst) == 200u &&
+              twd_audio_instance_get_state(einst) == TWD_AUDIO_STOPPED);
+    twd_audio_instance_release(einst);
+
+    static const int16_t mono_pcm[4] = {1000, -1000, 2000, -2000};
+    twd_audio_sound_t *asnd = twd_audio_create_sound_pcm16(asys, mono_pcm, 4u, 1u, 48000u, 0);
+    TWD_CHECK(asnd != NULL);
+    twd_audio_channel_t *ach = twd_audio_play_sound(asys, asnd, mbus, 0);
+    TWD_CHECK(ach != NULL && twd_audio_channel_is_playing(ach) == 1);
+    int16_t mix_out[8] = {0};
+    TWD_CHECK(twd_audio_mix_pcm_i16(asys, mix_out, 4u) == 4u);
+    TWD_CHECK(mix_out[0] == 500 && mix_out[1] == 500 && mix_out[4] == 1000 && mix_out[5] == 1000);
+    TWD_CHECK(twd_audio_system_mixer_suspend(asys) == 0 && twd_audio_system_is_suspended(asys) == 1);
+    TWD_CHECK(twd_audio_system_mixer_resume(asys) == 0 && twd_audio_system_is_suspended(asys) == 0);
+    TWD_CHECK(twd_audio_bank_unload(abank) == 0 && twd_audio_bank_count(asys) == 0u);
+    twd_audio_sound_release(asnd);
+    twd_audio_system_release(asys);
+    twd_audio_shutdown();
+
     TWD_CHECK(twd_gfx_has_gl_dispatch(rgfx) == 0);
     TWD_CHECK(twd_gfx_gl_compile_glsl(rgfx, TWD_SHADER_STAGE_VS, "void main(){}") == 0u);
     twd_video_player_t *vp_pl = twd_video_create(rgfx);

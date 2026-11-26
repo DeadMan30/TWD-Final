@@ -6,6 +6,7 @@ add_library(twdrt STATIC
     shader_cache.c
     subsystems.c
     ttarch2.c
+    audio_shim.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>

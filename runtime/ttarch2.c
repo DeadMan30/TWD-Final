@@ -66,6 +66,7 @@ struct twd_ttarch2_archive {
 static twd_ttarch2_decrypt_fn g_decrypt_fn = NULL;
 static void *g_decrypt_user = NULL;
 static twd_ttarch2_archive_t *g_mounted[TWD_TTARCH2_MOUNT_MAX];
+static uint8_t g_mounted_owned[TWD_TTARCH2_MOUNT_MAX];
 static size_t g_mounted_count = 0u;
 
 static uint16_t rd_u16(const uint8_t *p) {
@@ -505,7 +506,9 @@ int twd_asset_mount_ttarch2(twd_ttarch2_archive_t *arch) {
         if (g_mounted[i] == arch) return 0;
     }
     if (g_mounted_count >= TWD_TTARCH2_MOUNT_MAX) return -1;
-    g_mounted[g_mounted_count++] = arch;
+    g_mounted[g_mounted_count] = arch;
+    g_mounted_owned[g_mounted_count] = 0u;
+    ++g_mounted_count;
     return 0;
 }
 
@@ -515,17 +518,69 @@ void twd_asset_unmount_ttarch2(const twd_ttarch2_archive_t *arch) {
         if (g_mounted[i] == arch) {
             for (size_t j = i + 1u; j < g_mounted_count; ++j) {
                 g_mounted[j - 1u] = g_mounted[j];
+                g_mounted_owned[j - 1u] = g_mounted_owned[j];
             }
             --g_mounted_count;
             g_mounted[g_mounted_count] = NULL;
+            g_mounted_owned[g_mounted_count] = 0u;
             return;
         }
     }
 }
 
 void twd_asset_unmount_all_ttarch2(void) {
-    for (size_t i = 0u; i < g_mounted_count; ++i) g_mounted[i] = NULL;
-    g_mounted_count = 0u;
+    while (g_mounted_count > 0u) {
+        size_t idx = g_mounted_count - 1u;
+        twd_ttarch2_archive_t *a = g_mounted[idx];
+        uint8_t owned = g_mounted_owned[idx];
+        g_mounted[idx] = NULL;
+        g_mounted_owned[idx] = 0u;
+        --g_mounted_count;
+        if (owned && a) twd_ttarch2_close(a);
+    }
+}
+
+static int has_ttarch2_ext(const char *name) {
+    static const char ext[] = ".ttarch2";
+    size_t nlen = strlen(name);
+    size_t elen = sizeof(ext) - 1u;
+    if (nlen <= elen) return 0;
+    const char *tail = name + (nlen - elen);
+    for (size_t i = 0u; i < elen; ++i) {
+        if (ascii_lower(tail[i]) != ext[i]) return 0;
+    }
+    return 1;
+}
+
+int twd_ttarch2_mount_dir(const char *dir_path) {
+    if (!dir_path || dir_path[0] == '\0') return -1;
+    twd_dir_t d;
+    if (twd_dir_open(dir_path, &d) != 0) return -1;
+
+    int mounted = 0;
+    size_t dlen = strlen(dir_path);
+    twd_dir_entry_t ent;
+    while (twd_dir_next(&d, &ent) > 0) {
+        if (ent.is_dir || !has_ttarch2_ext(ent.name)) continue;
+        if (g_mounted_count >= TWD_TTARCH2_MOUNT_MAX) break;
+        size_t nlen = strlen(ent.name);
+        if (dlen + 1u + nlen >= 1024u) continue;
+        char full[1024];
+        memcpy(full, dir_path, dlen);
+        full[dlen] = '/';
+        memcpy(full + dlen + 1u, ent.name, nlen + 1u);
+        twd_ttarch2_archive_t *arch = twd_ttarch2_open(full);
+        if (arch) {
+            if (twd_asset_mount_ttarch2(arch) == 0) {
+                g_mounted_owned[g_mounted_count - 1u] = 1u;
+                ++mounted;
+            } else {
+                twd_ttarch2_close(arch);
+            }
+        }
+    }
+    twd_dir_close(&d);
+    return mounted;
 }
 
 void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size) {

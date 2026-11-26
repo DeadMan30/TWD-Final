@@ -650,7 +650,94 @@ void twd_ttarch2_free(void *ptr);
 int twd_asset_mount_ttarch2(twd_ttarch2_archive_t *arch);
 void twd_asset_unmount_ttarch2(const twd_ttarch2_archive_t *arch);
 void twd_asset_unmount_all_ttarch2(void);
+int twd_ttarch2_mount_dir(const char *dir_path);
 void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size);
+
+/* Audio & FMOD Studio / Core PAL (libfmodstudio/libfmod bridge + software PCM16 mixer) */
+#define TWD_AUDIO_CAP_FMOD_STUDIO 1
+#define TWD_AUDIO_CAP_FMOD_CORE   2
+#define TWD_AUDIO_CAP_OS_OUTPUT   4
+#define TWD_AUDIO_CAP_MIXER       8
+
+#define TWD_AUDIO_STOPPED         0
+#define TWD_AUDIO_PLAYING         1
+#define TWD_AUDIO_PAUSED          2
+
+#define TWD_AUDIO_LOAD_UNLOADED   0
+#define TWD_AUDIO_LOAD_LOADED     3
+
+typedef struct twd_audio_system twd_audio_system_t;
+typedef struct twd_audio_bank twd_audio_bank_t;
+typedef struct twd_audio_bus twd_audio_bus_t;
+typedef struct twd_audio_event_desc twd_audio_event_desc_t;
+typedef struct twd_audio_event_instance twd_audio_event_instance_t;
+typedef struct twd_audio_sound twd_audio_sound_t;
+typedef struct twd_audio_channel twd_audio_channel_t;
+
+int twd_audio_init(const char *studio_lib_or_null, const char *core_lib_or_null);
+void twd_audio_shutdown(void);
+int twd_audio_backend_caps(void);
+
+twd_audio_system_t *twd_audio_system_create(void);
+int twd_audio_system_initialize(
+    twd_audio_system_t *sys, uint32_t max_channels, uint32_t sample_rate_hz, uint32_t flags);
+void twd_audio_system_release(twd_audio_system_t *sys);
+int twd_audio_system_mixer_suspend(twd_audio_system_t *sys);
+int twd_audio_system_mixer_resume(twd_audio_system_t *sys);
+int twd_audio_system_is_suspended(const twd_audio_system_t *sys);
+int twd_audio_system_set_listener(twd_audio_system_t *sys, float x, float y, float z);
+int twd_audio_system_update(twd_audio_system_t *sys, uint32_t dt_ms);
+
+twd_audio_bank_t *twd_audio_load_bank_memory(
+    twd_audio_system_t *sys, const char *name, const void *data, size_t len);
+twd_audio_bank_t *twd_audio_load_bank_vfs(twd_audio_system_t *sys, const char *rel_path);
+int twd_audio_bank_unload(twd_audio_bank_t *bank);
+int twd_audio_bank_is_valid(const twd_audio_bank_t *bank);
+uint32_t twd_audio_bank_count(const twd_audio_system_t *sys);
+
+twd_audio_bus_t *twd_audio_get_bus(twd_audio_system_t *sys, const char *bus_path);
+int twd_audio_bus_set_volume(twd_audio_bus_t *bus, float volume);
+float twd_audio_bus_get_volume(const twd_audio_bus_t *bus);
+int twd_audio_bus_set_mute(twd_audio_bus_t *bus, int muted);
+int twd_audio_bus_set_paused(twd_audio_bus_t *bus, int paused);
+
+twd_audio_event_desc_t *twd_audio_register_event(
+    twd_audio_system_t *sys, const char *path, uint32_t length_ms, int oneshot,
+    const char *bus_path_or_null);
+twd_audio_event_desc_t *twd_audio_get_event(twd_audio_system_t *sys, const char *path);
+twd_audio_event_instance_t *twd_audio_create_instance(
+    twd_audio_system_t *sys, twd_audio_event_desc_t *desc);
+void twd_audio_instance_release(twd_audio_event_instance_t *inst);
+int twd_audio_instance_start(twd_audio_event_instance_t *inst);
+int twd_audio_instance_stop(twd_audio_event_instance_t *inst, int immediate);
+int twd_audio_instance_set_paused(twd_audio_event_instance_t *inst, int paused);
+int twd_audio_instance_set_volume(twd_audio_event_instance_t *inst, float volume);
+int twd_audio_instance_set_timeline_ms(twd_audio_event_instance_t *inst, uint32_t ms);
+uint32_t twd_audio_instance_get_timeline_ms(const twd_audio_event_instance_t *inst);
+int twd_audio_instance_get_state(const twd_audio_event_instance_t *inst);
+int twd_audio_instance_set_parameter(
+    twd_audio_event_instance_t *inst, const char *name, float value);
+int twd_audio_instance_get_parameter(
+    const twd_audio_event_instance_t *inst, const char *name, float *out_val);
+void twd_audio_instance_set_3d(
+    twd_audio_event_instance_t *inst, float x, float y, float z);
+void twd_audio_instance_set_userdata(twd_audio_event_instance_t *inst, void *user);
+void *twd_audio_instance_get_userdata(const twd_audio_event_instance_t *inst);
+
+twd_audio_sound_t *twd_audio_create_sound_pcm16(
+    twd_audio_system_t *sys, const int16_t *samples, uint32_t num_frames,
+    uint32_t channels, uint32_t sample_rate, int loop);
+void twd_audio_sound_release(twd_audio_sound_t *sound);
+twd_audio_channel_t *twd_audio_play_sound(
+    twd_audio_system_t *sys, twd_audio_sound_t *sound, twd_audio_bus_t *bus, int paused);
+int twd_audio_channel_stop(twd_audio_channel_t *ch);
+int twd_audio_channel_set_paused(twd_audio_channel_t *ch, int paused);
+int twd_audio_channel_set_volume(twd_audio_channel_t *ch, float volume);
+int twd_audio_channel_set_pan(twd_audio_channel_t *ch, float pan);
+int twd_audio_channel_set_pitch(twd_audio_channel_t *ch, float pitch);
+int twd_audio_channel_is_playing(const twd_audio_channel_t *ch);
+uint32_t twd_audio_mix_pcm_i16(
+    twd_audio_system_t *sys, int16_t *out_stereo_i16, uint32_t num_frames);
 
 /* Video Playback PAL (TTMediaEngine64 / TTIMFMediaEngine replacement) */
 typedef struct twd_video_player twd_video_player_t;
