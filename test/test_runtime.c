@@ -1408,6 +1408,117 @@ int main(void) {
         twd_scene_mgr_destroy(smgr);
     }
 
+    {
+        /* Test twd_gfx_draw_line & Telltale D3DMesh (.d3dmesh / T3GFXBuffer) parse, GPU upload & wireframe raster */
+        twd_gfx_device_t *mdev = twd_gfx_device_create(&(twd_gfx_desc_t){NULL, 48u, 48u, -1, 0});
+        TWD_CHECK(mdev != NULL);
+        static const float clr_bg[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        twd_gfx_clear(mdev, clr_bg, 1.0f, 0u);
+        static const uint8_t lime[4] = {40u, 240u, 60u, 255u};
+        TWD_CHECK(twd_gfx_draw_line(mdev, 2, 2, 6, 2, lime) == 0);
+        size_t mb_bytes = 0u;
+        const uint8_t *mb_px = (const uint8_t *)twd_gfx_backbuffer_data(mdev, NULL, NULL, &mb_bytes);
+        TWD_CHECK(mb_px != NULL && mb_bytes == 48u * 48u * 4u);
+        size_t l_off = ((size_t)2u * 48u + 4u) * 4u;
+        TWD_CHECK(mb_px[l_off + 0u] == 40u && mb_px[l_off + 1u] == 240u && mb_px[l_off + 2u] == 60u);
+
+        uint8_t dm_pkt[512];
+        memset(dm_pkt, 0, sizeof(dm_pkt));
+        size_t mo = 0u;
+        memcpy(dm_pkt + mo, "6VSM", 4u); mo += 4u;
+        size_t dm_def_off = mo; mo += 4u;
+        mo += 8u; /* debug + async */
+        mo += 4u; /* type_count = 0 */
+        size_t dm_start = mo;
+        /* mName ("tri") */
+        dm_pkt[mo++] = 11u; mo += 3u;
+        dm_pkt[mo++] = 3u; mo += 3u;
+        memcpy(dm_pkt + mo, "tri", 3u); mo += 3u;
+        /* mVersion = 55, mbHasProps = 0, lightmapScale = 1.0f, uv_ver = 0, lod_param_crc */
+        dm_pkt[mo++] = 55u; mo += 3u;
+        dm_pkt[mo++] = 0u;
+        { float lms = 1.0f; memcpy(dm_pkt + mo, &lms, 4u); mo += 4u; }
+        mo += 4u;
+        { uint64_t lcrc = 0x1122334455667788ULL; memcpy(dm_pkt + mo, &lcrc, 8u); mo += 8u; }
+        mo += 4u; /* dep_cnt = 0 */
+        dm_pkt[mo++] = 0u; /* has_cp = 0 */
+        /* mMeshData block */
+        size_t md_blk_off = mo; mo += 4u;
+        size_t md_start = mo;
+        /* mLODs block */
+        size_t lods_blk_off = mo; mo += 4u;
+        size_t lods_start = mo;
+        dm_pkt[mo++] = 1u; mo += 3u; /* lod_cnt = 1 */
+        /* mBatches[0]: 1 batch * 24B + 4B count + 4B blk = 32B */
+        dm_pkt[mo++] = 32u; mo += 3u;
+        dm_pkt[mo++] = 1u; mo += 3u;
+        mo += 8u; /* base=0, start=0 */
+        dm_pkt[mo++] = 1u; mo += 3u; /* num_primitives = 1 */
+        dm_pkt[mo++] = 3u; mo += 3u; /* num_indices = 3 */
+        mo += 8u; /* material_index=0, pad=0 */
+        /* mBatches[1]: empty */
+        dm_pkt[mo++] = 8u; mo += 3u; mo += 4u;
+        /* LOD0 fields: mask(4) + bbox(24) + bsphere(16) + endian(4) + posScale(12) + posWScale(12) + posOffset(12) + area/key(8) + vertCount(4) + flags(4) */
+        dm_pkt[mo++] = 1u; mo += 3u;
+        mo += 24u + 16u + 4u;
+        { float one = 1.0f; memcpy(dm_pkt + mo, &one, 4u); memcpy(dm_pkt + mo + 4u, &one, 4u); memcpy(dm_pkt + mo + 8u, &one, 4u); }
+        mo += 12u + 12u + 12u + 8u;
+        dm_pkt[mo++] = 3u; mo += 3u; /* vertex_count = 3 */
+        mo += 4u; /* flags */
+        { uint32_t lsz = (uint32_t)(mo - lods_start) + 4u; memcpy(dm_pkt + lods_blk_off, &lsz, 4u); }
+        /* 6 empty DCArray blocks */
+        for (uint32_t dci = 0u; dci < 6u; ++dci) {
+            dm_pkt[mo++] = 8u; mo += 3u; mo += 4u;
+        }
+        mo += 4u; /* mVertexStreams = 0 */
+        mo += 4u; /* uv_cnt = 0 */
+        dm_pkt[mo++] = 1u; mo += 3u; /* vs_cnt = 1 */
+        mo += 32u; /* VertexState 32B header */
+        /* Index T3GFXBuffer: num=3, stride=2, {0,1,2} */
+        dm_pkt[mo++] = 3u; mo += 3u;
+        dm_pkt[mo++] = 2u; mo += 3u;
+        {
+            uint16_t idxs[3] = {0u, 1u, 2u};
+            memcpy(dm_pkt + mo, idxs, sizeof(idxs));
+            mo += sizeof(idxs);
+        }
+        /* Vertex T3GFXBuffer: num=3, stride=12, {(0,0,0), (1,0,0), (0,1,0)} */
+        dm_pkt[mo++] = 3u; mo += 3u;
+        dm_pkt[mo++] = 12u; mo += 3u;
+        {
+            float vtx[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+            memcpy(dm_pkt + mo, vtx, sizeof(vtx));
+            mo += sizeof(vtx);
+        }
+        {
+            uint32_t msz = (uint32_t)(mo - md_start) + 4u;
+            memcpy(dm_pkt + md_blk_off, &msz, 4u);
+            uint32_t dsz = (uint32_t)(mo - dm_start);
+            memcpy(dm_pkt + dm_def_off, &dsz, 4u);
+        }
+
+        twd_d3dmesh_t dmesh;
+        TWD_CHECK(twd_d3dmesh_parse_memory(dm_pkt, mo, &dmesh) == 0);
+        TWD_CHECK(strcmp(dmesh.name, "tri") == 0);
+        TWD_CHECK(dmesh.version == 55 && dmesh.lod_count == 1u);
+        TWD_CHECK(dmesh.batch_count == 1u && dmesh.batches[0].num_indices == 3u);
+        TWD_CHECK(dmesh.vertex_count == 3u && dmesh.vertex_stride == 12u);
+        TWD_CHECK(dmesh.index_count == 3u && dmesh.index_stride == 2u);
+
+        twd_d3dmesh_gpu_t dgpu;
+        TWD_CHECK(twd_d3dmesh_upload_gfx(mdev, &dmesh, &dgpu) == 0);
+        TWD_CHECK(dgpu.vb != NULL && dgpu.ib != NULL && dgpu.index_count == 3u);
+
+        static const uint8_t magenta[4] = {250u, 30u, 220u, 255u};
+        TWD_CHECK(twd_d3dmesh_draw_wire(mdev, &dmesh, 24.0f, 24.0f, 24.0f, magenta) == 0);
+        size_t mp_off = ((size_t)24u * 48u + 24u) * 4u;
+        TWD_CHECK(mb_px[mp_off + 0u] == 250u && mb_px[mp_off + 1u] == 30u && mb_px[mp_off + 2u] == 220u);
+
+        twd_d3dmesh_gpu_free(&dgpu);
+        twd_d3dmesh_free(&dmesh);
+        twd_gfx_device_destroy(mdev);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

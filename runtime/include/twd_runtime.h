@@ -380,6 +380,8 @@ const uint8_t *twd_gfx_backbuffer_data(
     const twd_gfx_device_t *dev, uint32_t *out_w, uint32_t *out_h, size_t *out_size);
 int twd_gfx_draw_rect(
     twd_gfx_device_t *dev, int32_t dx, int32_t dy, int32_t dw, int32_t dh, const uint8_t rgba[4]);
+int twd_gfx_draw_line(
+    twd_gfx_device_t *dev, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const uint8_t rgba[4]);
 int twd_gfx_draw_sprite(
     twd_gfx_device_t *dev,
     const twd_gfx_texture_t *tex,
@@ -889,6 +891,61 @@ twd_scene_agent_t *twd_scene_mgr_find_agent(
 uint32_t twd_scene_mgr_scene_count(const twd_scene_mgr_t *mgr);
 uint32_t twd_scene_mgr_total_agent_count(const twd_scene_mgr_t *mgr);
 const char *twd_scene_mgr_primary_name(const twd_scene_mgr_t *mgr);
+
+/* Telltale D3DMesh (.d3dmesh / T3MeshData / T3GFXBuffer) parser, VB/IB GPU upload & wire draw */
+#define TWD_D3DMESH_MAX_BATCHES 64u
+
+typedef struct twd_d3dmesh_batch {
+    uint32_t base_index;
+    uint32_t start_index;
+    uint32_t num_primitives;
+    uint32_t num_indices;
+    int32_t material_index;
+} twd_d3dmesh_batch_t;
+
+typedef struct twd_d3dmesh {
+    char name[128];
+    int32_t version;
+    float lightmap_scale;
+    uint64_t lod_param_crc;
+    uint32_t lod_count;
+    uint32_t vertex_count;
+    uint32_t ib_or_vb_verts;
+    uint32_t vertex_stride;
+    uint32_t vertex_stream_mask;
+    float bbox_minmax[6];
+    float bsphere_xyzr[4];
+    float pos_scale[3];
+    float pos_offset[3];
+    uint32_t batch_count;
+    twd_d3dmesh_batch_t *batches;
+    uint8_t *vertex_data;
+    size_t vertex_bytes;
+    uint32_t index_count;
+    uint32_t index_stride;
+    uint8_t *index_data;
+    size_t index_bytes;
+} twd_d3dmesh_t;
+
+typedef struct twd_d3dmesh_gpu {
+    twd_gfx_buffer_t *vb;
+    twd_gfx_buffer_t *ib;
+    uint32_t vertex_count;
+    uint32_t vertex_stride;
+    uint32_t index_count;
+    uint32_t index_stride;
+} twd_d3dmesh_gpu_t;
+
+int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out);
+void twd_d3dmesh_free(twd_d3dmesh_t *mesh);
+int twd_d3dmesh_upload_gfx(
+    twd_gfx_device_t *dev, const twd_d3dmesh_t *mesh, twd_d3dmesh_gpu_t *out_gpu);
+void twd_d3dmesh_gpu_free(twd_d3dmesh_gpu_t *gpu);
+int twd_d3dmesh_draw_wire(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    float cx, float cy, float scale,
+    const uint8_t rgba[4]);
 
 /* --- Lua 5.2 script chunk unwrapper & lightweight boot VM --- */
 typedef enum twd_lua_chunk_kind {

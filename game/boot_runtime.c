@@ -22,6 +22,9 @@ typedef struct twd_boot_loop_state {
     twd_gfx_texture_t *splash_tex;
     twd_font_t boot_font;
     int has_boot_font;
+    twd_d3dmesh_t boot_mesh;
+    twd_d3dmesh_gpu_t boot_mesh_gpu;
+    int has_boot_mesh;
     void *d3d_dev;
     void *d3d_ctx;
     void *d3d_swap;
@@ -29,6 +32,7 @@ typedef struct twd_boot_loop_state {
     uint64_t ticks;
     uint64_t renders;
     uint64_t elapsed_ns;
+    uint32_t input_events;
     int clean_shutdown;
 } twd_boot_loop_state_t;
 
@@ -281,6 +285,20 @@ static void boot_on_tick(void *user, uint64_t dt_ns) {
     twd_gamepad_state_t pad;
     (void)twd_input_get_gamepad_state(0u, &pad);
 
+    twd_win_event_t ev;
+    while (twd_window_poll_event(&ev) != 0) {
+        st->input_events++;
+        if (ev.kind == TWD_EVT_QUIT || ev.kind == TWD_EVT_CLOSE) {
+            twd_post_quit(0);
+        } else if (ev.kind == TWD_EVT_RESIZE && st->gfx && ev.param1 > 0ULL && ev.param2 > 0) {
+            st->cfg.width = (uint32_t)ev.param1;
+            st->cfg.height = (uint32_t)ev.param2;
+            twd_gfx_set_viewport(st->gfx, 0.0f, 0.0f, (float)st->cfg.width, (float)st->cfg.height, 0.0f, 1.0f);
+        } else if (ev.kind == TWD_EVT_KEY || ev.kind == TWD_EVT_POINTER) {
+            /* Dispatched to input listeners; event counter recorded in st->input_events */
+        }
+    }
+
     if (st->audio) {
         uint32_t dt_ms = (uint32_t)(dt_ns / 1000000ULL);
         if (dt_ms == 0u) dt_ms = 1u;
@@ -311,6 +329,12 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
                 gfx, st->splash_tex, 0, 0, (int32_t)sw, (int32_t)sh,
                 0, 0, (int32_t)dw, (int32_t)dh, NULL);
         }
+    }
+    if (st->has_boot_mesh) {
+        static const uint8_t k_wire_amber[4] = {240u, 200u, 80u, 255u};
+        uint32_t dw = st->cfg.width ? st->cfg.width : 1280u;
+        uint32_t dh = st->cfg.height ? st->cfg.height : 720u;
+        (void)twd_d3dmesh_draw_wire(gfx, &st->boot_mesh, (float)dw * 0.5f, (float)dh * 0.5f, 180.0f, k_wire_amber);
     }
     if (st->has_boot_font) {
         static const uint8_t k_white[4] = {255u, 255u, 255u, 255u};
@@ -498,6 +522,36 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 }
             }
             if (fbuf) twd_asset_free(fbuf);
+
+            const char *mesh_cand[3] = {NULL, "ui_boot.d3dmesh", NULL};
+            if (st.scenes) {
+                const char *pri = twd_scene_mgr_primary_name(st.scenes);
+                twd_scene_t *psc = pri ? twd_scene_mgr_find(st.scenes, pri) : NULL;
+                if (psc) {
+                    for (uint32_t ai = 0u; ai < psc->agent_count; ++ai) {
+                        if (psc->agents[ai].visible && psc->agents[ai].render_mesh[0] != '\0') {
+                            mesh_cand[0] = psc->agents[ai].render_mesh;
+                            break;
+                        }
+                    }
+                }
+            }
+            for (size_t mi = 0u; mi < 2u && !st.has_boot_mesh; ++mi) {
+                if (!mesh_cand[mi]) continue;
+                size_t msz = 0u;
+                void *mbuf = twd_asset_read_alloc(mesh_cand[mi], &msz);
+                if (mbuf && msz > 0u) {
+                    if (twd_d3dmesh_parse_memory(mbuf, msz, &st.boot_mesh) == 0) {
+                        if (twd_d3dmesh_upload_gfx(st.gfx, &st.boot_mesh, &st.boot_mesh_gpu) == 0) {
+                            local_stats.boot_meshes_loaded++;
+                            st.has_boot_mesh = 1;
+                        } else {
+                            twd_d3dmesh_free(&st.boot_mesh);
+                        }
+                    }
+                }
+                if (mbuf) twd_asset_free(mbuf);
+            }
         }
     } else {
         local_stats.width = w;
@@ -535,6 +589,10 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     }
 
     /* 6. Ordered shutdown */
+    if (st.has_boot_mesh) {
+        twd_d3dmesh_gpu_free(&st.boot_mesh_gpu);
+        twd_d3dmesh_free(&st.boot_mesh);
+    }
     if (st.has_boot_font) twd_font_free(&st.boot_font);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);
     if (st.scenes) twd_scene_mgr_destroy(st.scenes);

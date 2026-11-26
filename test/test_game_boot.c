@@ -146,10 +146,67 @@ int main(void) {
     wr_u32(s_scene + al_off, (uint32_t)(so - al_off));
     wr_u32(s_scene + sc_def_off, (uint32_t)(so - sc_start));
 
-    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0splash.d3dtx\0Menu.scene\0";
+    uint8_t s_mesh[400];
+    memset(s_mesh, 0, sizeof(s_mesh));
+    size_t mo = 0u;
+    memcpy(s_mesh + mo, "6VSM", 4u); mo += 4u;
+    size_t dm_def_off = mo; mo += 4u;
+    mo += 8u;
+    wr_u32(s_mesh + mo, 0u); mo += 4u;
+    size_t dm_start = mo;
+    wr_u32(s_mesh + mo, 11u); mo += 4u;
+    wr_u32(s_mesh + mo, 3u); mo += 4u;
+    memcpy(s_mesh + mo, "tri", 3u); mo += 3u;
+    wr_u32(s_mesh + mo, 55u); mo += 4u;
+    s_mesh[mo++] = 0u;
+    { float lms = 1.0f; memcpy(s_mesh + mo, &lms, 4u); mo += 4u; }
+    mo += 4u;
+    wr_u64(s_mesh + mo, 0x11223344ULL); mo += 8u;
+    wr_u32(s_mesh + mo, 0u); mo += 4u;
+    s_mesh[mo++] = 0u;
+    size_t md_blk_off = mo; mo += 4u;
+    size_t md_start = mo;
+    size_t lods_blk_off = mo; mo += 4u;
+    size_t lods_start = mo;
+    wr_u32(s_mesh + mo, 1u); mo += 4u;
+    wr_u32(s_mesh + mo, 32u); mo += 4u;
+    wr_u32(s_mesh + mo, 1u); mo += 4u;
+    mo += 8u;
+    wr_u32(s_mesh + mo, 1u); mo += 4u;
+    wr_u32(s_mesh + mo, 3u); mo += 4u;
+    mo += 8u;
+    wr_u32(s_mesh + mo, 8u); mo += 4u; mo += 4u;
+    wr_u32(s_mesh + mo, 1u); mo += 4u;
+    mo += 24u + 16u + 4u;
+    { float one = 1.0f; memcpy(s_mesh + mo, &one, 4u); memcpy(s_mesh + mo + 4u, &one, 4u); memcpy(s_mesh + mo + 8u, &one, 4u); }
+    mo += 12u + 12u + 12u + 8u;
+    wr_u32(s_mesh + mo, 3u); mo += 4u;
+    mo += 4u;
+    wr_u32(s_mesh + lods_blk_off, (uint32_t)(mo - lods_start) + 4u);
+    for (uint32_t dci = 0u; dci < 6u; ++dci) {
+        wr_u32(s_mesh + mo, 8u); mo += 4u; mo += 4u;
+    }
+    mo += 8u;
+    wr_u32(s_mesh + mo, 1u); mo += 4u;
+    mo += 32u;
+    wr_u32(s_mesh + mo, 3u); mo += 4u;
+    wr_u32(s_mesh + mo, 2u); mo += 4u;
+    wr_u16(s_mesh + mo, 0u); wr_u16(s_mesh + mo + 2u, 1u); wr_u16(s_mesh + mo + 4u, 2u);
+    mo += 6u;
+    wr_u32(s_mesh + mo, 3u); mo += 4u;
+    wr_u32(s_mesh + mo, 12u); mo += 4u;
+    {
+        float vtx[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+        memcpy(s_mesh + mo, vtx, sizeof(vtx));
+        mo += sizeof(vtx);
+    }
+    wr_u32(s_mesh + md_blk_off, (uint32_t)(mo - md_start) + 4u);
+    wr_u32(s_mesh + dm_def_off, (uint32_t)(mo - dm_start));
+
+    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0splash.d3dtx\0Menu.scene\0ui_boot.d3dmesh\0";
 
     enum {
-        N_ENT = 6,
+        N_ENT = 7,
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
@@ -158,9 +215,11 @@ int main(void) {
         SUB_LEN = sizeof(s_sub_lua) - 1,
         TEX_LEN = 211,
         SCENE_LEN = 127,
-        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN + SCENE_LEN
+        MESH_LEN = 359,
+        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN + SCENE_LEN + MESH_LEN
     };
-    if (po != (size_t)PREFS_LEN || to != (size_t)TEX_LEN || so != (size_t)SCENE_LEN) return 99;
+    if (po != (size_t)PREFS_LEN || to != (size_t)TEX_LEN ||
+        so != (size_t)SCENE_LEN || mo != (size_t)MESH_LEN) return 99;
 
     uint8_t pkg[12 + PAYLOAD_SZ];
     memset(pkg, 0, sizeof(pkg));
@@ -202,6 +261,11 @@ int main(void) {
     wr_u32(toc + 12u + 5u * 28u + 16u, (uint32_t)SCENE_LEN);
     wr_u16(toc + 12u + 5u * 28u + 26u, 67u);
 
+    wr_u64(toc + 12u + 6u * 28u + 0u, twd_crc64(0ULL, "ui_boot.d3dmesh"));
+    wr_u64(toc + 12u + 6u * 28u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN + SCENE_LEN));
+    wr_u32(toc + 12u + 6u * 28u + 16u, (uint32_t)MESH_LEN);
+    wr_u16(toc + 12u + 6u * 28u + 26u, 78u);
+
     memcpy(toc + 12u + N_ENT * 28u, names, NAMES_SZ);
     memcpy(toc + DATA_BASE, s_boot_lua, BOOT_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN, s_prefs, PREFS_LEN);
@@ -209,6 +273,7 @@ int main(void) {
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN, s_sub_lua, SUB_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN, s_d3dtx, TEX_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN, s_scene, SCENE_LEN);
+    memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN + SCENE_LEN, s_mesh, MESH_LEN);
 
     if (twd_mkdir("twd_boot_smoke_dir") != 0) return 1;
     twd_file_t f;
@@ -240,6 +305,7 @@ int main(void) {
         stats.prefs_property_count != 3u || stats.found_boot_lua != 1 ||
         stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u ||
         stats.boot_textures_loaded != 1u ||
+        stats.boot_meshes_loaded != 1u ||
         stats.boot_scenes_active != 1u || stats.boot_scene_agents != 3u ||
         strcmp(stats.active_scene, "Menu.scene") != 0) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;

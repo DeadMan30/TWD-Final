@@ -679,6 +679,36 @@ int twd_gfx_draw_rect(
     return 0;
 }
 
+int twd_gfx_draw_line(
+    twd_gfx_device_t *dev, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const uint8_t rgba[4]) {
+    if (!dev || !dev->backbuffer || !rgba) return -1;
+    int32_t dx = (x1 >= x0) ? (x1 - x0) : (x0 - x1);
+    int32_t sx = (x0 < x1) ? 1 : -1;
+    int32_t dy = (y1 >= y0) ? -(y1 - y0) : -(y0 - y1);
+    int32_t sy = (y0 < y1) ? 1 : -1;
+    int32_t err = dx + dy;
+    int32_t cx = x0;
+    int32_t cy = y0;
+    for (;;) {
+        if (cx >= 0 && cx < (int32_t)dev->width && cy >= 0 && cy < (int32_t)dev->height) {
+            uint8_t *p = dev->backbuffer + ((size_t)cy * (size_t)dev->width + (size_t)cx) * 4u;
+            blend_pixel_rgba8(p, rgba[0], rgba[1], rgba[2], rgba[3]);
+        }
+        if (cx == x1 && cy == y1) break;
+        int32_t e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            cx += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            cy += sy;
+        }
+    }
+    dev->draw_calls++;
+    return 0;
+}
+
 int twd_gfx_draw_sprite(
     twd_gfx_device_t *dev,
     const twd_gfx_texture_t *tex,
