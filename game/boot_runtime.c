@@ -251,6 +251,21 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         local_stats.width = gstats.width ? gstats.width : w;
         local_stats.height = gstats.height ? gstats.height : h;
         (void)twd_gfx_get_shader_cache(st.gfx);
+        {
+            static const char *const k_boot_tex[] = {"splash.d3dtx", "ui_boot.d3dtx"};
+            for (size_t ti = 0u; ti < sizeof(k_boot_tex) / sizeof(k_boot_tex[0]); ++ti) {
+                size_t tsz = 0u;
+                void *tbuf = twd_asset_read_alloc(k_boot_tex[ti], &tsz);
+                if (tbuf && tsz > 0u) {
+                    twd_gfx_texture_t *gtex = twd_d3dtx_upload_gfx_texture(st.gfx, tbuf, tsz, NULL);
+                    if (gtex) {
+                        local_stats.boot_textures_loaded++;
+                        twd_gfx_texture_destroy(gtex);
+                    }
+                }
+                if (tbuf) twd_asset_free(tbuf);
+            }
+        }
     } else {
         local_stats.width = w;
         local_stats.height = h;

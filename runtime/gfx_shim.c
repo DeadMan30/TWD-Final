@@ -527,6 +527,15 @@ twd_gfx_texture_t *twd_gfx_texture_create(
     return tex;
 }
 
+int twd_gfx_texture_update(twd_gfx_texture_t *tex, const void *pixels, size_t byte_size) {
+    if (!tex || !pixels || !tex->pixels || byte_size == 0u) return -1;
+    size_t copy_bytes = byte_size;
+    if (copy_bytes > tex->byte_size) copy_bytes = tex->byte_size;
+    memcpy(tex->pixels, pixels, copy_bytes);
+    sync_gl_texture(tex);
+    return 0;
+}
+
 const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size) {
     if (!tex) {
         if (out_size) *out_size = 0u;
@@ -823,6 +832,7 @@ static int32_t shim_dev_create_tex2d(
         }
         if (copy_bytes > gt->byte_size) copy_bytes = gt->byte_size;
         memcpy(gt->pixels, init_data->sys_mem, copy_bytes);
+        sync_gl_texture(gt);
     }
     if (pp_tex) {
         shim_com_obj_t *to = alloc_shim_obj(g_child_vtbl, TWD_KIND_TEX2D, dev->gfx, NULL);

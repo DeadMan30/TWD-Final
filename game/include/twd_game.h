@@ -139,6 +139,7 @@ typedef struct twd_boot_stats {
     int found_boot_lua;
     int boot_script_ran;
     uint32_t boot_scripts_executed;
+    uint32_t boot_textures_loaded;
     int gfx_backend;
     int audio_caps;
     uint32_t width;

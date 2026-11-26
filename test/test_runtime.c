@@ -1047,6 +1047,137 @@ int main(void) {
         twd_lua_vm_destroy(lvm);
     }
 
+    {
+        /* Test T3Texture (.d3dtx) MSV6 parser, DXT1/DXT5/ARGB8 decode, and gfx upload */
+        twd_gfx_device_t *gfx_dev = twd_d3d11_get_gfx_device(rd3d);
+        TWD_CHECK(gfx_dev != NULL);
+
+        uint8_t dxt1_pkt[512];
+        memset(dxt1_pkt, 0, sizeof(dxt1_pkt));
+        size_t o = 0u;
+        memcpy(dxt1_pkt + o, "6VSM", 4u); o += 4u;
+        size_t def_off = o; o += 4u;
+        o += 4u; /* debug_size = 0 */
+        size_t async_off = o; o += 4u;
+        dxt1_pkt[o++] = 0u; dxt1_pkt[o++] = 0u; dxt1_pkt[o++] = 0u; dxt1_pkt[o++] = 0u; /* 0 types */
+        size_t def_start = o;
+        dxt1_pkt[o++] = 9u; o += 3u; /* mVersion = 9 */
+        /* mSamplerState (block_size=8, data=0) */
+        dxt1_pkt[o++] = 8u; o += 3u; o += 4u;
+        /* mPlatform = 2 */
+        dxt1_pkt[o++] = 2u; o += 3u;
+        /* mName ("ui_splash", len=9, block_size=4+4+9=17) */
+        dxt1_pkt[o++] = 17u; o += 3u;
+        dxt1_pkt[o++] = 9u; o += 3u;
+        memcpy(dxt1_pkt + o, "ui_splash", 9u); o += 9u;
+        /* mImportName ("", block_size=8) */
+        dxt1_pkt[o++] = 8u; o += 3u; o += 4u;
+        /* mImportScale (1.0f), mbHasProps (0) */
+        { float one = 1.0f; memcpy(dxt1_pkt + o, &one, 4u); o += 4u; }
+        dxt1_pkt[o++] = 0u;
+        /* mNumMipLevels=1, mWidth=4, mHeight=4, mDepth=1, mArraySize=1, mSurfaceFormat=DXT1 */
+        dxt1_pkt[o++] = 1u; o += 3u;
+        dxt1_pkt[o++] = 4u; o += 3u;
+        dxt1_pkt[o++] = 4u; o += 3u;
+        dxt1_pkt[o++] = 1u; o += 3u;
+        dxt1_pkt[o++] = 1u; o += 3u;
+        dxt1_pkt[o++] = (uint8_t)TWD_T3_FMT_DXT1; o += 3u;
+        /* layout=1, gamma=2, msaa=0, usage=0, type=1 */
+        dxt1_pkt[o++] = 1u; o += 3u;
+        dxt1_pkt[o++] = 2u; o += 3u;
+        o += 4u;
+        o += 4u;
+        dxt1_pkt[o++] = 1u; o += 3u;
+        /* mSwizzle (block_size=8, {0,1,2,3}) */
+        dxt1_pkt[o++] = 8u; o += 3u;
+        dxt1_pkt[o++] = 0u; dxt1_pkt[o++] = 1u; dxt1_pkt[o++] = 2u; dxt1_pkt[o++] = 3u;
+        /* 3 floats + 2 int32 + 4 floats = 36 bytes */
+        o += 36u;
+        /* mArrayFrameNames (block_size=8, count=0), mToonRegions (block_size=8, count=0) */
+        dxt1_pkt[o++] = 8u; o += 3u; o += 4u;
+        dxt1_pkt[o++] = 8u; o += 3u; o += 4u;
+        /* StreamHeader: regions=1, aux=0, total=8 */
+        dxt1_pkt[o++] = 1u; o += 3u;
+        o += 4u;
+        dxt1_pkt[o++] = 8u; o += 3u;
+        /* RegionStreamHeader: face=0, mip=0, mip_cnt=1, data_size=8, pitch=8, slice=8 */
+        o += 4u;
+        o += 4u;
+        dxt1_pkt[o++] = 1u; o += 3u;
+        dxt1_pkt[o++] = 8u; o += 3u;
+        dxt1_pkt[o++] = 8u; o += 3u;
+        dxt1_pkt[o++] = 8u; o += 3u;
+        {
+            uint32_t def_sz = (uint32_t)(o - def_start);
+            memcpy(dxt1_pkt + def_off, &def_sz, 4u);
+            uint32_t tex_asz = 8u;
+            memcpy(dxt1_pkt + async_off, &tex_asz, 4u);
+        }
+        /* DXT1 block: c0=0xF800 (red), c1=0x001F (blue), indices [0,1,2,3,...] */
+        dxt1_pkt[o++] = 0x00u; dxt1_pkt[o++] = 0xF8u;
+        dxt1_pkt[o++] = 0x1Fu; dxt1_pkt[o++] = 0x00u;
+        dxt1_pkt[o++] = 0xE4u; /* 11 10 01 00 => idx 0,1,2,3 */
+        dxt1_pkt[o++] = 0x00u; dxt1_pkt[o++] = 0x00u; dxt1_pkt[o++] = 0x00u;
+
+        twd_d3dtx_image_t img;
+        TWD_CHECK(twd_d3dtx_parse_memory(dxt1_pkt, o, &img) == 0);
+        TWD_CHECK(img.width == 4u && img.height == 4u);
+        TWD_CHECK(strcmp(img.name, "ui_splash") == 0);
+        TWD_CHECK(img.surface_format == TWD_T3_FMT_DXT1);
+        TWD_CHECK(img.mip0_size == 8u);
+
+        uint8_t *dec_rgba = NULL;
+        size_t dec_sz = 0u;
+        TWD_CHECK(twd_d3dtx_decode_rgba8(&img, &dec_rgba, &dec_sz) == 0);
+        TWD_CHECK(dec_rgba != NULL && dec_sz == 64u);
+        TWD_CHECK(dec_rgba[0] == 255u && dec_rgba[1] == 0u && dec_rgba[2] == 0u && dec_rgba[3] == 255u);
+        TWD_CHECK(dec_rgba[4] == 0u && dec_rgba[5] == 0u && dec_rgba[6] == 255u && dec_rgba[7] == 255u);
+        TWD_CHECK(dec_rgba[8] == 170u && dec_rgba[9] == 0u && dec_rgba[10] == 85u && dec_rgba[11] == 255u);
+        TWD_CHECK(dec_rgba[12] == 85u && dec_rgba[13] == 0u && dec_rgba[14] == 170u && dec_rgba[15] == 255u);
+        free(dec_rgba);
+        twd_d3dtx_free(&img);
+
+        twd_gfx_texture_t *up_tex = twd_d3dtx_upload_gfx_texture(gfx_dev, dxt1_pkt, o, &img);
+        TWD_CHECK(up_tex != NULL);
+        size_t up_sz = 0u;
+        const uint8_t *up_px = (const uint8_t *)twd_gfx_texture_data(up_tex, &up_sz);
+        TWD_CHECK(up_px != NULL && up_sz == 64u);
+        TWD_CHECK(up_px[0] == 255u && up_px[6] == 255u && up_px[12] == 85u);
+        twd_gfx_texture_destroy(up_tex);
+        twd_d3dtx_free(&img);
+
+        /* Also verify DXT5 alpha interpolation + ARGB8 swizzle */
+        uint8_t dxt5_blk[16] = {
+            240u, 20u, 0x09u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, /* alpha idx 0=1, idx 1=1 -> a0=240, a1=20 */
+            0xE0u, 0x07u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u  /* green */
+        };
+        twd_d3dtx_image_t synthetic;
+        memset(&synthetic, 0, sizeof(synthetic));
+        synthetic.width = 4u;
+        synthetic.height = 4u;
+        synthetic.surface_format = TWD_T3_FMT_DXT5;
+        synthetic.mip0_size = sizeof(dxt5_blk);
+        synthetic.mip0_data = dxt5_blk;
+        TWD_CHECK(twd_d3dtx_decode_rgba8(&synthetic, &dec_rgba, &dec_sz) == 0);
+        TWD_CHECK(dec_rgba[1] == 255u && dec_rgba[3] == 20u); /* pixel 0: green=255, alpha idx=1 -> a1=20 */
+        TWD_CHECK(dec_rgba[7] == 20u);                      /* pixel 1: alpha idx=1 -> 20 */
+        TWD_CHECK(dec_rgba[11] == 240u);                    /* pixel 2: alpha idx=0 -> 240 */
+        free(dec_rgba);
+
+        uint8_t argb_px[8] = {10u, 20u, 30u, 200u, 40u, 50u, 60u, 100u};
+        synthetic.width = 2u;
+        synthetic.height = 1u;
+        synthetic.surface_format = TWD_T3_FMT_ARGB8;
+        synthetic.mip0_pitch = 8u;
+        synthetic.mip0_size = sizeof(argb_px);
+        synthetic.mip0_data = argb_px;
+        TWD_CHECK(twd_d3dtx_decode_rgba8(&synthetic, &dec_rgba, &dec_sz) == 0);
+        TWD_CHECK(dec_sz == 8u);
+        TWD_CHECK(dec_rgba[0] == 30u && dec_rgba[1] == 20u && dec_rgba[2] == 10u && dec_rgba[3] == 200u);
+        TWD_CHECK(dec_rgba[4] == 60u && dec_rgba[5] == 50u && dec_rgba[6] == 40u && dec_rgba[7] == 100u);
+        free(dec_rgba);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

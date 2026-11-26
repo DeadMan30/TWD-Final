@@ -269,8 +269,63 @@ const void *twd_gfx_buffer_data(const twd_gfx_buffer_t *buf, size_t *out_size);
 void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf);
 
 twd_gfx_texture_t *twd_gfx_texture_create(twd_gfx_device_t *dev, uint32_t width, uint32_t height, uint32_t format);
+int twd_gfx_texture_update(twd_gfx_texture_t *tex, const void *pixels, size_t byte_size);
 const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size);
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex);
+
+/* Telltale T3Texture (.d3dtx) parser, BC/DXT software decoder, and GPU upload */
+#define TWD_T3_FMT_ARGB8      0x00u
+#define TWD_T3_FMT_RGB565     0x02u
+#define TWD_T3_FMT_ARGB1555   0x03u
+#define TWD_T3_FMT_ARGB4      0x04u
+#define TWD_T3_FMT_R16        0x06u
+#define TWD_T3_FMT_RG8        0x09u
+#define TWD_T3_FMT_RGBA8      0x0au
+#define TWD_T3_FMT_A8         0x10u
+#define TWD_T3_FMT_L8         0x11u
+#define TWD_T3_FMT_AL8        0x12u
+#define TWD_T3_FMT_L16        0x13u
+#define TWD_T3_FMT_DXT1       0x40u
+#define TWD_T3_FMT_DXT3       0x41u
+#define TWD_T3_FMT_DXT5       0x42u
+#define TWD_T3_FMT_DXT5A      0x43u
+#define TWD_T3_FMT_DXN        0x44u
+#define TWD_T3_FMT_CTX1       0x45u
+#define TWD_T3_FMT_BC6        0x46u
+#define TWD_T3_FMT_BC7        0x47u
+#define TWD_T3_FMT_R8         0x51u
+
+typedef struct twd_d3dtx_image {
+    int32_t version;
+    int32_t platform;
+    char name[128];
+    uint32_t sampler_state;
+    uint32_t width;
+    uint32_t height;
+    uint32_t depth;
+    uint32_t array_size;
+    uint32_t mip_levels;
+    uint32_t surface_format;
+    uint32_t texture_layout;
+    uint32_t surface_gamma;
+    uint32_t multisample;
+    uint32_t resource_usage;
+    uint32_t tex_type;
+    uint8_t swizzle[4];
+    int32_t alpha_mode;
+    int32_t color_mode;
+    uint32_t region_count;
+    uint32_t total_data_size;
+    uint32_t mip0_pitch;
+    size_t mip0_size;
+    uint8_t *mip0_data;
+} twd_d3dtx_image_t;
+
+int twd_d3dtx_parse_memory(const void *data, size_t size, twd_d3dtx_image_t *out);
+int twd_d3dtx_decode_rgba8(const twd_d3dtx_image_t *img, uint8_t **out_rgba, size_t *out_size);
+void twd_d3dtx_free(twd_d3dtx_image_t *img);
+twd_gfx_texture_t *twd_d3dtx_upload_gfx_texture(
+    twd_gfx_device_t *dev, const void *d3dtx_bytes, size_t d3dtx_size, twd_d3dtx_image_t *out_info);
 
 void twd_gfx_begin_frame(twd_gfx_device_t *dev);
 void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint8_t stencil);

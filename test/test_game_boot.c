@@ -65,19 +65,63 @@ int main(void) {
     wr_u32(s_prefs + def_sz_off, (uint32_t)(po - prop_start));
 
     static const uint8_t s_bank[16] = {'R','I','F','F', 8,0,0,0, 'F','E','V',' ', 1,0,0,0};
-    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0";
+    uint8_t s_d3dtx[211];
+    memset(s_d3dtx, 0, sizeof(s_d3dtx));
+    size_t to = 0u;
+    memcpy(s_d3dtx + to, "6VSM", 4u); to += 4u;
+    size_t td_def_off = to; to += 4u;
+    to += 4u;
+    size_t td_async_off = to; to += 4u;
+    wr_u32(s_d3dtx + to, 0u); to += 4u;
+    size_t td_start = to;
+    wr_u32(s_d3dtx + to, 9u); to += 4u;   /* mVersion */
+    wr_u32(s_d3dtx + to, 8u); to += 8u;   /* mSamplerState */
+    wr_u32(s_d3dtx + to, 2u); to += 4u;   /* mPlatform */
+    wr_u32(s_d3dtx + to, 14u); to += 4u;  /* mName block (6 chars) */
+    wr_u32(s_d3dtx + to, 6u); to += 4u;
+    memcpy(s_d3dtx + to, "splash", 6u); to += 6u;
+    wr_u32(s_d3dtx + to, 8u); to += 8u;   /* mImportName */
+    to += 5u;                             /* mImportScale + mbHasProps */
+    wr_u32(s_d3dtx + to, 1u); to += 4u;   /* mNumMipLevels */
+    wr_u32(s_d3dtx + to, 4u); to += 4u;   /* mWidth */
+    wr_u32(s_d3dtx + to, 4u); to += 4u;   /* mHeight */
+    wr_u32(s_d3dtx + to, 1u); to += 4u;   /* mDepth */
+    wr_u32(s_d3dtx + to, 1u); to += 4u;   /* mArraySize */
+    wr_u32(s_d3dtx + to, TWD_T3_FMT_DXT1); to += 4u;
+    wr_u32(s_d3dtx + to, 1u); to += 20u;  /* layout/gamma/msaa/usage/type */
+    wr_u32(s_d3dtx + to, 8u); to += 8u;   /* mSwizzle */
+    to += 36u;                            /* gloss/hdr/toon/alpha/color/uv */
+    wr_u32(s_d3dtx + to, 8u); to += 8u;   /* mArrayFrameNames */
+    wr_u32(s_d3dtx + to, 8u); to += 8u;   /* mToonRegions */
+    wr_u32(s_d3dtx + to, 1u); to += 4u;   /* mRegionCount */
+    wr_u32(s_d3dtx + to, 0u); to += 4u;   /* mAuxDataCount */
+    wr_u32(s_d3dtx + to, 8u); to += 4u;   /* mTotalDataSize */
+    wr_u32(s_d3dtx + to, 0u); to += 4u;   /* face */
+    wr_u32(s_d3dtx + to, 0u); to += 4u;   /* mip */
+    wr_u32(s_d3dtx + to, 1u); to += 4u;   /* mip_count */
+    wr_u32(s_d3dtx + to, 8u); to += 4u;   /* data_size */
+    wr_u32(s_d3dtx + to, 8u); to += 4u;   /* pitch */
+    wr_u32(s_d3dtx + to, 8u); to += 4u;   /* slice_pitch */
+    wr_u32(s_d3dtx + td_def_off, (uint32_t)(to - td_start));
+    wr_u32(s_d3dtx + td_async_off, 8u);
+    s_d3dtx[to++] = 0xE0u; s_d3dtx[to++] = 0x07u;
+    s_d3dtx[to++] = 0x00u; s_d3dtx[to++] = 0x00u;
+    to += 4u;
+
+    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0splash.d3dtx\0";
 
     enum {
-        N_ENT = 4,
+        N_ENT = 5,
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
         PREFS_LEN = 113,
         BANK_LEN = sizeof(s_bank),
         SUB_LEN = sizeof(s_sub_lua) - 1,
-        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN
+        TEX_LEN = 211,
+        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN
     };
-    if (po != (size_t)PREFS_LEN) return 99;
+    if (po != (size_t)PREFS_LEN || to != (size_t)TEX_LEN) return 99;
 
     uint8_t pkg[12 + PAYLOAD_SZ];
     memset(pkg, 0, sizeof(pkg));
@@ -109,11 +153,17 @@ int main(void) {
     wr_u32(toc + 12u + 3u * 28u + 16u, (uint32_t)SUB_LEN);
     wr_u16(toc + 12u + 3u * 28u + 26u, 33u);
 
+    wr_u64(toc + 12u + 4u * 28u + 0u, twd_crc64(0ULL, "splash.d3dtx"));
+    wr_u64(toc + 12u + 4u * 28u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN));
+    wr_u32(toc + 12u + 4u * 28u + 16u, (uint32_t)TEX_LEN);
+    wr_u16(toc + 12u + 4u * 28u + 26u, 54u);
+
     memcpy(toc + 12u + N_ENT * 28u, names, NAMES_SZ);
     memcpy(toc + DATA_BASE, s_boot_lua, BOOT_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN, s_prefs, PREFS_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN, s_bank, BANK_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN, s_sub_lua, SUB_LEN);
+    memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN, s_d3dtx, TEX_LEN);
 
     if (twd_mkdir("twd_boot_smoke_dir") != 0) return 1;
     twd_file_t f;
@@ -143,7 +193,8 @@ int main(void) {
     if (stats.mounted_archives != 1) return 7;
     if (stats.found_prefs_prop != 1 || stats.prefs_meta_version != 6u ||
         stats.prefs_property_count != 3u || stats.found_boot_lua != 1 ||
-        stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u) return 8;
+        stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u ||
+        stats.boot_textures_loaded != 1u) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1600u || stats.height != 900u) return 10;
     if (stats.frames_rendered != 4ULL || stats.clean_shutdown != 1) return 11;
@@ -155,9 +206,9 @@ int main(void) {
     if (twd_kv_get("lua.resource_set", "Menu", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 15;
     if (twd_kv_get("lua.render", "texture_quality", kv, sizeof(kv)) <= 0 || strcmp(kv, "2") != 0) return 16;
 
-    printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, lua=%u, res=%ux%u, frames=%llu)\n",
+    printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, lua=%u, tex=%u, res=%ux%u, frames=%llu)\n",
            stats.hook_count, stats.mounted_archives, stats.prefs_property_count,
-           stats.boot_scripts_executed, stats.width, stats.height,
+           stats.boot_scripts_executed, stats.boot_textures_loaded, stats.width, stats.height,
            (unsigned long long)stats.frames_rendered);
     return 0;
 }
