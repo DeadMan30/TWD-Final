@@ -40,6 +40,7 @@ struct twd_gfx_device {
     void *bound_rtvs[8];
     void *bound_dsv;
     twd_d3d11_rect_t scissor;
+    twd_shader_cache_t *shader_cache;
     float last_clear_rgba[4];
     float last_depth;
     uint8_t last_stencil;
@@ -94,6 +95,7 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
     dev->viewport.width = (float)dev->width;
     dev->viewport.height = (float)dev->height;
     dev->viewport.max_depth = 1.0f;
+    dev->shader_cache = twd_shader_cache_create();
 
 #ifdef __ANDROID__
     if (dev->backend == TWD_GFX_BACKEND_VULKAN) {
@@ -226,6 +228,8 @@ int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap
 void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (!dev) return;
     if (--dev->refs > 0) return;
+    twd_shader_cache_destroy(dev->shader_cache);
+    dev->shader_cache = NULL;
     if (dev->egl_display) {
         if (dev->egl_surface && dev->egl_destroy_surface) {
             dev->egl_destroy_surface(dev->egl_display, dev->egl_surface);
@@ -274,7 +278,13 @@ void twd_gfx_get_stats(const twd_gfx_device_t *dev, twd_gfx_stats_t *out) {
     out->bound_rtv_count = dev->bound_rtv_count;
     out->scissor_right = dev->scissor.right;
     out->scissor_bottom = dev->scissor.bottom;
+    out->cached_shaders = twd_shader_cache_count(dev->shader_cache);
+    twd_shader_cache_stats(dev->shader_cache, &out->shader_cache_hits, &out->shader_cache_misses);
     memcpy(out->last_clear_rgba, dev->last_clear_rgba, sizeof(out->last_clear_rgba));
+}
+
+twd_shader_cache_t *twd_gfx_get_shader_cache(twd_gfx_device_t *dev) {
+    return dev ? dev->shader_cache : NULL;
 }
 
 twd_gfx_buffer_t *twd_gfx_buffer_create(
@@ -423,6 +433,7 @@ int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {
 #define TWD_KIND_GENERIC     7u
 #define TWD_KIND_DXGI_DEV    8u
 #define TWD_KIND_DXGI_ADAPT  9u
+#define TWD_KIND_SHADER      10u
 
 typedef struct shim_com_obj {
     const void *const *lpVtbl;
@@ -432,6 +443,8 @@ typedef struct shim_com_obj {
     twd_gfx_device_t *gfx;
     twd_gfx_buffer_t *buf;
     twd_gfx_texture_t *tex;
+    uint64_t shader_hash;
+    uint32_t shader_stage;
     struct shim_com_obj *parent;
 } shim_com_obj_t;
 
@@ -598,12 +611,34 @@ static int32_t shim_dev_create_generic_obj(void *self, const void *a, const void
     return 0;
 }
 
-static int32_t shim_dev_create_generic4(
-    void *self, const void *a, size_t b, const void *c, void **pp_out) {
-    (void)a;
-    (void)b;
-    (void)c;
-    return shim_dev_create_generic_obj(self, NULL, NULL, pp_out);
+static int32_t shim_dev_create_shader_stage(
+    void *self, const void *bytecode, size_t len, const void *linkage,
+    uint32_t stage, void **pp_out) {
+    (void)linkage;
+    shim_com_obj_t *dev = (shim_com_obj_t *)self;
+    if (!dev || !dev->gfx) return (int32_t)0x80070057u;
+    uint64_t sh_hash = 0ULL;
+    if (dev->gfx->shader_cache) {
+        twd_shader_cache_register_dxbc(dev->gfx->shader_cache, bytecode, len, stage, &sh_hash);
+    }
+    if (pp_out) {
+        shim_com_obj_t *o = alloc_shim_obj(g_child_vtbl, TWD_KIND_SHADER, dev->gfx, NULL);
+        if (!o) return (int32_t)0x8007000Eu;
+        o->shader_hash = sh_hash;
+        o->shader_stage = stage;
+        *pp_out = o;
+    }
+    return 0;
+}
+
+static int32_t shim_dev_create_vs(
+    void *self, const void *bytecode, size_t len, const void *linkage, void **pp_out) {
+    return shim_dev_create_shader_stage(self, bytecode, len, linkage, TWD_SHADER_STAGE_VS, pp_out);
+}
+
+static int32_t shim_dev_create_ps(
+    void *self, const void *bytecode, size_t len, const void *linkage, void **pp_out) {
+    return shim_dev_create_shader_stage(self, bytecode, len, linkage, TWD_SHADER_STAGE_PS, pp_out);
 }
 
 static int32_t shim_dev_create_input_layout(
@@ -862,8 +897,8 @@ static void init_shim_vtbls(void) {
     g_dev_vtbl[9]  = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateRenderTargetView */
     g_dev_vtbl[10] = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateDepthStencilView */
     g_dev_vtbl[11] = (twd_vfn_t)&shim_dev_create_input_layout;
-    g_dev_vtbl[12] = (twd_vfn_t)&shim_dev_create_generic4;    /* CreateVertexShader */
-    g_dev_vtbl[15] = (twd_vfn_t)&shim_dev_create_generic4;    /* CreatePixelShader */
+    g_dev_vtbl[12] = (twd_vfn_t)&shim_dev_create_vs;           /* CreateVertexShader */
+    g_dev_vtbl[15] = (twd_vfn_t)&shim_dev_create_ps;           /* CreatePixelShader */
     g_dev_vtbl[20] = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateBlendState */
     g_dev_vtbl[21] = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateDepthStencilState */
     g_dev_vtbl[22] = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateRasterizerState */

@@ -3,6 +3,7 @@ add_library(twdrt STATIC
     hooks.c
     pal.c
     gfx_shim.c
+    shader_cache.c
     subsystems.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>

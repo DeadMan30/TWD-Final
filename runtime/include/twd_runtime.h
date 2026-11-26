@@ -247,6 +247,9 @@ typedef struct twd_gfx_stats {
     uint32_t bound_rtv_count;
     int32_t scissor_right;
     int32_t scissor_bottom;
+    uint32_t cached_shaders;
+    uint64_t shader_cache_hits;
+    uint64_t shader_cache_misses;
     float last_clear_rgba[4];
 } twd_gfx_stats_t;
 
@@ -275,6 +278,51 @@ void twd_gfx_set_viewport(twd_gfx_device_t *dev, float x, float y, float w, floa
 void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex);
 void twd_gfx_draw_indexed(twd_gfx_device_t *dev, uint32_t index_count, uint32_t start_index, int32_t base_vertex);
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval);
+
+/* DXBC -> GLSL ES 3.00 / SPIR-V Shader Translation & Cache */
+#define TWD_SHADER_STAGE_VS 0u
+#define TWD_SHADER_STAGE_PS 1u
+#define TWD_SHADER_STAGE_CS 2u
+
+typedef struct twd_dxbc_info {
+    uint64_t hash;
+    uint32_t total_bytes;
+    uint32_t chunk_count;
+    uint32_t stage;
+    uint32_t version_major;
+    uint32_t version_minor;
+    int has_isgn;
+    int has_osgn;
+    int valid_dxbc;
+} twd_dxbc_info_t;
+
+typedef struct twd_shader_cache_entry {
+    uint64_t hash;
+    uint32_t stage;
+    const uint32_t *spirv_words;
+    size_t spirv_word_count;
+    const char *glsl_source;
+} twd_shader_cache_entry_t;
+
+typedef struct twd_shader_cache twd_shader_cache_t;
+
+uint64_t twd_dxbc_hash(const void *bytecode, size_t len);
+int twd_dxbc_parse(const void *bytecode, size_t len, twd_dxbc_info_t *out_info);
+twd_shader_cache_t *twd_shader_cache_create(void);
+void twd_shader_cache_destroy(twd_shader_cache_t *cache);
+int twd_shader_cache_put_spirv(
+    twd_shader_cache_t *cache, uint64_t hash, uint32_t stage,
+    const uint32_t *words, size_t word_count);
+int twd_shader_cache_put_glsl(
+    twd_shader_cache_t *cache, uint64_t hash, uint32_t stage, const char *glsl);
+int twd_shader_cache_register_dxbc(
+    twd_shader_cache_t *cache, const void *bytecode, size_t len,
+    uint32_t fallback_stage, uint64_t *out_hash);
+int twd_shader_cache_lookup(
+    const twd_shader_cache_t *cache, uint64_t hash, twd_shader_cache_entry_t *out_entry);
+uint32_t twd_shader_cache_count(const twd_shader_cache_t *cache);
+void twd_shader_cache_stats(const twd_shader_cache_t *cache, uint64_t *out_hits, uint64_t *out_misses);
+twd_shader_cache_t *twd_gfx_get_shader_cache(twd_gfx_device_t *dev);
 
 typedef struct twd_d3d11_buffer_desc {
     uint32_t byte_width;

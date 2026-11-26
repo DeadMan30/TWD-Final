@@ -333,6 +333,34 @@ int main(void) {
     TWD_CHECK(((const uint32_t *)mres.data)[0] == 0xdeadbeefu && mres.row_pitch == 64u * 4u);
     ((fn_unmap_t)ctx_vtbl[15])(d3d_ctx, tex2, 0u);
 
+    typedef int32_t (*fn_create_sh_t)(void *, const void *, size_t, const void *, void **);
+    typedef void (*fn_set_sh_t)(void *, void *, const void *const *, uint32_t);
+    /* Minimal valid DXBC container: magic 'DXBC', 16B checksum, version 1, total=56, chunks=1, off[0]=36, chunk 'SHDR' len=12, tok=VS SM5.0 (0x00010050) */
+    static const uint8_t sample_dxbc_vs[56] = {
+        'D','X','B','C', 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        1,0,0,0, 56,0,0,0, 1,0,0,0, 36,0,0,0,
+        'S','H','D','R', 12,0,0,0, 0x50,0x00,0x01,0x00, 3,0,0,0, 0x0e,0x00,0x00,0x3e
+    };
+    twd_dxbc_info_t dinfo;
+    TWD_CHECK(twd_dxbc_parse(sample_dxbc_vs, sizeof(sample_dxbc_vs), &dinfo) == 1);
+    TWD_CHECK(dinfo.valid_dxbc == 1 && dinfo.stage == TWD_SHADER_STAGE_VS && dinfo.version_major == 5u);
+
+    void *vs_obj = NULL, *vs_dup = NULL, *ps_obj = NULL;
+    TWD_CHECK(((fn_create_sh_t)dev_vtbl[12])(d3d_dev, sample_dxbc_vs, sizeof(sample_dxbc_vs), NULL, &vs_obj) == 0 && vs_obj != NULL);
+    TWD_CHECK(((fn_create_sh_t)dev_vtbl[12])(d3d_dev, sample_dxbc_vs, sizeof(sample_dxbc_vs), NULL, &vs_dup) == 0 && vs_dup != NULL);
+    static const uint8_t sample_ps_blob[8] = {'P','S','_','T','E','S','T',0};
+    TWD_CHECK(((fn_create_sh_t)dev_vtbl[15])(d3d_dev, sample_ps_blob, sizeof(sample_ps_blob), NULL, &ps_obj) == 0 && ps_obj != NULL);
+    ((fn_set_sh_t)ctx_vtbl[11])(d3d_ctx, vs_obj, NULL, 0u);
+    ((fn_set_sh_t)ctx_vtbl[9])(d3d_ctx, ps_obj, NULL, 0u);
+
+    twd_shader_cache_t *scache = twd_gfx_get_shader_cache(twd_d3d11_get_gfx_device(d3d_dev));
+    TWD_CHECK(scache != NULL);
+    twd_shader_cache_entry_t sentry;
+    TWD_CHECK(twd_shader_cache_lookup(scache, dinfo.hash, &sentry) == 1 && sentry.glsl_source != NULL);
+    static const uint32_t fake_spv[5] = {0x07230203u, 0x00010000u, 0u, 1u, 0u};
+    TWD_CHECK(twd_shader_cache_put_spirv(scache, dinfo.hash, TWD_SHADER_STAGE_VS, fake_spv, 5u) == 0);
+    TWD_CHECK(twd_shader_cache_lookup(scache, dinfo.hash, &sentry) == 1 && sentry.spirv_word_count == 5u);
+
     twd_d3d11_viewport_t vp = {0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
     twd_d3d11_rect_t sc = {0, 0, 1280, 720};
     void *rtvs[1];
@@ -354,7 +382,12 @@ int main(void) {
     TWD_CHECK(gstats.frame_index == 1u && gstats.draw_calls == 2u && gstats.clear_calls == 1u);
     TWD_CHECK(gstats.map_calls == 2u && gstats.update_calls == 2u);
     TWD_CHECK(gstats.topology == 4u && gstats.bound_rtv_count == 1u && gstats.scissor_right == 1280);
+    TWD_CHECK(gstats.cached_shaders == 2u && gstats.shader_cache_hits == 1ULL && gstats.shader_cache_misses == 2ULL);
     TWD_CHECK(gstats.active_buffers == 1u && gstats.active_textures == 2u);
+
+    TWD_CHECK(((fn_release_t)(*(void *const **)ps_obj)[2])(ps_obj) == 0u);
+    TWD_CHECK(((fn_release_t)(*(void *const **)vs_dup)[2])(vs_dup) == 0u);
+    TWD_CHECK(((fn_release_t)(*(void *const **)vs_obj)[2])(vs_obj) == 0u);
 
     TWD_CHECK(((fn_release_t)(*(void *const **)rtv)[2])(rtv) == 0u);
     TWD_CHECK(((fn_release_t)(*(void *const **)tex2)[2])(tex2) == 0u);
