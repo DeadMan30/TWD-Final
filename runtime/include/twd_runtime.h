@@ -493,10 +493,16 @@ void twd_android_set_data_dirs(const char *internal_dir, const char *external_di
 int twd_android_get_data_dir(int external, char *buf, size_t cap);
 void twd_android_on_touch(int action, int pointer_id, float x, float y);
 void twd_android_on_key(int keycode, int down);
+void twd_android_on_motion_axis(uint32_t pad_index, float lx, float ly, float rx, float ry, float lt, float rt, uint16_t buttons);
 void twd_android_on_focus(int has_focus);
 int twd_android_has_focus(void);
 void twd_android_on_resize(twd_window_t *win, twd_gfx_device_t *dev, uint32_t width, uint32_t height);
 uint64_t twd_android_run_frame_loop(twd_window_t *win, twd_gfx_device_t *gfx, const twd_app_callbacks_t *cb);
+void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void));
+
+/* Portable Asset / Archive Loader (save/host FS first, AAssetManager fallback on Android) */
+void *twd_asset_read_alloc(const char *rel_path, size_t *out_size);
+void twd_asset_free(void *ptr);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);

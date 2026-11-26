@@ -48,8 +48,8 @@ uint64_t twd_android_run_frame_loop(
 }
 
 #ifdef __ANDROID__
-#include <android/input.h>
 #include <android/native_activity.h>
+#include <android/native_window.h>
 
 static void on_native_destroy(ANativeActivity *activity) {
     (void)activity;
@@ -84,10 +84,8 @@ static void on_native_window_destroyed(ANativeActivity *activity, ANativeWindow 
     twd_android_set_native_window(NULL);
 }
 
-JNIEXPORT void ANativeActivity_onCreate(
-    ANativeActivity *activity, void *saved_state, size_t saved_state_size) {
-    (void)saved_state;
-    (void)saved_state_size;
+void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void)) {
+    ANativeActivity *activity = (ANativeActivity *)native_activity;
     if (!activity) return;
     activity->callbacks->onDestroy = on_native_destroy;
     activity->callbacks->onWindowFocusChanged = on_window_focus_changed;
@@ -96,6 +94,12 @@ JNIEXPORT void ANativeActivity_onCreate(
     activity->callbacks->onNativeWindowDestroyed = on_native_window_destroyed;
     twd_android_set_asset_manager(activity->assetManager);
     twd_android_set_data_dirs(activity->internalDataPath, activity->externalDataPath);
+    if (on_bind_hooks) on_bind_hooks();
     twd_platform_init();
+}
+#else
+void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void)) {
+    (void)native_activity;
+    if (on_bind_hooks) on_bind_hooks();
 }
 #endif

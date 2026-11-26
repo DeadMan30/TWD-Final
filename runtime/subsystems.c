@@ -3,6 +3,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#ifdef __ANDROID__
+#include <android/asset_manager.h>
+#endif
 
 /* ---------- Input / Gamepad / Touch PAL ---------- */
 
@@ -745,5 +748,109 @@ void twd_android_on_resize(twd_window_t *win, twd_gfx_device_t *dev, uint32_t wi
     ev.param1 = width;
     ev.param2 = (int64_t)height;
     twd_window_push_event(&ev);
+}
+
+static int16_t clamp_axis_i16(float v) {
+    if (v <= -1.0f) return -32767;
+    if (v >= 1.0f) return 32767;
+    return (int16_t)(v * 32767.0f);
+}
+
+static uint8_t clamp_trig_u8(float v) {
+    if (v <= 0.0f) return 0u;
+    if (v >= 1.0f) return 255u;
+    return (uint8_t)(v * 255.0f);
+}
+
+void twd_android_on_motion_axis(
+    uint32_t pad_index, float lx, float ly, float rx, float ry, float lt, float rt, uint16_t buttons) {
+    twd_gamepad_state_t st;
+    if (twd_input_get_gamepad_state(pad_index, &st) != 0u) {
+        memset(&st, 0, sizeof(st));
+    }
+    st.packet_number++;
+    st.buttons = buttons;
+    st.thumb_lx = clamp_axis_i16(lx);
+    st.thumb_ly = clamp_axis_i16(ly);
+    st.thumb_rx = clamp_axis_i16(rx);
+    st.thumb_ry = clamp_axis_i16(ry);
+    st.left_trigger = clamp_trig_u8(lt);
+    st.right_trigger = clamp_trig_u8(rt);
+    twd_input_push_gamepad_state(pad_index, &st);
+}
+
+static void *read_local_file_alloc(const char *path, size_t *out_size) {
+    twd_file_t f;
+    if (!path || twd_file_open(path, TWD_FILE_OPEN_READ, &f) != 0) return NULL;
+    uint64_t fsz = 0ULL;
+    if (twd_file_info(&f, &fsz, NULL) != 0 || fsz > (uint64_t)64u * 1024u * 1024u) {
+        twd_file_close(&f);
+        return NULL;
+    }
+    size_t sz = (size_t)fsz;
+    uint8_t *buf = (uint8_t *)malloc(sz + 1u);
+    if (!buf) {
+        twd_file_close(&f);
+        return NULL;
+    }
+    size_t got = 0u;
+    while (got < sz) {
+        int64_t n = twd_file_read(&f, buf + got, sz - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    twd_file_close(&f);
+    buf[got] = 0u;
+    if (out_size) *out_size = got;
+    return buf;
+}
+
+void *twd_asset_read_alloc(const char *rel_path, size_t *out_size) {
+    if (out_size) *out_size = 0u;
+    if (!rel_path || rel_path[0] == '\0') return NULL;
+    char dir[512];
+    char full[768];
+    if (twd_app_data_dir(TWD_DIR_SAVES, dir, sizeof(dir)) > 0) {
+        size_t dl = strlen(dir);
+        size_t rl = strlen(rel_path);
+        if (dl + 1u + rl < sizeof(full)) {
+            memcpy(full, dir, dl);
+            full[dl] = '/';
+            memcpy(full + dl + 1u, rel_path, rl + 1u);
+            void *p = read_local_file_alloc(full, out_size);
+            if (p) return p;
+        }
+    }
+    void *direct = read_local_file_alloc(rel_path, out_size);
+    if (direct) return direct;
+#ifdef __ANDROID__
+    AAssetManager *mgr = (AAssetManager *)twd_android_get_asset_manager();
+    if (mgr) {
+        AAsset *asset = AAssetManager_open(mgr, rel_path, AASSET_MODE_BUFFER);
+        if (asset) {
+            off_t len = AAsset_getLength(asset);
+            if (len >= 0) {
+                size_t sz = (size_t)len;
+                uint8_t *buf = (uint8_t *)malloc(sz + 1u);
+                if (buf) {
+                    int n = (sz > 0u) ? AAsset_read(asset, buf, sz) : 0;
+                    if (n >= 0) {
+                        buf[(size_t)n] = 0u;
+                        if (out_size) *out_size = (size_t)n;
+                        AAsset_close(asset);
+                        return buf;
+                    }
+                    free(buf);
+                }
+            }
+            AAsset_close(asset);
+        }
+    }
+#endif
+    return NULL;
+}
+
+void twd_asset_free(void *ptr) {
+    free(ptr);
 }
 

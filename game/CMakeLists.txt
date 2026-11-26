@@ -6,6 +6,10 @@ file(GLOB_RECURSE TWD_GAME_SOURCES CONFIGURE_DEPENDS
 # Exclude per-system test sources from the game library.
 list(FILTER TWD_GAME_SOURCES EXCLUDE REGEX "/tests/")
 
-add_library(twdgame SHARED ${TWD_GAME_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/game_init.c)
+add_library(twdgame SHARED
+    ${TWD_GAME_SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/game_init.c
+    $<$<BOOL:${ANDROID}>:${CMAKE_CURRENT_SOURCE_DIR}/android_main.c>
+)
 target_include_directories(twdgame PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(twdgame PUBLIC twdrt)

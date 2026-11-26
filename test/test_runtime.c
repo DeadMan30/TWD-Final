@@ -507,6 +507,20 @@ int main(void) {
     lcb.user = &lctx;
     lcb.max_frames = 3u;
     twd_clear_quit();
+    twd_android_on_motion_axis(0u, 0.5f, -1.0f, 0.0f, 1.0f, 0.5f, 1.0f, TWD_PAD_A);
+    TWD_CHECK(twd_input_get_gamepad_state(0u, &pad_out) == 0u);
+    TWD_CHECK(pad_out.buttons == TWD_PAD_A && pad_out.thumb_ly == -32767 && pad_out.right_trigger == 255u);
+
+    twd_file_t af;
+    TWD_CHECK(twd_file_open("twd_asset_test.tmp", TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &af) == 0);
+    TWD_CHECK(twd_file_write(&af, "LUA", 3) == 3);
+    TWD_CHECK(twd_file_close(&af) == 0);
+    size_t asz = 0u;
+    char *adata = (char *)twd_asset_read_alloc("twd_asset_test.tmp", &asz);
+    TWD_CHECK(adata != NULL && asz == 3u && strcmp(adata, "LUA") == 0);
+    twd_asset_free(adata);
+    TWD_CHECK(twd_file_delete("twd_asset_test.tmp") == 0);
+
     TWD_CHECK(twd_android_run_frame_loop(rwin, rgfx, &lcb) == 3ULL);
     TWD_CHECK(lctx.inited == 1 && lctx.ticks == 3 && lctx.renders == 3 && lctx.shutdown == 1);
 

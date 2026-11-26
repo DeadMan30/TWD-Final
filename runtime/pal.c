@@ -797,10 +797,10 @@ void twd_thread_yield(void) { sched_yield(); }
 uint32_t twd_pid(void) { return (uint32_t)getpid(); }
 
 uint32_t twd_tid(void) {
-#ifdef __ANDROID__
-    return (uint32_t)gettid();
-#elif defined(SYS_gettid)
+#if defined(SYS_gettid)
     return (uint32_t)syscall(SYS_gettid);
+#elif defined(__ANDROID__)
+    return (uint32_t)gettid();
 #else
     return (uint32_t)pthread_self();
 #endif
