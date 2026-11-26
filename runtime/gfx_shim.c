@@ -26,8 +26,20 @@ struct twd_gfx_device {
     uint64_t frame_index;
     uint64_t draw_calls;
     uint64_t clear_calls;
+    uint64_t map_calls;
+    uint64_t update_calls;
     uint32_t active_buffers;
     uint32_t active_textures;
+    uint32_t topology;
+    uint32_t bound_rtv_count;
+    void *bound_vs;
+    void *bound_ps;
+    void *bound_input_layout;
+    void *bound_vb;
+    void *bound_ib;
+    void *bound_rtvs[8];
+    void *bound_dsv;
+    twd_d3d11_rect_t scissor;
     float last_clear_rgba[4];
     float last_depth;
     uint8_t last_stencil;
@@ -46,6 +58,9 @@ struct twd_gfx_texture {
     uint32_t width;
     uint32_t height;
     uint32_t format;
+    uint32_t row_pitch;
+    size_t byte_size;
+    void *pixels;
 };
 
 int twd_gfx_select_backend(int preferred) {
@@ -251,8 +266,14 @@ void twd_gfx_get_stats(const twd_gfx_device_t *dev, twd_gfx_stats_t *out) {
     out->frame_index = dev->frame_index;
     out->draw_calls = dev->draw_calls;
     out->clear_calls = dev->clear_calls;
+    out->map_calls = dev->map_calls;
+    out->update_calls = dev->update_calls;
     out->active_buffers = dev->active_buffers;
     out->active_textures = dev->active_textures;
+    out->topology = dev->topology;
+    out->bound_rtv_count = dev->bound_rtv_count;
+    out->scissor_right = dev->scissor.right;
+    out->scissor_bottom = dev->scissor.bottom;
     memcpy(out->last_clear_rgba, dev->last_clear_rgba, sizeof(out->last_clear_rgba));
 }
 
@@ -284,6 +305,15 @@ int twd_gfx_buffer_update(twd_gfx_buffer_t *buf, const void *data, size_t byte_s
     return 0;
 }
 
+const void *twd_gfx_buffer_data(const twd_gfx_buffer_t *buf, size_t *out_size) {
+    if (!buf) {
+        if (out_size) *out_size = 0u;
+        return NULL;
+    }
+    if (out_size) *out_size = buf->byte_size;
+    return buf->staging;
+}
+
 void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf) {
     if (!buf) return;
     if (buf->dev && buf->dev->active_buffers > 0u) {
@@ -296,8 +326,16 @@ void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf) {
 twd_gfx_texture_t *twd_gfx_texture_create(
     twd_gfx_device_t *dev, uint32_t width, uint32_t height, uint32_t format) {
     if (!dev || width == 0u || height == 0u) return NULL;
+    if ((size_t)width > ((size_t)-1) / 4u / (size_t)height) return NULL;
     twd_gfx_texture_t *tex = (twd_gfx_texture_t *)calloc(1, sizeof(*tex));
     if (!tex) return NULL;
+    tex->row_pitch = width * 4u;
+    tex->byte_size = (size_t)tex->row_pitch * (size_t)height;
+    tex->pixels = calloc(1, tex->byte_size ? tex->byte_size : 4u);
+    if (!tex->pixels) {
+        free(tex);
+        return NULL;
+    }
     tex->dev = dev;
     tex->width = width;
     tex->height = height;
@@ -306,11 +344,21 @@ twd_gfx_texture_t *twd_gfx_texture_create(
     return tex;
 }
 
+const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size) {
+    if (!tex) {
+        if (out_size) *out_size = 0u;
+        return NULL;
+    }
+    if (out_size) *out_size = tex->byte_size;
+    return tex->pixels;
+}
+
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex) {
     if (!tex) return;
     if (tex->dev && tex->dev->active_textures > 0u) {
         tex->dev->active_textures--;
     }
+    free(tex->pixels);
     free(tex);
 }
 
@@ -510,12 +558,19 @@ static int32_t shim_dev_create_buffer(
 static int32_t shim_dev_create_tex2d(
     void *self, const twd_d3d11_tex2d_desc_t *desc,
     const twd_d3d11_subresource_data_t *init_data, void **pp_tex) {
-    (void)init_data;
     shim_com_obj_t *dev = (shim_com_obj_t *)self;
     if (!dev || !desc) return (int32_t)0x80070057u;
     twd_gfx_texture_t *gt = twd_gfx_texture_create(
         dev->gfx, desc->width ? desc->width : 1u, desc->height ? desc->height : 1u, desc->format);
     if (!gt) return (int32_t)0x8007000Eu;
+    if (init_data && init_data->sys_mem && gt->pixels) {
+        size_t copy_bytes = gt->byte_size;
+        if (init_data->sys_mem_pitch > 0u && init_data->sys_mem_pitch < gt->row_pitch) {
+            copy_bytes = (size_t)init_data->sys_mem_pitch * (size_t)gt->height;
+        }
+        if (copy_bytes > gt->byte_size) copy_bytes = gt->byte_size;
+        memcpy(gt->pixels, init_data->sys_mem, copy_bytes);
+    }
     if (pp_tex) {
         shim_com_obj_t *to = alloc_shim_obj(g_child_vtbl, TWD_KIND_TEX2D, dev->gfx, NULL);
         if (!to) {
@@ -592,6 +647,141 @@ static void shim_ctx_clear_dsv(
     (void)flags;
     shim_com_obj_t *ctx = (shim_com_obj_t *)self;
     if (ctx && ctx->gfx) twd_gfx_clear(ctx->gfx, NULL, depth, stencil);
+}
+
+static int32_t shim_ctx_map(
+    void *self, void *resource, uint32_t subresource, uint32_t map_type,
+    uint32_t map_flags, twd_d3d11_mapped_subresource_t *mapped) {
+    (void)subresource;
+    (void)map_type;
+    (void)map_flags;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    shim_com_obj_t *res = (shim_com_obj_t *)resource;
+    if (!ctx || !res || res->magic != TWD_OBJ_MAGIC || !mapped) {
+        return (int32_t)0x80070057u;
+    }
+    memset(mapped, 0, sizeof(*mapped));
+    if (res->kind == TWD_KIND_BUFFER && res->buf) {
+        mapped->data = res->buf->staging;
+        mapped->row_pitch = (uint32_t)res->buf->byte_size;
+        mapped->depth_pitch = mapped->row_pitch;
+    } else if (res->kind == TWD_KIND_TEX2D && res->tex) {
+        mapped->data = res->tex->pixels;
+        mapped->row_pitch = res->tex->row_pitch;
+        mapped->depth_pitch = (uint32_t)res->tex->byte_size;
+    } else {
+        return (int32_t)0x80070057u;
+    }
+    if (ctx->gfx) ctx->gfx->map_calls++;
+    return 0;
+}
+
+static void shim_ctx_unmap(void *self, void *resource, uint32_t subresource) {
+    (void)self;
+    (void)resource;
+    (void)subresource;
+}
+
+static void shim_ctx_update_subresource(
+    void *self, void *dst_resource, uint32_t dst_subresource,
+    const twd_d3d11_box_t *dst_box, const void *src_data,
+    uint32_t src_row_pitch, uint32_t src_depth_pitch) {
+    (void)dst_subresource;
+    (void)dst_box;
+    (void)src_depth_pitch;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    shim_com_obj_t *res = (shim_com_obj_t *)dst_resource;
+    if (!ctx || !res || res->magic != TWD_OBJ_MAGIC || !src_data) return;
+    if (res->kind == TWD_KIND_BUFFER && res->buf) {
+        size_t n = (src_row_pitch > 0u && (size_t)src_row_pitch < res->buf->byte_size)
+                   ? (size_t)src_row_pitch : res->buf->byte_size;
+        memcpy(res->buf->staging, src_data, n);
+    } else if (res->kind == TWD_KIND_TEX2D && res->tex && res->tex->pixels) {
+        uint32_t row_bytes = src_row_pitch ? src_row_pitch : res->tex->row_pitch;
+        if (row_bytes > res->tex->row_pitch) row_bytes = res->tex->row_pitch;
+        for (uint32_t y = 0; y < res->tex->height; y++) {
+            memcpy((uint8_t *)res->tex->pixels + (size_t)y * res->tex->row_pitch,
+                   (const uint8_t *)src_data + (size_t)y * (src_row_pitch ? src_row_pitch : res->tex->row_pitch),
+                   row_bytes);
+        }
+    }
+    if (ctx->gfx) ctx->gfx->update_calls++;
+}
+
+static void shim_ctx_copy_resource(void *self, void *dst_resource, void *src_resource) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    shim_com_obj_t *dst = (shim_com_obj_t *)dst_resource;
+    shim_com_obj_t *src = (shim_com_obj_t *)src_resource;
+    if (!dst || !src || dst->magic != TWD_OBJ_MAGIC || src->magic != TWD_OBJ_MAGIC) return;
+    if (dst->kind == TWD_KIND_BUFFER && src->kind == TWD_KIND_BUFFER && dst->buf && src->buf) {
+        size_t n = (dst->buf->byte_size < src->buf->byte_size) ? dst->buf->byte_size : src->buf->byte_size;
+        memcpy(dst->buf->staging, src->buf->staging, n);
+    } else if (dst->kind == TWD_KIND_TEX2D && src->kind == TWD_KIND_TEX2D &&
+               dst->tex && src->tex && dst->tex->pixels && src->tex->pixels) {
+        size_t n = (dst->tex->byte_size < src->tex->byte_size) ? dst->tex->byte_size : src->tex->byte_size;
+        memcpy(dst->tex->pixels, src->tex->pixels, n);
+    }
+    if (ctx && ctx->gfx) ctx->gfx->update_calls++;
+}
+
+static void shim_ctx_ps_set_shader(void *self, void *ps, const void *const *cls, uint32_t num) {
+    (void)cls;
+    (void)num;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx) ctx->gfx->bound_ps = ps;
+}
+
+static void shim_ctx_vs_set_shader(void *self, void *vs, const void *const *cls, uint32_t num) {
+    (void)cls;
+    (void)num;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx) ctx->gfx->bound_vs = vs;
+}
+
+static void shim_ctx_ia_set_input_layout(void *self, void *layout) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx) ctx->gfx->bound_input_layout = layout;
+}
+
+static void shim_ctx_ia_set_vertex_buffers(
+    void *self, uint32_t start, uint32_t num, void *const *vbs, const uint32_t *strides, const uint32_t *offsets) {
+    (void)start;
+    (void)strides;
+    (void)offsets;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx && num > 0u && vbs) ctx->gfx->bound_vb = vbs[0];
+}
+
+static void shim_ctx_ia_set_index_buffer(void *self, void *ib, uint32_t fmt, uint32_t offset) {
+    (void)fmt;
+    (void)offset;
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx) ctx->gfx->bound_ib = ib;
+}
+
+static void shim_ctx_ia_set_primitive_topology(void *self, uint32_t topology) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx) ctx->gfx->topology = topology;
+}
+
+static void shim_ctx_om_set_render_targets(
+    void *self, uint32_t num_views, void *const *rtvs, void *dsv) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (!ctx || !ctx->gfx) return;
+    uint32_t n = (num_views > 8u) ? 8u : num_views;
+    ctx->gfx->bound_rtv_count = n;
+    for (uint32_t i = 0; i < n; i++) {
+        ctx->gfx->bound_rtvs[i] = rtvs ? rtvs[i] : NULL;
+    }
+    ctx->gfx->bound_dsv = dsv;
+}
+
+static void shim_ctx_rs_set_scissor_rects(
+    void *self, uint32_t num, const twd_d3d11_rect_t *rects) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (ctx && ctx->gfx && num > 0u && rects) {
+        ctx->gfx->scissor = rects[0];
+    }
 }
 
 static int32_t shim_swap_present(void *self, uint32_t sync_interval, uint32_t flags) {
@@ -687,10 +877,21 @@ static void init_shim_vtbls(void) {
     g_ctx_vtbl[0]  = (twd_vfn_t)&shim_query_interface;
     g_ctx_vtbl[1]  = (twd_vfn_t)&shim_add_ref;
     g_ctx_vtbl[2]  = (twd_vfn_t)&shim_release;
+    g_ctx_vtbl[9]  = (twd_vfn_t)&shim_ctx_ps_set_shader;
+    g_ctx_vtbl[11] = (twd_vfn_t)&shim_ctx_vs_set_shader;
     g_ctx_vtbl[12] = (twd_vfn_t)&shim_ctx_draw_indexed;
     g_ctx_vtbl[13] = (twd_vfn_t)&shim_ctx_draw;
-    g_ctx_vtbl[14] = (twd_vfn_t)&shim_noop_ok;                /* Map */
+    g_ctx_vtbl[14] = (twd_vfn_t)&shim_ctx_map;
+    g_ctx_vtbl[15] = (twd_vfn_t)&shim_ctx_unmap;
+    g_ctx_vtbl[17] = (twd_vfn_t)&shim_ctx_ia_set_input_layout;
+    g_ctx_vtbl[18] = (twd_vfn_t)&shim_ctx_ia_set_vertex_buffers;
+    g_ctx_vtbl[19] = (twd_vfn_t)&shim_ctx_ia_set_index_buffer;
+    g_ctx_vtbl[24] = (twd_vfn_t)&shim_ctx_ia_set_primitive_topology;
+    g_ctx_vtbl[33] = (twd_vfn_t)&shim_ctx_om_set_render_targets;
     g_ctx_vtbl[44] = (twd_vfn_t)&shim_ctx_rs_set_viewports;
+    g_ctx_vtbl[45] = (twd_vfn_t)&shim_ctx_rs_set_scissor_rects;
+    g_ctx_vtbl[47] = (twd_vfn_t)&shim_ctx_copy_resource;
+    g_ctx_vtbl[48] = (twd_vfn_t)&shim_ctx_update_subresource;
     g_ctx_vtbl[50] = (twd_vfn_t)&shim_ctx_clear_rtv;
     g_ctx_vtbl[53] = (twd_vfn_t)&shim_ctx_clear_dsv;
 

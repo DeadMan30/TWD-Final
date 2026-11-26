@@ -239,8 +239,14 @@ typedef struct twd_gfx_stats {
     uint64_t frame_index;
     uint64_t draw_calls;
     uint64_t clear_calls;
+    uint64_t map_calls;
+    uint64_t update_calls;
     uint32_t active_buffers;
     uint32_t active_textures;
+    uint32_t topology;
+    uint32_t bound_rtv_count;
+    int32_t scissor_right;
+    int32_t scissor_bottom;
     float last_clear_rgba[4];
 } twd_gfx_stats_t;
 
@@ -256,9 +262,11 @@ void twd_gfx_get_stats(const twd_gfx_device_t *dev, twd_gfx_stats_t *out);
 
 twd_gfx_buffer_t *twd_gfx_buffer_create(twd_gfx_device_t *dev, uint32_t kind, size_t byte_size, const void *initial_data);
 int twd_gfx_buffer_update(twd_gfx_buffer_t *buf, const void *data, size_t byte_size);
+const void *twd_gfx_buffer_data(const twd_gfx_buffer_t *buf, size_t *out_size);
 void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf);
 
 twd_gfx_texture_t *twd_gfx_texture_create(twd_gfx_device_t *dev, uint32_t width, uint32_t height, uint32_t format);
+const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size);
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex);
 
 void twd_gfx_begin_frame(twd_gfx_device_t *dev);
@@ -305,6 +313,28 @@ typedef struct twd_d3d11_viewport {
     float min_depth;
     float max_depth;
 } twd_d3d11_viewport_t;
+
+typedef struct twd_d3d11_mapped_subresource {
+    void *data;
+    uint32_t row_pitch;
+    uint32_t depth_pitch;
+} twd_d3d11_mapped_subresource_t;
+
+typedef struct twd_d3d11_box {
+    uint32_t left;
+    uint32_t top;
+    uint32_t front;
+    uint32_t right;
+    uint32_t bottom;
+    uint32_t back;
+} twd_d3d11_box_t;
+
+typedef struct twd_d3d11_rect {
+    int32_t left;
+    int32_t top;
+    int32_t right;
+    int32_t bottom;
+} twd_d3d11_rect_t;
 
 int32_t twd_d3d11_create_device_shim(
     twd_window_t *window,
@@ -504,6 +534,13 @@ void twd_android_attach_native_activity(void *native_activity, void (*on_bind_ho
 /* Portable Asset / Archive Loader (save/host FS first, AAssetManager fallback on Android) */
 void *twd_asset_read_alloc(const char *rel_path, size_t *out_size);
 void twd_asset_free(void *ptr);
+
+/* OodleLZ Compression / Archive Block Loader Bridge (oo2core_5_win64 / liboo2core) */
+int twd_oodle_init(const char *library_path_or_null);
+void twd_oodle_shutdown(void);
+int twd_oodle_is_available(void);
+int64_t twd_oodle_decompress(
+    const void *comp_buf, size_t comp_len, void *raw_buf, size_t raw_len);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);

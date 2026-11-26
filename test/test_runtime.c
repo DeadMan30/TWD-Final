@@ -2,6 +2,7 @@
 #include "twd_runtime.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define TWD_CHECK(cond)                                                     \
@@ -300,25 +301,63 @@ int main(void) {
     tdesc.height = 64u;
     tdesc.format = 28u;
     void *tex = NULL;
+    void *tex2 = NULL;
     void *rtv = NULL;
     TWD_CHECK(((fn_create_tex_t)dev_vtbl[5])(d3d_dev, &tdesc, NULL, &tex) == 0 && tex != NULL);
+    TWD_CHECK(((fn_create_tex_t)dev_vtbl[5])(d3d_dev, &tdesc, NULL, &tex2) == 0 && tex2 != NULL);
     TWD_CHECK(((fn_create_rtv_t)dev_vtbl[9])(d3d_dev, tex, NULL, &rtv) == 0 && rtv != NULL);
 
+    typedef int32_t (*fn_map_t)(void *, void *, uint32_t, uint32_t, uint32_t, twd_d3d11_mapped_subresource_t *);
+    typedef void (*fn_unmap_t)(void *, void *, uint32_t);
+    typedef void (*fn_update_sub_t)(void *, void *, uint32_t, const twd_d3d11_box_t *, const void *, uint32_t, uint32_t);
+    typedef void (*fn_copy_res_t)(void *, void *, void *);
+    typedef void (*fn_set_topo_t)(void *, uint32_t);
+    typedef void (*fn_set_rtvs_t)(void *, uint32_t, void *const *, void *);
+    typedef void (*fn_set_scissor_t)(void *, uint32_t, const twd_d3d11_rect_t *);
+    typedef void (*fn_draw_idx_t)(void *, uint32_t, uint32_t, int32_t);
+
+    twd_d3d11_mapped_subresource_t mres;
+    TWD_CHECK(((fn_map_t)ctx_vtbl[14])(d3d_ctx, vbuf, 0u, 4u, 0u, &mres) == 0 && mres.data != NULL);
+    memcpy(mres.data, "VTX0", 4u);
+    ((fn_unmap_t)ctx_vtbl[15])(d3d_ctx, vbuf, 0u);
+
+    uint32_t row0[64];
+    for (uint32_t i = 0; i < 64u; i++) row0[i] = 0xdeadbeefu;
+    uint32_t *pix_upload = (uint32_t *)malloc(64u * 64u * 4u);
+    TWD_CHECK(pix_upload != NULL);
+    for (uint32_t y = 0; y < 64u; y++) memcpy(pix_upload + (size_t)y * 64u, row0, sizeof(row0));
+    ((fn_update_sub_t)ctx_vtbl[48])(d3d_ctx, tex, 0u, NULL, pix_upload, 64u * 4u, 0u);
+    free(pix_upload);
+    ((fn_copy_res_t)ctx_vtbl[47])(d3d_ctx, tex2, tex);
+    TWD_CHECK(((fn_map_t)ctx_vtbl[14])(d3d_ctx, tex2, 0u, 1u, 0u, &mres) == 0 && mres.data != NULL);
+    TWD_CHECK(((const uint32_t *)mres.data)[0] == 0xdeadbeefu && mres.row_pitch == 64u * 4u);
+    ((fn_unmap_t)ctx_vtbl[15])(d3d_ctx, tex2, 0u);
+
     twd_d3d11_viewport_t vp = {0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
+    twd_d3d11_rect_t sc = {0, 0, 1280, 720};
+    void *rtvs[1];
+    rtvs[0] = rtv;
     const float rgba[4] = {0.1f, 0.2f, 0.3f, 1.0f};
+    ((fn_set_topo_t)ctx_vtbl[24])(d3d_ctx, 4u);
+    ((fn_set_rtvs_t)ctx_vtbl[33])(d3d_ctx, 1u, rtvs, NULL);
     ((fn_set_vp_t)ctx_vtbl[44])(d3d_ctx, 1u, &vp);
+    ((fn_set_scissor_t)ctx_vtbl[45])(d3d_ctx, 1u, &sc);
     ((fn_clear_rtv_t)ctx_vtbl[50])(d3d_ctx, rtv, rgba);
     ((fn_draw_t)ctx_vtbl[13])(d3d_ctx, 3u, 0u);
+    ((fn_draw_idx_t)ctx_vtbl[12])(d3d_ctx, 6u, 0u, 0);
     TWD_CHECK(((fn_present_t)sw_vtbl[8])(dxgi_sw, 1u, 0u) == 0);
     TWD_CHECK(((fn_resize_t)sw_vtbl[13])(dxgi_sw, 2u, 1920u, 1080u, 28u, 0u) == 0);
 
     twd_gfx_stats_t gstats;
     twd_gfx_get_stats(twd_d3d11_get_gfx_device(d3d_dev), &gstats);
     TWD_CHECK(gstats.width == 1920u && gstats.height == 1080u);
-    TWD_CHECK(gstats.frame_index == 1u && gstats.draw_calls == 1u && gstats.clear_calls == 1u);
-    TWD_CHECK(gstats.active_buffers == 1u && gstats.active_textures == 1u);
+    TWD_CHECK(gstats.frame_index == 1u && gstats.draw_calls == 2u && gstats.clear_calls == 1u);
+    TWD_CHECK(gstats.map_calls == 2u && gstats.update_calls == 2u);
+    TWD_CHECK(gstats.topology == 4u && gstats.bound_rtv_count == 1u && gstats.scissor_right == 1280);
+    TWD_CHECK(gstats.active_buffers == 1u && gstats.active_textures == 2u);
 
     TWD_CHECK(((fn_release_t)(*(void *const **)rtv)[2])(rtv) == 0u);
+    TWD_CHECK(((fn_release_t)(*(void *const **)tex2)[2])(tex2) == 0u);
     TWD_CHECK(((fn_release_t)(*(void *const **)tex)[2])(tex) == 0u);
     TWD_CHECK(((fn_release_t)(*(void *const **)vbuf)[2])(vbuf) == 0u);
     TWD_CHECK(((fn_release_t)dev_vtbl[2])(d3d_dev) == 0u);
@@ -528,6 +567,11 @@ int main(void) {
     TWD_CHECK(adata != NULL && asz == 3u && strcmp(adata, "LUA") == 0);
     twd_asset_free(adata);
     TWD_CHECK(twd_file_delete("twd_asset_test.tmp") == 0);
+
+    char raw_oodle[5] = {0};
+    TWD_CHECK(twd_oodle_is_available() == 0);
+    TWD_CHECK(twd_oodle_decompress("TWD!", 4u, raw_oodle, 4u) == 4 && strcmp(raw_oodle, "TWD!") == 0);
+    twd_oodle_shutdown();
 
     TWD_CHECK(twd_android_run_frame_loop(rwin, rgfx, &lcb) == 3ULL);
     TWD_CHECK(lctx.inited == 1 && lctx.ticks == 3 && lctx.renders == 3 && lctx.shutdown == 1);

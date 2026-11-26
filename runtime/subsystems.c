@@ -854,3 +854,71 @@ void twd_asset_free(void *ptr) {
     free(ptr);
 }
 
+/* ---------- OodleLZ Compression / Archive Block Loader Bridge ---------- */
+
+typedef int64_t (*twd_oodle_decompress_fn)(
+    const void *comp_buf, size_t comp_len, void *raw_buf, size_t raw_len,
+    int fuzz_safe, int check_crc, int verbosity,
+    void *dec_buf_base, size_t dec_buf_size,
+    void *fp_cb, void *cb_user, void *scratch, size_t scratch_size, int thread_phase);
+
+static void *g_oodle_lib = NULL;
+static twd_oodle_decompress_fn g_oodle_decomp = NULL;
+
+int twd_oodle_init(const char *library_path_or_null) {
+    if (g_oodle_lib) return 0;
+    const char *candidates[4];
+    int n = 0;
+    if (library_path_or_null && library_path_or_null[0] != '\0') {
+        candidates[n++] = library_path_or_null;
+    }
+#ifdef _WIN32
+    candidates[n++] = "oo2core_5_win64.dll";
+    candidates[n++] = "game/oo2core_5_win64.dll";
+#else
+    candidates[n++] = "liboo2core.so";
+    candidates[n++] = "liboo2core_5.so";
+#endif
+    for (int i = 0; i < n; i++) {
+        void *mod = twd_dynlib_open(candidates[i]);
+        if (mod) {
+            void *sym = twd_dynlib_sym(mod, "OodleLZ_Decompress");
+            if (sym) {
+                g_oodle_lib = mod;
+                g_oodle_decomp = (twd_oodle_decompress_fn)(uintptr_t)sym;
+                return 0;
+            }
+            twd_dynlib_close(mod);
+        }
+    }
+    return -1;
+}
+
+void twd_oodle_shutdown(void) {
+    if (g_oodle_lib) {
+        twd_dynlib_close(g_oodle_lib);
+        g_oodle_lib = NULL;
+    }
+    g_oodle_decomp = NULL;
+}
+
+int twd_oodle_is_available(void) {
+    return (g_oodle_decomp != NULL) ? 1 : 0;
+}
+
+int64_t twd_oodle_decompress(
+    const void *comp_buf, size_t comp_len, void *raw_buf, size_t raw_len) {
+    if (!comp_buf || !raw_buf || raw_len == 0u) return -1;
+    if (g_oodle_decomp) {
+        return g_oodle_decomp(
+            comp_buf, comp_len, raw_buf, raw_len,
+            1, 0, 0, NULL, 0u, NULL, NULL, NULL, 0u, 0);
+    }
+    /* Pass-through fallback for uncompressed blocks when native library is absent. */
+    if (comp_len == raw_len) {
+        memcpy(raw_buf, comp_buf, raw_len);
+        return (int64_t)raw_len;
+    }
+    return -1;
+}
+
