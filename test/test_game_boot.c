@@ -21,6 +21,37 @@ static void wr_u64(uint8_t *p, uint64_t v) {
     wr_u32(p + 4u, (uint32_t)((v >> 32) & 0xFFFFFFFFULL));
 }
 
+static size_t build_min_scene(uint8_t *dst, size_t dst_cap, const char *scene_name) {
+    size_t nlen = strlen(scene_name);
+    size_t need = 20u + 1u + 8u + nlen + 8u + 8u + 35u;
+    if (need > dst_cap) return 0u;
+    memset(dst, 0, need);
+    size_t o = 0u;
+    memcpy(dst + o, "6VSM", 4u); o += 4u;
+    size_t def_off = o; o += 4u;
+    o += 8u; /* debug + async */
+    wr_u32(dst + o, 0u); o += 4u;
+    size_t start = o;
+    dst[o++] = 0u; /* mbHidden = 0 */
+    wr_u32(dst + o, (uint32_t)(8u + nlen)); o += 4u;
+    wr_u32(dst + o, (uint32_t)nlen); o += 4u;
+    memcpy(dst + o, scene_name, nlen); o += nlen;
+    wr_u32(dst + o, 8u); o += 4u; /* mReferencedScenes (0) */
+    o += 4u;
+    size_t al_off = o; o += 4u;
+    wr_u32(dst + o, 1u); o += 4u; /* 1 agent: CamMain */
+    wr_u32(dst + o, 15u); o += 4u;
+    wr_u32(dst + o, 7u); o += 4u;
+    memcpy(dst + o, "CamMain", 7u); o += 7u;
+    wr_u32(dst + o, 2u); o += 4u;
+    wr_u32(dst + o, 0u); o += 4u;
+    wr_u32(dst + o, 8u); o += 4u;
+    o += 8u;
+    wr_u32(dst + al_off, (uint32_t)(o - al_off));
+    wr_u32(dst + def_off, (uint32_t)(o - start));
+    return o;
+}
+
 int main(void) {
     /* Build temporary game dir containing one synthetic NCTT+TTA4 archive with boot assets. */
     static const char s_boot_lua[] =
@@ -410,6 +441,100 @@ int main(void) {
             strcmp(estats.active_scene, "Boot.scene") != 0 ||
             estats.frames_rendered != 2ULL || estats.clean_shutdown != 1) {
             return 26;
+        }
+    }
+
+    /* Third boot pass: ui_boot.scene -> Enter key -> ui_menuMain.scene transition */
+    {
+        static const char t_boot_lua[] = "SceneOpen(\"ui_boot.scene\")\n";
+        static const char t_names[] = "Boot.lua\0ui_boot.scene\0ui_menuMain.scene\0";
+        uint8_t s_ui_boot[128];
+        uint8_t s_ui_menu[128];
+        size_t ub_len = build_min_scene(s_ui_boot, sizeof(s_ui_boot), "ui_boot.scene");
+        size_t um_len = build_min_scene(s_ui_menu, sizeof(s_ui_menu), "ui_menuMain.scene");
+        if (ub_len != 93u || um_len != 97u) return 27;
+
+        enum {
+            TN_ENT = 3,
+            TN_NAMES = sizeof(t_names) - 1,
+            TN_BASE = 12 + TN_ENT * 28 + TN_NAMES,
+            TB_LEN = sizeof(t_boot_lua) - 1,
+            TU_LEN = 93,
+            TM_LEN = 97,
+            T_PAYLOAD = TN_BASE + TB_LEN + TU_LEN + TM_LEN
+        };
+        uint8_t tpkg[12 + T_PAYLOAD];
+        memset(tpkg, 0, sizeof(tpkg));
+        memcpy(tpkg, "NCTT", 4u);
+        wr_u64(tpkg + 4u, (uint64_t)T_PAYLOAD);
+        uint8_t *ttoc = tpkg + 12u;
+        wr_u32(ttoc + 0u, TWD_TTARCH2_TOC_TTA4);
+        wr_u32(ttoc + 4u, (uint32_t)TN_NAMES);
+        wr_u32(ttoc + 8u, (uint32_t)TN_ENT);
+
+        wr_u64(ttoc + 12u + 0u * 28u + 0u, twd_crc64(0ULL, "Boot.lua"));
+        wr_u64(ttoc + 12u + 0u * 28u + 8u, 0ULL);
+        wr_u32(ttoc + 12u + 0u * 28u + 16u, (uint32_t)TB_LEN);
+        wr_u16(ttoc + 12u + 0u * 28u + 26u, 0u);
+
+        wr_u64(ttoc + 12u + 1u * 28u + 0u, twd_crc64(0ULL, "ui_boot.scene"));
+        wr_u64(ttoc + 12u + 1u * 28u + 8u, (uint64_t)TB_LEN);
+        wr_u32(ttoc + 12u + 1u * 28u + 16u, (uint32_t)TU_LEN);
+        wr_u16(ttoc + 12u + 1u * 28u + 26u, 9u);
+
+        wr_u64(ttoc + 12u + 2u * 28u + 0u, twd_crc64(0ULL, "ui_menuMain.scene"));
+        wr_u64(ttoc + 12u + 2u * 28u + 8u, (uint64_t)(TB_LEN + TU_LEN));
+        wr_u32(ttoc + 12u + 2u * 28u + 16u, (uint32_t)TM_LEN);
+        wr_u16(ttoc + 12u + 2u * 28u + 26u, 23u);
+
+        memcpy(ttoc + 12u + TN_ENT * 28u, t_names, TN_NAMES);
+        memcpy(ttoc + TN_BASE, t_boot_lua, TB_LEN);
+        memcpy(ttoc + TN_BASE + TB_LEN, s_ui_boot, TU_LEN);
+        memcpy(ttoc + TN_BASE + TB_LEN + TU_LEN, s_ui_menu, TM_LEN);
+
+        if (twd_mkdir("twd_boot_trans_dir") != 0) return 28;
+        twd_file_t tf;
+        if (twd_file_open("twd_boot_trans_dir/trans0.ttarch2",
+                          TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &tf) != 0) {
+            (void)twd_rmdir("twd_boot_trans_dir");
+            return 29;
+        }
+        int64_t twr = twd_file_write(&tf, tpkg, sizeof(tpkg));
+        int tcl = twd_file_close(&tf);
+        if (twr != (int64_t)sizeof(tpkg) || tcl != 0) {
+            (void)twd_file_delete("twd_boot_trans_dir/trans0.ttarch2");
+            (void)twd_rmdir("twd_boot_trans_dir");
+            return 30;
+        }
+
+        twd_win_event_t enter_ev;
+        memset(&enter_ev, 0, sizeof(enter_ev));
+        enter_ev.kind = TWD_EVT_KEY;
+        enter_ev.param1 = 13u;
+        enter_ev.param2 = 1;
+        twd_window_push_event(&enter_ev);
+
+        twd_boot_config_t tcfg;
+        memset(&tcfg, 0, sizeof(tcfg));
+        tcfg.game_dir = "twd_boot_trans_dir";
+        tcfg.save_dir = "twd_boot_trans_save_dir";
+        tcfg.width = 640u;
+        tcfg.height = 480u;
+        tcfg.max_frames = 2u;
+        tcfg.preferred_backend = -1;
+
+        twd_boot_stats_t tstats;
+        int trc = twd_game_boot_run(&tcfg, &tstats);
+        (void)twd_file_delete("twd_boot_trans_dir/trans0.ttarch2");
+        (void)twd_rmdir("twd_boot_trans_dir");
+        (void)twd_rmdir("twd_boot_trans_save_dir");
+
+        if (trc != 0) return 31;
+        if (tstats.mounted_archives != 1 || tstats.found_boot_lua != 1 ||
+            tstats.boot_script_ran != 1 || tstats.input_events_processed < 1u ||
+            strcmp(tstats.active_scene, "ui_menuMain.scene") != 0 ||
+            tstats.frames_rendered != 2ULL || tstats.clean_shutdown != 1) {
+            return 32;
         }
     }
 
