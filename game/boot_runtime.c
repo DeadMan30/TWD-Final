@@ -33,13 +33,71 @@ static void release_com_obj(void *obj) {
     ((uint32_t (*)(void *))(*(void *const **)obj)[2])(obj);
 }
 
-static int boot_probe_vfs_flag(const char *rel_path, twd_metastream_header_t *opt_meta) {
+static void boot_kv_set_u32(const char *key, uint32_t v) {
+    char buf[16];
+    size_t i = sizeof(buf);
+    buf[--i] = '\0';
+    do {
+        buf[--i] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v != 0u && i > 0u);
+    (void)twd_kv_set("prefs", key, &buf[i]);
+}
+
+static int boot_load_prefs_prop(const char *rel_path,
+                                twd_boot_stats_t *stats,
+                                uint32_t *io_w,
+                                uint32_t *io_h) {
     size_t sz = 0u;
     void *buf = twd_asset_read_alloc(rel_path, &sz);
     if (!buf) return 0;
-    if (opt_meta) {
-        (void)twd_metastream_parse_header(buf, sz, opt_meta);
+
+    twd_metastream_header_t mh;
+    memset(&mh, 0, sizeof(mh));
+    if (twd_metastream_parse_header(buf, sz, &mh) == 0) {
+        stats->prefs_meta_version = mh.version;
     }
+
+    twd_propset_t ps;
+    if (twd_propset_parse_memory(buf, sz, &ps) == 0) {
+        stats->prefs_property_count = ps.entry_count;
+        boot_kv_set_u32("entry_count", ps.entry_count);
+
+        int windowed = twd_propset_get_bool(&ps, "Windowed", 1);
+        (void)twd_kv_set("prefs", "windowed", windowed ? "1" : "0");
+
+        float rx = 0.0f;
+        float ry = 0.0f;
+        int got_res = 0;
+        if (!windowed) {
+            got_res = (twd_propset_get_vec2(&ps, "Fullscreen Size", &rx, &ry) == 0);
+        }
+        if (!got_res) {
+            got_res = (twd_propset_get_vec2(&ps, "Window Size", &rx, &ry) == 0);
+        }
+        if (got_res &&
+            rx >= 320.0f && rx <= 16384.0f &&
+            ry >= 200.0f && ry <= 16384.0f) {
+            *io_w = (uint32_t)rx;
+            *io_h = (uint32_t)ry;
+            boot_kv_set_u32("width", *io_w);
+            boot_kv_set_u32("height", *io_h);
+        }
+        const twd_prop_entry_t *brush = twd_propset_find(&ps, "FX Brush Quality");
+        if (brush && brush->kind == TWD_PROP_I32 && brush->val.i32 >= 0) {
+            boot_kv_set_u32("fx_brush_quality", (uint32_t)brush->val.i32);
+        }
+        twd_propset_free(&ps);
+    }
+
+    twd_asset_free(buf);
+    return (sz > 0u) ? 1 : 0;
+}
+
+static int boot_probe_vfs_flag(const char *rel_path) {
+    size_t sz = 0u;
+    void *buf = twd_asset_read_alloc(rel_path, &sz);
+    if (!buf) return 0;
     twd_asset_free(buf);
     return (sz > 0u) ? 1 : 0;
 }
@@ -139,13 +197,11 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         int m = twd_ttarch2_mount_dir(game_dir);
         if (m > 0) local_stats.mounted_archives = m;
     }
-    twd_metastream_header_t prefs_mh;
-    memset(&prefs_mh, 0, sizeof(prefs_mh));
-    local_stats.found_prefs_prop = boot_probe_vfs_flag("prefs.prop", &prefs_mh) ||
-                                   boot_probe_vfs_flag("config/prefs.prop", &prefs_mh);
-    local_stats.prefs_meta_version = prefs_mh.version;
-    local_stats.found_boot_lua = boot_probe_vfs_flag("_boot.lua", NULL) ||
-                                 boot_probe_vfs_flag("scripts/_boot.lua", NULL);
+    local_stats.found_prefs_prop =
+        boot_load_prefs_prop("prefs.prop", &local_stats, &w, &h) ||
+        boot_load_prefs_prop("config/prefs.prop", &local_stats, &w, &h);
+    local_stats.found_boot_lua = boot_probe_vfs_flag("_boot.lua") ||
+                                 boot_probe_vfs_flag("scripts/_boot.lua");
 
     /* 3. Create window + graphics device / DXBC shader cache */
     twd_boot_loop_state_t st;

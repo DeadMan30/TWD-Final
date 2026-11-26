@@ -878,6 +878,89 @@ int main(void) {
     TWD_CHECK(twd_android_run_frame_loop(rwin, rgfx, &lcb) == 3ULL);
     TWD_CHECK(lctx.inited == 1 && lctx.ticks == 3 && lctx.renders == 3 && lctx.shutdown == 1);
 
+    /* Synthetic MSV6 + PropertySet binary parser test */
+    {
+        uint8_t pbuf[512];
+        memset(pbuf, 0, sizeof(pbuf));
+        /* MSV6 header: magic(4) + def_sz(4) + dbg_sz(4) + async_sz(4) + type_cnt(4) = 20 */
+        memcpy(pbuf, "6VSM", 4u);
+        size_t o = 20u;
+        /* PropertySet header: mPropVersion=2, mPropertyFlags=0x15 */
+        pbuf[o++] = 2u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        pbuf[o++] = 0x15u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        /* body_block_size placeholder */
+        size_t blk_sz_off = o;
+        o += 4u;
+        size_t blk_start = o;
+
+        /* 1 parent CRC */
+        pbuf[o++] = 1u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        uint64_t par_crc = twd_crc64(0ULL, "base.prop");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((par_crc >> (s * 8)) & 0xFFu);
+
+        /* 4 type groups: bool, int32, String, Vector2 */
+        pbuf[o++] = 4u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+
+        /* Group 1: bool ("Windowed" = 1) */
+        uint64_t t_bool = twd_crc64(0ULL, "bool");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((t_bool >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 1u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        uint64_t k_win = twd_crc64(0ULL, "Windowed");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((k_win >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 1u;
+
+        /* Group 2: int32 ("FX Brush Quality" = -7) */
+        uint64_t t_i32 = twd_crc64(0ULL, "int32");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((t_i32 >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 1u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        uint64_t k_q = twd_crc64(0ULL, "FX Brush Quality");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((k_q >> (s * 8)) & 0xFFu);
+        uint32_t qi = (uint32_t)(int32_t)-7;
+        for (int s = 0; s < 4; ++s) pbuf[o++] = (uint8_t)((qi >> (s * 8)) & 0xFFu);
+
+        /* Group 3: String ("Project" = "WD4") */
+        uint64_t t_str = twd_crc64(0ULL, "String");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((t_str >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 1u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        uint64_t k_pr = twd_crc64(0ULL, "Project");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((k_pr >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 3u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        pbuf[o++] = 'W'; pbuf[o++] = 'D'; pbuf[o++] = '4';
+
+        /* Group 4: Vector2 ("Window Size" = 1920.0f, 1080.0f) */
+        uint64_t t_v2 = twd_crc64(0ULL, "Vector2");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((t_v2 >> (s * 8)) & 0xFFu);
+        pbuf[o++] = 1u; pbuf[o++] = 0u; pbuf[o++] = 0u; pbuf[o++] = 0u;
+        uint64_t k_ws = twd_crc64(0ULL, "Window Size");
+        for (int s = 0; s < 8; ++s) pbuf[o++] = (uint8_t)((k_ws >> (s * 8)) & 0xFFu);
+        float vx = 1920.0f, vy = 1080.0f;
+        memcpy(pbuf + o, &vx, 4u); o += 4u;
+        memcpy(pbuf + o, &vy, 4u); o += 4u;
+
+        uint32_t blk_sz = (uint32_t)(o - blk_start);
+        for (int s = 0; s < 4; ++s) pbuf[blk_sz_off + s] = (uint8_t)((blk_sz >> (s * 8)) & 0xFFu);
+        uint32_t def_sz = (uint32_t)(o - 20u);
+        for (int s = 0; s < 4; ++s) pbuf[4u + s] = (uint8_t)((def_sz >> (s * 8)) & 0xFFu);
+
+        twd_propset_t ps;
+        TWD_CHECK(twd_propset_parse_memory(pbuf, o, &ps) == 0);
+        TWD_CHECK(ps.prop_version == 2 && ps.prop_flags == 0x15u);
+        TWD_CHECK(ps.parent_count == 1u && ps.parent_crcs[0] == par_crc);
+        TWD_CHECK(ps.entry_count == 4u && ps.truncated == 0);
+        TWD_CHECK(twd_propset_get_bool(&ps, "Windowed", 0) == 1);
+        TWD_CHECK(twd_propset_get_i32(&ps, "FX Brush Quality", 0) == -7);
+        TWD_CHECK(strcmp(twd_propset_get_str(&ps, "Project", ""), "WD4") == 0);
+        float rx = 0.0f, ry = 0.0f;
+        TWD_CHECK(twd_propset_get_vec2(&ps, "Window Size", &rx, &ry) == 0);
+        TWD_CHECK(rx == 1920.0f && ry == 1080.0f);
+        TWD_CHECK(twd_propset_get_i32(&ps, "Missing", 99) == 99);
+        twd_propset_free(&ps);
+
+        /* Truncated buffer negative test */
+        TWD_CHECK(twd_propset_parse_memory(pbuf, 20u, &ps) != 0);
+        TWD_CHECK(twd_propset_parse_memory(pbuf, o - 4u, &ps) != 0);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

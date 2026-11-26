@@ -701,3 +701,419 @@ int twd_metastream_parse_header(const void *data, size_t len, twd_metastream_hea
     }
     return -1;
 }
+
+static uint16_t rd_u16_le(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8u);
+}
+
+static float rd_f32_le(const uint8_t *p) {
+    uint32_t u = rd_u32(p);
+    float f = 0.0f;
+    memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+static double rd_f64_le(const uint8_t *p) {
+    uint64_t u = rd_u64(p);
+    double d = 0.0;
+    memcpy(&d, &u, sizeof(d));
+    return d;
+}
+
+static int propset_read_str_crc(const uint8_t *b, size_t *pos, size_t limit, uint64_t *out_crc) {
+    if (*pos + 4u > limit) return -1;
+    uint32_t slen = rd_u32(b + *pos);
+    *pos += 4u;
+    if ((size_t)slen > limit - *pos) return -1;
+    *out_crc = twd_crc64_bytes(0ULL, b + *pos, (size_t)slen, 1);
+    *pos += (size_t)slen;
+    return 0;
+}
+
+typedef enum propset_wire {
+    PW_UNKNOWN = 0,
+    PW_BOOL = 1,
+    PW_I8,
+    PW_U8,
+    PW_I16,
+    PW_U16,
+    PW_I32,
+    PW_U32,
+    PW_I64,
+    PW_U64,
+    PW_F32,
+    PW_F64,
+    PW_STR,
+    PW_SYMBOL,
+    PW_VEC2,
+    PW_VEC3,
+    PW_VEC4,
+    PW_IRECT
+} propset_wire_t;
+
+static propset_wire_t propset_classify_wire(uint64_t type_crc) {
+    switch (type_crc) {
+    case 0x9004c5587575d6c0ULL: return PW_BOOL;   /* bool */
+    case 0xafb5db7305e23480ULL: return PW_I8;     /* int8 */
+    case 0x3a195525e24afc93ULL: return PW_U8;     /* uint8 */
+    case 0x29653dc4d2d86302ULL: return PW_I16;    /* int16 */
+    case 0x1eef71b2306b5b6cULL: return PW_U16;    /* uint16 */
+    case 0x7caceebcd26d075cULL: /* int32 */
+    case 0x74dcd231c29f9a4aULL: /* S32 */
+    case 0x84283cb979d71641ULL: /* Flags */
+        return PW_I32;
+    case 0x4b26a2ca30de3f32ULL: /* uint32 */
+    case 0xbcbae3735c6dc8d8ULL: /* U32 */
+        return PW_U32;
+    case 0x268e0b3fc19a48aeULL: /* int64 */
+    case 0x2efe37b2d168d5b8ULL: /* S64 */
+        return PW_I64;
+    case 0x11044749232970c0ULL: /* uint64 */
+    case 0xe69806f04f9a872aULL: /* U64 */
+        return PW_U64;
+    case 0xbae4cbd77f139a91ULL: return PW_F32;    /* float */
+    case 0x5dc78f79fc4b8df7ULL: return PW_F64;    /* double */
+    case 0xcd9c6e605f5af4b4ULL: return PW_STR;    /* String */
+    case 0x004f023463d89fb0ULL: /* Symbol */
+    case 0x387e6b9ca558ac8dULL: /* Handle<PropertySet> */
+        return PW_SYMBOL;
+    case 0x7bbca244e61f1a07ULL: return PW_VEC2;   /* Vector2 */
+    case 0x394c43af4ff52c94ULL: return PW_VEC3;   /* Vector3 */
+    case 0xb76e07d6bb899bfeULL: /* Vector4 */
+    case 0xc16762f7763d62abULL: /* Color */
+    case 0x62c9e560c8dcec67ULL: /* Quaternion */
+    case 0x53a0b3aa86983895ULL: /* TRect<float> */
+        return PW_VEC4;
+    case 0x336adb075a965645ULL: /* Rect */
+    case 0xe3cf6e2a6cab5ae1ULL: /* TRect<int> */
+        return PW_IRECT;
+    default:
+        return PW_UNKNOWN;
+    }
+}
+
+static int propset_read_value(const uint8_t *b, size_t *pos, size_t limit,
+                              propset_wire_t w, twd_prop_entry_t *ent) {
+    switch (w) {
+    case PW_BOOL:
+        if (*pos + 1u > limit) return -1;
+        ent->kind = TWD_PROP_BOOL;
+        ent->val.b = (b[*pos] != 0u) ? 1 : 0;
+        *pos += 1u;
+        return 0;
+    case PW_I8:
+        if (*pos + 1u > limit) return -1;
+        ent->kind = TWD_PROP_I32;
+        ent->val.i32 = (int32_t)(int8_t)b[*pos];
+        *pos += 1u;
+        return 0;
+    case PW_U8:
+        if (*pos + 1u > limit) return -1;
+        ent->kind = TWD_PROP_U32;
+        ent->val.u32 = (uint32_t)b[*pos];
+        *pos += 1u;
+        return 0;
+    case PW_I16:
+        if (*pos + 2u > limit) return -1;
+        ent->kind = TWD_PROP_I32;
+        ent->val.i32 = (int32_t)(int16_t)rd_u16_le(b + *pos);
+        *pos += 2u;
+        return 0;
+    case PW_U16:
+        if (*pos + 2u > limit) return -1;
+        ent->kind = TWD_PROP_U32;
+        ent->val.u32 = (uint32_t)rd_u16_le(b + *pos);
+        *pos += 2u;
+        return 0;
+    case PW_I32:
+        if (*pos + 4u > limit) return -1;
+        ent->kind = TWD_PROP_I32;
+        ent->val.i32 = (int32_t)rd_u32(b + *pos);
+        *pos += 4u;
+        return 0;
+    case PW_U32:
+        if (*pos + 4u > limit) return -1;
+        ent->kind = TWD_PROP_U32;
+        ent->val.u32 = rd_u32(b + *pos);
+        *pos += 4u;
+        return 0;
+    case PW_I64:
+        if (*pos + 8u > limit) return -1;
+        ent->kind = TWD_PROP_I64;
+        ent->val.i64 = (int64_t)rd_u64(b + *pos);
+        *pos += 8u;
+        return 0;
+    case PW_U64:
+        if (*pos + 8u > limit) return -1;
+        ent->kind = TWD_PROP_U64;
+        ent->val.u64 = rd_u64(b + *pos);
+        *pos += 8u;
+        return 0;
+    case PW_F32:
+        if (*pos + 4u > limit) return -1;
+        ent->kind = TWD_PROP_F32;
+        ent->val.f32 = rd_f32_le(b + *pos);
+        *pos += 4u;
+        return 0;
+    case PW_F64:
+        if (*pos + 8u > limit) return -1;
+        ent->kind = TWD_PROP_F64;
+        ent->val.f64 = rd_f64_le(b + *pos);
+        *pos += 8u;
+        return 0;
+    case PW_STR: {
+        if (*pos + 4u > limit) return -1;
+        uint32_t slen = rd_u32(b + *pos);
+        *pos += 4u;
+        if (slen > 1048576u || (size_t)slen > limit - *pos) return -1;
+        char *s = (char *)malloc((size_t)slen + 1u);
+        if (!s) return -1;
+        if (slen > 0u) memcpy(s, b + *pos, (size_t)slen);
+        s[slen] = '\0';
+        *pos += (size_t)slen;
+        ent->kind = TWD_PROP_STR;
+        ent->val.str = s;
+        return 0;
+    }
+    case PW_SYMBOL:
+        if (*pos + 8u > limit) return -1;
+        ent->kind = TWD_PROP_SYMBOL;
+        ent->val.sym = rd_u64(b + *pos);
+        *pos += 8u;
+        return 0;
+    case PW_VEC2:
+        if (*pos + 8u > limit) return -1;
+        ent->kind = TWD_PROP_VEC2;
+        ent->val.vec[0] = rd_f32_le(b + *pos);
+        ent->val.vec[1] = rd_f32_le(b + *pos + 4u);
+        *pos += 8u;
+        return 0;
+    case PW_VEC3:
+        if (*pos + 12u > limit) return -1;
+        ent->kind = TWD_PROP_VEC3;
+        ent->val.vec[0] = rd_f32_le(b + *pos);
+        ent->val.vec[1] = rd_f32_le(b + *pos + 4u);
+        ent->val.vec[2] = rd_f32_le(b + *pos + 8u);
+        *pos += 12u;
+        return 0;
+    case PW_VEC4:
+        if (*pos + 16u > limit) return -1;
+        ent->kind = TWD_PROP_VEC4;
+        ent->val.vec[0] = rd_f32_le(b + *pos);
+        ent->val.vec[1] = rd_f32_le(b + *pos + 4u);
+        ent->val.vec[2] = rd_f32_le(b + *pos + 8u);
+        ent->val.vec[3] = rd_f32_le(b + *pos + 12u);
+        *pos += 16u;
+        return 0;
+    case PW_IRECT:
+        if (*pos + 16u > limit) return -1;
+        ent->kind = TWD_PROP_IRECT;
+        ent->val.irect[0] = (int32_t)rd_u32(b + *pos);
+        ent->val.irect[1] = (int32_t)rd_u32(b + *pos + 4u);
+        ent->val.irect[2] = (int32_t)rd_u32(b + *pos + 8u);
+        ent->val.irect[3] = (int32_t)rd_u32(b + *pos + 12u);
+        *pos += 16u;
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+void twd_propset_free(twd_propset_t *ps) {
+    if (!ps) return;
+    if (ps->entries) {
+        for (uint32_t i = 0u; i < ps->entry_count; ++i) {
+            if (ps->entries[i].kind == TWD_PROP_STR) {
+                free(ps->entries[i].val.str);
+                ps->entries[i].val.str = NULL;
+            }
+        }
+        free(ps->entries);
+    }
+    free(ps->parent_crcs);
+    memset(ps, 0, sizeof(*ps));
+}
+
+int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out) {
+    if (!data || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    const uint8_t *b = (const uint8_t *)data;
+    size_t pos = 0u;
+    size_t end_off = len;
+
+    twd_metastream_header_t mh;
+    if (twd_metastream_parse_header(data, len, &mh) == 0) {
+        if (mh.payload_offset > (uint64_t)len) return -1;
+        pos = (size_t)mh.payload_offset;
+        if (mh.default_size > 0u && (size_t)mh.default_size <= len - pos) {
+            end_off = pos + (size_t)mh.default_size;
+        }
+    }
+
+    if (pos + 12u > end_off) return -1;
+    int32_t prop_ver = (int32_t)rd_u32(b + pos);
+    uint32_t prop_flags = rd_u32(b + pos + 4u);
+    uint32_t body_size = rd_u32(b + pos + 8u);
+    pos += 12u;
+    if (prop_ver < 0 || prop_ver > 16 || (size_t)body_size > end_off - pos) {
+        return -1;
+    }
+    size_t block_end = pos + (size_t)body_size;
+
+    out->prop_version = prop_ver;
+    out->prop_flags = prop_flags;
+
+    if (pos + 4u > block_end) return -1;
+    uint32_t parent_cnt = rd_u32(b + pos);
+    pos += 4u;
+    if (parent_cnt > 4096u || (size_t)parent_cnt * 8u > block_end - pos) {
+        return -1;
+    }
+    if (parent_cnt > 0u) {
+        out->parent_crcs = (uint64_t *)calloc((size_t)parent_cnt, sizeof(uint64_t));
+        if (!out->parent_crcs) return -1;
+        out->parent_count = parent_cnt;
+        for (uint32_t i = 0u; i < parent_cnt; ++i) {
+            out->parent_crcs[i] = rd_u64(b + pos);
+            pos += 8u;
+        }
+    }
+
+    if (pos + 4u > block_end) {
+        twd_propset_free(out);
+        return -1;
+    }
+    uint32_t num_groups = rd_u32(b + pos);
+    pos += 4u;
+    if (num_groups > 4096u) {
+        twd_propset_free(out);
+        return -1;
+    }
+
+    uint32_t cap = 0u;
+    for (uint32_t g = 0u; g < num_groups; ++g) {
+        uint64_t type_crc = 0ULL;
+        if (prop_ver == 0) {
+            if (propset_read_str_crc(b, &pos, block_end, &type_crc) != 0) {
+                twd_propset_free(out);
+                return -1;
+            }
+        } else {
+            if (pos + 8u > block_end) {
+                twd_propset_free(out);
+                return -1;
+            }
+            type_crc = rd_u64(b + pos);
+            pos += 8u;
+        }
+        if (pos + 4u > block_end) {
+            twd_propset_free(out);
+            return -1;
+        }
+        uint32_t count = rd_u32(b + pos);
+        pos += 4u;
+        if (count > 65536u || out->entry_count + count > 65536u) {
+            twd_propset_free(out);
+            return -1;
+        }
+
+        propset_wire_t wire = propset_classify_wire(type_crc);
+        if (wire == PW_UNKNOWN) {
+            out->truncated = 1;
+            break;
+        }
+
+        if (out->entry_count + count > cap) {
+            uint32_t new_cap = (cap == 0u) ? 16u : cap;
+            while (new_cap < out->entry_count + count) new_cap *= 2u;
+            twd_prop_entry_t *np = (twd_prop_entry_t *)realloc(
+                out->entries, (size_t)new_cap * sizeof(twd_prop_entry_t));
+            if (!np) {
+                twd_propset_free(out);
+                return -1;
+            }
+            out->entries = np;
+            cap = new_cap;
+        }
+
+        for (uint32_t p = 0u; p < count; ++p) {
+            twd_prop_entry_t ent;
+            memset(&ent, 0, sizeof(ent));
+            ent.type_crc = type_crc;
+            if (prop_ver == 0) {
+                if (propset_read_str_crc(b, &pos, block_end, &ent.key_crc) != 0) {
+                    twd_propset_free(out);
+                    return -1;
+                }
+            } else {
+                if (pos + 8u > block_end) {
+                    twd_propset_free(out);
+                    return -1;
+                }
+                ent.key_crc = rd_u64(b + pos);
+                pos += 8u;
+            }
+            if (propset_read_value(b, &pos, block_end, wire, &ent) != 0) {
+                twd_propset_free(out);
+                return -1;
+            }
+            out->entries[out->entry_count++] = ent;
+        }
+    }
+    return 0;
+}
+
+const twd_prop_entry_t *twd_propset_find_crc(const twd_propset_t *ps, uint64_t key_crc) {
+    if (!ps || !ps->entries) return NULL;
+    for (uint32_t i = 0u; i < ps->entry_count; ++i) {
+        if (ps->entries[i].key_crc == key_crc) {
+            return &ps->entries[i];
+        }
+    }
+    return NULL;
+}
+
+const twd_prop_entry_t *twd_propset_find(const twd_propset_t *ps, const char *key) {
+    if (!ps || !key) return NULL;
+    return twd_propset_find_crc(ps, twd_crc64(0ULL, key));
+}
+
+int twd_propset_get_bool(const twd_propset_t *ps, const char *key, int default_val) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_BOOL) return default_val;
+    return e->val.b;
+}
+
+int32_t twd_propset_get_i32(const twd_propset_t *ps, const char *key, int32_t default_val) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_I32) return default_val;
+    return e->val.i32;
+}
+
+uint32_t twd_propset_get_u32(const twd_propset_t *ps, const char *key, uint32_t default_val) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e) return default_val;
+    if (e->kind == TWD_PROP_U32) return e->val.u32;
+    if (e->kind == TWD_PROP_I32 && e->val.i32 >= 0) return (uint32_t)e->val.i32;
+    return default_val;
+}
+
+float twd_propset_get_f32(const twd_propset_t *ps, const char *key, float default_val) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_F32) return default_val;
+    return e->val.f32;
+}
+
+const char *twd_propset_get_str(const twd_propset_t *ps, const char *key, const char *default_val) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_STR || !e->val.str) return default_val;
+    return e->val.str;
+}
+
+int twd_propset_get_vec2(const twd_propset_t *ps, const char *key, float *out_x, float *out_y) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_VEC2) return -1;
+    if (out_x) *out_x = e->val.vec[0];
+    if (out_y) *out_y = e->val.vec[1];
+    return 0;
+}

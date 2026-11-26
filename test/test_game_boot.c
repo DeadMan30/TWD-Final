@@ -24,9 +24,40 @@ static void wr_u64(uint8_t *p, uint64_t v) {
 int main(void) {
     /* Build temporary game dir containing one synthetic NCTT+TTA4 archive with boot assets. */
     static const char s_boot_lua[] = "-- synthetic boot";
-    static const uint8_t s_prefs[20] = {
-        '6','V','S','M', 0x10,0,0,0, 0,0,0,0, 0,0,0,0, 1,0,0,0
-    };
+    uint8_t s_prefs[128];
+    memset(s_prefs, 0, sizeof(s_prefs));
+    size_t po = 0u;
+    memcpy(s_prefs + po, "6VSM", 4u); po += 4u;
+    size_t def_sz_off = po; po += 4u; /* default_size */
+    po += 8u; /* debug_size + async_size */
+    wr_u32(s_prefs + po, 0u); po += 4u; /* type_count */
+    size_t prop_start = po;
+    wr_u32(s_prefs + po, 2u); po += 4u; /* mPropVersion */
+    wr_u32(s_prefs + po, 0u); po += 4u; /* mPropertyFlags */
+    size_t blk_sz_off = po; po += 4u;
+    size_t blk_start = po;
+    wr_u32(s_prefs + po, 0u); po += 4u; /* parent_count */
+    wr_u32(s_prefs + po, 3u); po += 4u; /* num_type_groups */
+    /* Group 1: bool ("Windowed" = 1) */
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "bool")); po += 8u;
+    wr_u32(s_prefs + po, 1u); po += 4u;
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "Windowed")); po += 8u;
+    s_prefs[po++] = 1u;
+    /* Group 2: int32 ("FX Brush Quality" = 2) */
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "int32")); po += 8u;
+    wr_u32(s_prefs + po, 1u); po += 4u;
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "FX Brush Quality")); po += 8u;
+    wr_u32(s_prefs + po, 2u); po += 4u;
+    /* Group 3: Vector2 ("Window Size" = 1600.0f x 900.0f) */
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "Vector2")); po += 8u;
+    wr_u32(s_prefs + po, 1u); po += 4u;
+    wr_u64(s_prefs + po, twd_crc64(0ULL, "Window Size")); po += 8u;
+    float win_x = 1600.0f, win_y = 900.0f;
+    memcpy(s_prefs + po, &win_x, 4u); po += 4u;
+    memcpy(s_prefs + po, &win_y, 4u); po += 4u;
+    wr_u32(s_prefs + blk_sz_off, (uint32_t)(po - blk_start));
+    wr_u32(s_prefs + def_sz_off, (uint32_t)(po - prop_start));
+
     static const uint8_t s_bank[16] = {'R','I','F','F', 8,0,0,0, 'F','E','V',' ', 1,0,0,0};
     static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0";
 
@@ -35,10 +66,11 @@ int main(void) {
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
-        PREFS_LEN = sizeof(s_prefs),
+        PREFS_LEN = 113,
         BANK_LEN = sizeof(s_bank),
         PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN
     };
+    if (po != (size_t)PREFS_LEN) return 99;
 
     uint8_t pkg[12 + PAYLOAD_SZ];
     memset(pkg, 0, sizeof(pkg));
@@ -97,13 +129,17 @@ int main(void) {
     if (stats.hook_count == 0u) return 6;
     if (stats.mounted_archives != 1) return 7;
     if (stats.found_prefs_prop != 1 || stats.prefs_meta_version != 6u ||
-        stats.found_boot_lua != 1) return 8;
+        stats.prefs_property_count != 3u || stats.found_boot_lua != 1) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
-    if (stats.width != 1280u || stats.height != 720u) return 10;
+    if (stats.width != 1600u || stats.height != 900u) return 10;
     if (stats.frames_rendered != 4ULL || stats.clean_shutdown != 1) return 11;
 
-    printf("test_game_boot: ok (hooks=%u, archives=%d, frames=%llu)\n",
-           stats.hook_count, stats.mounted_archives,
-           (unsigned long long)stats.frames_rendered);
+    char kv[32];
+    if (twd_kv_get("prefs", "windowed", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 12;
+    if (twd_kv_get("prefs", "fx_brush_quality", kv, sizeof(kv)) <= 0 || strcmp(kv, "2") != 0) return 13;
+
+    printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, res=%ux%u, frames=%llu)\n",
+           stats.hook_count, stats.mounted_archives, stats.prefs_property_count,
+           stats.width, stats.height, (unsigned long long)stats.frames_rendered);
     return 0;
 }

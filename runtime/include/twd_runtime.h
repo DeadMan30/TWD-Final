@@ -678,6 +678,63 @@ uint64_t twd_crc64_bytes(uint64_t seed, const void *data, size_t len, int to_low
 uint64_t twd_crc64(uint64_t seed, const char *str);
 int twd_metastream_parse_header(const void *data, size_t len, twd_metastream_header_t *out);
 
+typedef enum twd_prop_kind {
+    TWD_PROP_UNKNOWN = 0,
+    TWD_PROP_BOOL = 1,
+    TWD_PROP_I32 = 2,
+    TWD_PROP_U32 = 3,
+    TWD_PROP_I64 = 4,
+    TWD_PROP_U64 = 5,
+    TWD_PROP_F32 = 6,
+    TWD_PROP_F64 = 7,
+    TWD_PROP_STR = 8,
+    TWD_PROP_SYMBOL = 9,
+    TWD_PROP_VEC2 = 10,
+    TWD_PROP_VEC3 = 11,
+    TWD_PROP_VEC4 = 12,
+    TWD_PROP_IRECT = 13
+} twd_prop_kind_t;
+
+typedef struct twd_prop_entry {
+    uint64_t key_crc;
+    uint64_t type_crc;
+    twd_prop_kind_t kind;
+    union {
+        int b;
+        int32_t i32;
+        uint32_t u32;
+        int64_t i64;
+        uint64_t u64;
+        float f32;
+        double f64;
+        char *str;
+        uint64_t sym;
+        float vec[4];
+        int32_t irect[4];
+    } val;
+} twd_prop_entry_t;
+
+typedef struct twd_propset {
+    int32_t prop_version;
+    uint32_t prop_flags;
+    uint32_t parent_count;
+    uint64_t *parent_crcs;
+    uint32_t entry_count;
+    twd_prop_entry_t *entries;
+    int truncated;
+} twd_propset_t;
+
+int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out);
+void twd_propset_free(twd_propset_t *ps);
+const twd_prop_entry_t *twd_propset_find(const twd_propset_t *ps, const char *key);
+const twd_prop_entry_t *twd_propset_find_crc(const twd_propset_t *ps, uint64_t key_crc);
+int twd_propset_get_bool(const twd_propset_t *ps, const char *key, int default_val);
+int32_t twd_propset_get_i32(const twd_propset_t *ps, const char *key, int32_t default_val);
+uint32_t twd_propset_get_u32(const twd_propset_t *ps, const char *key, uint32_t default_val);
+float twd_propset_get_f32(const twd_propset_t *ps, const char *key, float default_val);
+const char *twd_propset_get_str(const twd_propset_t *ps, const char *key, const char *default_val);
+int twd_propset_get_vec2(const twd_propset_t *ps, const char *key, float *out_x, float *out_y);
+
 /* Audio & FMOD Studio / Core PAL (libfmodstudio/libfmod bridge + software PCM16 mixer) */
 #define TWD_AUDIO_CAP_FMOD_STUDIO 1
 #define TWD_AUDIO_CAP_FMOD_CORE   2
