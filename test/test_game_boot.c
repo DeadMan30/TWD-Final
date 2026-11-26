@@ -32,7 +32,10 @@ int main(void) {
         "ResourceSetEnable(\"Menu\")\n"
         "SceneOpen(\"Menu.scene\")\n"
         "SceneAddAgent(\"Menu.scene\", \"OverlayCursor\")\n"
-        "AgentSetPos(\"OverlayCursor\", 10, 20, 0)\n";
+        "AgentSetPos(\"OverlayCursor\", 10, 20, 0)\n"
+        "SaveLoadSetSaveDisplayName(\"ClemEp1\")\n"
+        "SaveGame(\"slot0\")\n"
+        "LoadGame(\"slot0\")\n";
     uint8_t s_prefs[128];
     memset(s_prefs, 0, sizeof(s_prefs));
     size_t po = 0u;
@@ -287,16 +290,26 @@ int main(void) {
     twd_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.game_dir = "twd_boot_smoke_dir";
+    cfg.save_dir = "twd_boot_save_dir";
     cfg.width = 1280u;
     cfg.height = 720u;
     cfg.max_frames = 4u;
     cfg.preferred_backend = -1;
+
+    twd_win_event_t kev;
+    kev.kind = TWD_EVT_KEY;
+    kev.window_id = 0u;
+    kev.param1 = 65u;
+    kev.param2 = 1;
+    twd_window_push_event(&kev);
 
     twd_boot_stats_t stats;
     int rc = twd_game_boot_run(&cfg, &stats);
 
     (void)twd_file_delete("twd_boot_smoke_dir/boot0.ttarch2");
     (void)twd_rmdir("twd_boot_smoke_dir");
+    (void)twd_file_delete("twd_boot_save_dir/slot0.save");
+    (void)twd_rmdir("twd_boot_save_dir");
 
     if (rc != 0) return 5;
     if (stats.hook_count == 0u) return 6;
@@ -307,7 +320,11 @@ int main(void) {
         stats.boot_textures_loaded != 1u ||
         stats.boot_meshes_loaded != 1u ||
         stats.boot_scenes_active != 1u || stats.boot_scene_agents != 3u ||
+        stats.save_ops_completed != 2u ||
+        stats.input_events_processed < 1u ||
+        strcmp(stats.save_slot_active, "slot0.save") != 0 ||
         strcmp(stats.active_scene, "Menu.scene") != 0) return 8;
+    if (twd_input_key_down(65u) != 1) return 17;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1600u || stats.height != 900u) return 10;
     if (stats.frames_rendered != 4ULL || stats.draw_calls < 4ULL || stats.clean_shutdown != 1) return 11;

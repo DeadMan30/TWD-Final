@@ -12,6 +12,7 @@ add_library(twdrt STATIC
     font.c
     scene.c
     d3dmesh.c
+    savegame.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>

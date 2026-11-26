@@ -674,6 +674,7 @@ typedef struct twd_app_callbacks {
     void (*on_shutdown)(void *user);
     void *user;
     uint32_t max_frames;
+    void (*on_event)(void *user, const twd_win_event_t *evt);
 } twd_app_callbacks_t;
 
 void twd_android_set_native_window(void *native_window);
@@ -1110,6 +1111,40 @@ void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
 const twd_hook_entry_t *twd_hook_at(uint32_t index);
 uint32_t twd_hook_count(void);
+
+/* Persistent Save / Load Manager (saveloadmanager.cpp @ 0x140222410) */
+#define TWD_SAVE_MAX_PROPS 128u
+
+typedef struct twd_save_mgr twd_save_mgr_t;
+
+twd_save_mgr_t *twd_save_mgr_create(const char *save_dir_or_null);
+void twd_save_mgr_destroy(twd_save_mgr_t *mgr);
+int twd_save_mgr_get_dir(const twd_save_mgr_t *mgr, char *buf, size_t cap);
+void twd_save_clear_props(twd_save_mgr_t *mgr);
+int twd_save_set_display_name(twd_save_mgr_t *mgr, const char *display_name);
+int twd_save_set_active_scene(twd_save_mgr_t *mgr, const char *scene_name);
+int twd_save_set_prop_bool(twd_save_mgr_t *mgr, const char *key, int val);
+int twd_save_set_prop_i32(twd_save_mgr_t *mgr, const char *key, int32_t val);
+int twd_save_set_prop_f32(twd_save_mgr_t *mgr, const char *key, float val);
+int twd_save_set_prop_str(twd_save_mgr_t *mgr, const char *key, const char *val);
+int twd_save_get_prop_bool(const twd_save_mgr_t *mgr, const char *key, int default_val);
+int32_t twd_save_get_prop_i32(const twd_save_mgr_t *mgr, const char *key, int32_t default_val);
+float twd_save_get_prop_f32(const twd_save_mgr_t *mgr, const char *key, float default_val);
+const char *twd_save_get_prop_str(const twd_save_mgr_t *mgr, const char *key, const char *default_val);
+int twd_save_game(twd_save_mgr_t *mgr, const char *slot_or_null);
+int twd_load_game(twd_save_mgr_t *mgr, const char *slot_or_null);
+int twd_save_exists(const twd_save_mgr_t *mgr, const char *slot_or_null);
+int twd_save_is_corrupt(const twd_save_mgr_t *mgr, const char *slot_or_null);
+int twd_save_delete(twd_save_mgr_t *mgr, const char *slot_or_null);
+int twd_save_new_game(twd_save_mgr_t *mgr, uint32_t slot_index);
+int twd_save_reset_game(twd_save_mgr_t *mgr);
+int twd_save_is_saving(const twd_save_mgr_t *mgr);
+void twd_save_get_metadata(
+    const twd_save_mgr_t *mgr,
+    char *out_slot, size_t slot_cap,
+    char *out_display, size_t disp_cap,
+    char *out_scene, size_t scene_cap,
+    int32_t *out_seq);
 
 #ifdef __cplusplus
 }

@@ -18,9 +18,18 @@ uint64_t twd_android_run_frame_loop(
         pump_android_input();
         twd_win_event_t ev;
         while (twd_window_poll_event(&ev) > 0) {
-            if (ev.kind == TWD_EVT_QUIT || ev.kind == TWD_EVT_CLOSE) {
-                if (ev.kind == TWD_EVT_CLOSE) twd_post_quit(0);
+            if (ev.kind == TWD_EVT_CLOSE) {
+                twd_post_quit(0);
+            } else if (ev.kind == TWD_EVT_KEY) {
+                twd_input_set_key((uint32_t)ev.param1, (ev.param2 != 0) ? 1 : 0);
+            } else if (ev.kind == TWD_EVT_POINTER) {
+                int32_t px = (int32_t)(ev.param2 >> 32);
+                int32_t py = (int32_t)(uint32_t)(ev.param2 & 0xffffffffu);
+                uint32_t action = (uint32_t)(ev.param1 & 0xffffffffu);
+                twd_input_set_pointer((float)px, (float)py,
+                    (action == TWD_TOUCH_DOWN || action == TWD_TOUCH_MOVE) ? 1u : 0u);
             }
+            if (cb->on_event) cb->on_event(cb->user, &ev);
         }
         int qcode = 0;
         if (twd_quit_requested(&qcode)) {

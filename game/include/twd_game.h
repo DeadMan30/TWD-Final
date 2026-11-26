@@ -124,6 +124,7 @@ typedef struct twd_lua_state {
 typedef struct twd_boot_config {
     const char *game_dir;
     const char *shader_cache_dir;
+    const char *save_dir;
     uint32_t width;
     uint32_t height;
     uint32_t max_frames;
@@ -145,6 +146,9 @@ typedef struct twd_boot_stats {
     uint32_t boot_scenes_active;
     uint32_t boot_scene_agents;
     char active_scene[64];
+    uint32_t save_ops_completed;
+    uint32_t input_events_processed;
+    char save_slot_active[64];
     int gfx_backend;
     int audio_caps;
     uint32_t width;

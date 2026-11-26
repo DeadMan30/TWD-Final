@@ -1519,6 +1519,59 @@ int main(void) {
         twd_gfx_device_destroy(mdev);
     }
 
+    {
+        /* Test SaveLoad Manager persistence, MSV6 PropertySet round-trip, & corruption detection */
+        twd_save_mgr_t *svm = twd_save_mgr_create("twd_rt_save_test_dir");
+        TWD_CHECK(svm != NULL);
+        char sdir[256];
+        TWD_CHECK(twd_save_mgr_get_dir(svm, sdir, sizeof(sdir)) > 0);
+        TWD_CHECK(twd_path_is_dir("twd_rt_save_test_dir") == 1);
+
+        TWD_CHECK(twd_save_set_display_name(svm, "Ep1_BoardingSchool") == 0);
+        TWD_CHECK(twd_save_set_active_scene(svm, "Menu.scene") == 0);
+        TWD_CHECK(twd_save_set_prop_bool(svm, "saved_friend", 1) == 0);
+        TWD_CHECK(twd_save_set_prop_i32(svm, "aj_attitude", 42) == 0);
+        TWD_CHECK(twd_save_set_prop_f32(svm, "gamma_val", 1.25f) == 0);
+        TWD_CHECK(twd_save_set_prop_str(svm, "partner_choice", "Violet") == 0);
+
+        TWD_CHECK(twd_save_game(svm, NULL) == 0);
+        TWD_CHECK(twd_save_exists(svm, "default.save") == 1);
+        TWD_CHECK(twd_save_is_corrupt(svm, NULL) == 0);
+
+        TWD_CHECK(twd_save_new_game(svm, 2u) == 0);
+        TWD_CHECK(twd_save_get_prop_i32(svm, "aj_attitude", -1) == -1);
+        TWD_CHECK(twd_load_game(svm, "default") == 0);
+        TWD_CHECK(twd_save_get_prop_bool(svm, "saved_friend", 0) == 1);
+        TWD_CHECK(twd_save_get_prop_i32(svm, "aj_attitude", -1) == 42);
+        TWD_CHECK(twd_save_get_prop_f32(svm, "gamma_val", 0.0f) == 1.25f);
+        TWD_CHECK(strcmp(twd_save_get_prop_str(svm, "partner_choice", ""), "Violet") == 0);
+
+        char sv_slot[64], sv_disp[64], sv_sc[64];
+        int32_t sv_seq = 0;
+        twd_save_get_metadata(svm, sv_slot, sizeof(sv_slot), sv_disp, sizeof(sv_disp),
+                              sv_sc, sizeof(sv_sc), &sv_seq);
+        TWD_CHECK(strcmp(sv_slot, "default.save") == 0);
+        TWD_CHECK(strcmp(sv_disp, "Ep1_BoardingSchool") == 0);
+        TWD_CHECK(strcmp(sv_sc, "Menu.scene") == 0);
+        TWD_CHECK(sv_seq == 1);
+
+        /* Corrupt save slot detection */
+        twd_file_t cf;
+        TWD_CHECK(twd_file_open("twd_rt_save_test_dir/bad.save",
+                                TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &cf) == 0);
+        TWD_CHECK(twd_file_write(&cf, "BADD0000", 8u) == 8);
+        TWD_CHECK(twd_file_close(&cf) == 0);
+        TWD_CHECK(twd_save_is_corrupt(svm, "bad.save") == 1);
+        TWD_CHECK(twd_load_game(svm, "bad.save") != 0);
+
+        TWD_CHECK(twd_save_delete(svm, "bad.save") == 0);
+        TWD_CHECK(twd_save_delete(svm, NULL) == 0);
+        TWD_CHECK(twd_save_exists(svm, "default.save") == 0);
+        TWD_CHECK(twd_save_reset_game(svm) == 0);
+        twd_save_mgr_destroy(svm);
+        (void)twd_rmdir("twd_rt_save_test_dir");
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 
