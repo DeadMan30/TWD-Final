@@ -27,6 +27,31 @@ struct twd_gfx_device {
     void (*gl_clear)(uint32_t mask);
     void (*gl_draw_arrays)(uint32_t mode, int32_t first, int32_t count);
     void (*gl_draw_elements)(uint32_t mode, int32_t count, uint32_t type, const void *indices);
+    void (*gl_gen_buffers)(int32_t n, uint32_t *buffers);
+    void (*gl_delete_buffers)(int32_t n, const uint32_t *buffers);
+    void (*gl_bind_buffer)(uint32_t target, uint32_t buffer);
+    void (*gl_buffer_data)(uint32_t target, ptrdiff_t size, const void *data, uint32_t usage);
+    void (*gl_buffer_sub_data)(uint32_t target, ptrdiff_t offset, ptrdiff_t size, const void *data);
+    void (*gl_gen_textures)(int32_t n, uint32_t *textures);
+    void (*gl_delete_textures)(int32_t n, const uint32_t *textures);
+    void (*gl_bind_texture)(uint32_t target, uint32_t texture);
+    void (*gl_tex_image_2d)(uint32_t target, int32_t level, int32_t internalformat,
+                            int32_t width, int32_t height, int32_t border,
+                            uint32_t format, uint32_t type, const void *pixels);
+    void (*gl_tex_sub_image_2d)(uint32_t target, int32_t level, int32_t xoff, int32_t yoff,
+                                int32_t width, int32_t height, uint32_t format,
+                                uint32_t type, const void *pixels);
+    void (*gl_tex_parameter_i)(uint32_t target, uint32_t pname, int32_t param);
+    uint32_t (*gl_create_shader)(uint32_t type);
+    void (*gl_shader_source)(uint32_t shader, int32_t count, const char *const *str, const int32_t *len);
+    void (*gl_compile_shader)(uint32_t shader);
+    void (*gl_delete_shader)(uint32_t shader);
+    uint32_t (*gl_create_program)(void);
+    void (*gl_attach_shader)(uint32_t program, uint32_t shader);
+    void (*gl_link_program)(uint32_t program);
+    void (*gl_use_program)(uint32_t program);
+    void (*gl_delete_program)(uint32_t program);
+    uint32_t gl_active_program;
     uint32_t width;
     uint32_t height;
     int vsync;
@@ -44,6 +69,12 @@ struct twd_gfx_device {
     void *bound_input_layout;
     void *bound_vb;
     void *bound_ib;
+    uint64_t bound_vs_hash;
+    uint64_t bound_ps_hash;
+    uint64_t linked_vs_hash;
+    uint64_t linked_ps_hash;
+    uint32_t bound_vb_gl;
+    uint32_t bound_ib_gl;
     void *bound_rtvs[8];
     void *bound_dsv;
     twd_d3d11_rect_t scissor;
@@ -57,6 +88,7 @@ struct twd_gfx_device {
 struct twd_gfx_buffer {
     twd_gfx_device_t *dev;
     uint32_t kind;
+    uint32_t gl_handle;
     size_t byte_size;
     void *staging;
 };
@@ -67,6 +99,7 @@ struct twd_gfx_texture {
     uint32_t height;
     uint32_t format;
     uint32_t row_pitch;
+    uint32_t gl_handle;
     size_t byte_size;
     void *pixels;
 };
@@ -222,6 +255,44 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
             if (dev->gl_clear_color && dev->gl_clear && dev->gl_draw_arrays) {
                 dev->driver_caps |= 4;
             }
+            typedef void (*gl_gen_fn)(int32_t, uint32_t *);
+            typedef void (*gl_del_fn)(int32_t, const uint32_t *);
+            typedef void (*gl_bind_fn)(uint32_t, uint32_t);
+            typedef void (*gl_bdata_fn)(uint32_t, ptrdiff_t, const void *, uint32_t);
+            typedef void (*gl_bsub_fn)(uint32_t, ptrdiff_t, ptrdiff_t, const void *);
+            typedef void (*gl_tex2d_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
+            typedef void (*gl_texsub_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
+            typedef void (*gl_texparam_fn)(uint32_t, uint32_t, int32_t);
+            typedef uint32_t (*gl_mk_sh_fn)(uint32_t);
+            typedef void (*gl_sh_src_fn)(uint32_t, int32_t, const char *const *, const int32_t *);
+            typedef void (*gl_u32_fn)(uint32_t);
+            typedef uint32_t (*gl_mk_prog_fn)(void);
+            typedef void (*gl_attach_fn)(uint32_t, uint32_t);
+
+            dev->gl_gen_buffers = (gl_gen_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glGenBuffers");
+            dev->gl_delete_buffers = (gl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteBuffers");
+            dev->gl_bind_buffer = (gl_bind_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBindBuffer");
+            dev->gl_buffer_data = (gl_bdata_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBufferData");
+            dev->gl_buffer_sub_data = (gl_bsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBufferSubData");
+            dev->gl_gen_textures = (gl_gen_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glGenTextures");
+            dev->gl_delete_textures = (gl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteTextures");
+            dev->gl_bind_texture = (gl_bind_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBindTexture");
+            dev->gl_tex_image_2d = (gl_tex2d_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexImage2D");
+            dev->gl_tex_sub_image_2d = (gl_texsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexSubImage2D");
+            dev->gl_tex_parameter_i = (gl_texparam_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexParameteri");
+            dev->gl_create_shader = (gl_mk_sh_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCreateShader");
+            dev->gl_shader_source = (gl_sh_src_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glShaderSource");
+            dev->gl_compile_shader = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCompileShader");
+            dev->gl_delete_shader = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteShader");
+            dev->gl_create_program = (gl_mk_prog_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCreateProgram");
+            dev->gl_attach_shader = (gl_attach_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glAttachShader");
+            dev->gl_link_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glLinkProgram");
+            dev->gl_use_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glUseProgram");
+            dev->gl_delete_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteProgram");
+            if (dev->gl_gen_buffers && dev->gl_buffer_data && dev->gl_gen_textures &&
+                dev->gl_tex_image_2d && dev->gl_create_shader && dev->gl_create_program) {
+                dev->driver_caps |= 8;
+            }
         }
     }
 #endif
@@ -233,7 +304,21 @@ uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev) {
 }
 
 int twd_gfx_has_gl_dispatch(const twd_gfx_device_t *dev) {
-    return (dev && (dev->driver_caps & 4)) ? 1 : 0;
+    if (!dev || !(dev->driver_caps & 4)) return 0;
+    return (dev->driver_caps & 8) ? 2 : 1;
+}
+
+uint32_t twd_gfx_gl_compile_glsl(twd_gfx_device_t *dev, uint32_t stage, const char *glsl_src) {
+    if (!dev || !glsl_src || !dev->egl_surface || !dev->gl_create_shader ||
+        !dev->gl_shader_source || !dev->gl_compile_shader) {
+        return 0u;
+    }
+    uint32_t gl_type = (stage == TWD_SHADER_STAGE_VS) ? 0x8B31u : 0x8B30u; /* GL_VERTEX_SHADER / GL_FRAGMENT_SHADER */
+    uint32_t sh = dev->gl_create_shader(gl_type);
+    if (!sh) return 0u;
+    dev->gl_shader_source(sh, 1, &glsl_src, NULL);
+    dev->gl_compile_shader(sh);
+    return sh;
 }
 
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
@@ -259,6 +344,10 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (--dev->refs > 0) return;
     twd_shader_cache_destroy(dev->shader_cache);
     dev->shader_cache = NULL;
+    if (dev->gl_active_program && dev->gl_delete_program) {
+        dev->gl_delete_program(dev->gl_active_program);
+        dev->gl_active_program = 0u;
+    }
     if (dev->egl_display) {
         if (dev->egl_surface && dev->egl_destroy_surface) {
             dev->egl_destroy_surface(dev->egl_display, dev->egl_surface);
@@ -320,6 +409,32 @@ twd_shader_cache_t *twd_gfx_get_shader_cache(twd_gfx_device_t *dev) {
     return dev ? dev->shader_cache : NULL;
 }
 
+static uint32_t buf_kind_to_gl_target(uint32_t kind) {
+    if (kind == TWD_GFX_BUF_INDEX) return 0x8893u;    /* GL_ELEMENT_ARRAY_BUFFER */
+    if (kind == TWD_GFX_BUF_CONSTANT) return 0x8A11u; /* GL_UNIFORM_BUFFER */
+    return 0x8892u;                                   /* GL_ARRAY_BUFFER */
+}
+
+static void sync_gl_buffer(twd_gfx_buffer_t *buf) {
+    if (!buf || !buf->dev || !buf->dev->egl_surface || !buf->dev->gl_bind_buffer || !buf->dev->gl_buffer_sub_data) {
+        return;
+    }
+    if (!buf->gl_handle) return;
+    uint32_t tgt = buf_kind_to_gl_target(buf->kind);
+    buf->dev->gl_bind_buffer(tgt, buf->gl_handle);
+    buf->dev->gl_buffer_sub_data(tgt, 0, (ptrdiff_t)buf->byte_size, buf->staging);
+}
+
+static void sync_gl_texture(twd_gfx_texture_t *tex) {
+    if (!tex || !tex->dev || !tex->dev->egl_surface || !tex->dev->gl_bind_texture || !tex->dev->gl_tex_sub_image_2d) {
+        return;
+    }
+    if (!tex->gl_handle || !tex->pixels) return;
+    tex->dev->gl_bind_texture(0x0DE1u, tex->gl_handle); /* GL_TEXTURE_2D */
+    tex->dev->gl_tex_sub_image_2d(0x0DE1u, 0, 0, 0, (int32_t)tex->width, (int32_t)tex->height,
+                                  0x1908u, 0x1401u, tex->pixels); /* GL_RGBA, GL_UNSIGNED_BYTE */
+}
+
 twd_gfx_buffer_t *twd_gfx_buffer_create(
     twd_gfx_device_t *dev, uint32_t kind, size_t byte_size, const void *initial_data) {
     if (!dev || byte_size == 0u) return NULL;
@@ -338,6 +453,14 @@ twd_gfx_buffer_t *twd_gfx_buffer_create(
     buf->dev = dev;
     buf->kind = kind;
     buf->byte_size = byte_size;
+    if (dev->egl_surface && dev->gl_gen_buffers && dev->gl_bind_buffer && dev->gl_buffer_data) {
+        uint32_t tgt = buf_kind_to_gl_target(kind);
+        dev->gl_gen_buffers(1, &buf->gl_handle);
+        if (buf->gl_handle) {
+            dev->gl_bind_buffer(tgt, buf->gl_handle);
+            dev->gl_buffer_data(tgt, (ptrdiff_t)byte_size, buf->staging, 0x88E8u); /* GL_DYNAMIC_DRAW */
+        }
+    }
     dev->active_buffers++;
     return buf;
 }
@@ -345,6 +468,7 @@ twd_gfx_buffer_t *twd_gfx_buffer_create(
 int twd_gfx_buffer_update(twd_gfx_buffer_t *buf, const void *data, size_t byte_size) {
     if (!buf || !data || byte_size > buf->byte_size) return -1;
     memcpy(buf->staging, data, byte_size);
+    sync_gl_buffer(buf);
     return 0;
 }
 
@@ -359,6 +483,10 @@ const void *twd_gfx_buffer_data(const twd_gfx_buffer_t *buf, size_t *out_size) {
 
 void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf) {
     if (!buf) return;
+    if (buf->gl_handle && buf->dev && buf->dev->gl_delete_buffers) {
+        buf->dev->gl_delete_buffers(1, &buf->gl_handle);
+        buf->gl_handle = 0u;
+    }
     if (buf->dev && buf->dev->active_buffers > 0u) {
         buf->dev->active_buffers--;
     }
@@ -383,6 +511,18 @@ twd_gfx_texture_t *twd_gfx_texture_create(
     tex->width = width;
     tex->height = height;
     tex->format = format;
+    if (dev->egl_surface && dev->gl_gen_textures && dev->gl_bind_texture && dev->gl_tex_image_2d) {
+        dev->gl_gen_textures(1, &tex->gl_handle);
+        if (tex->gl_handle) {
+            dev->gl_bind_texture(0x0DE1u, tex->gl_handle);
+            if (dev->gl_tex_parameter_i) {
+                dev->gl_tex_parameter_i(0x0DE1u, 0x2801u, 0x2601); /* MIN_FILTER = LINEAR */
+                dev->gl_tex_parameter_i(0x0DE1u, 0x2800u, 0x2601); /* MAG_FILTER = LINEAR */
+            }
+            dev->gl_tex_image_2d(0x0DE1u, 0, 0x1908, (int32_t)width, (int32_t)height,
+                                 0, 0x1908u, 0x1401u, tex->pixels);
+        }
+    }
     dev->active_textures++;
     return tex;
 }
@@ -398,6 +538,10 @@ const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size)
 
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex) {
     if (!tex) return;
+    if (tex->gl_handle && tex->dev && tex->dev->gl_delete_textures) {
+        tex->dev->gl_delete_textures(1, &tex->gl_handle);
+        tex->gl_handle = 0u;
+    }
     if (tex->dev && tex->dev->active_textures > 0u) {
         tex->dev->active_textures--;
     }
@@ -447,8 +591,48 @@ static uint32_t d3d_topo_to_gl_mode(uint32_t topo) {
     return 0x0004u;                 /* TRIANGLELIST -> GL_TRIANGLES */
 }
 
+static void bind_gl_pipeline(twd_gfx_device_t *dev) {
+    if (!dev || !dev->egl_surface) return;
+    if (dev->bound_vs_hash && dev->bound_ps_hash &&
+        (dev->bound_vs_hash != dev->linked_vs_hash || dev->bound_ps_hash != dev->linked_ps_hash) &&
+        dev->gl_create_program && dev->gl_attach_shader && dev->gl_link_program &&
+        dev->gl_create_shader && dev->gl_delete_shader) {
+        twd_shader_cache_entry_t vs_ent, ps_ent;
+        if (twd_shader_cache_lookup(dev->shader_cache, dev->bound_vs_hash, &vs_ent) &&
+            twd_shader_cache_lookup(dev->shader_cache, dev->bound_ps_hash, &ps_ent) &&
+            vs_ent.glsl_source && ps_ent.glsl_source) {
+            uint32_t vs_gl = twd_gfx_gl_compile_glsl(dev, TWD_SHADER_STAGE_VS, vs_ent.glsl_source);
+            uint32_t ps_gl = twd_gfx_gl_compile_glsl(dev, TWD_SHADER_STAGE_PS, ps_ent.glsl_source);
+            if (vs_gl && ps_gl) {
+                uint32_t prog = dev->gl_create_program();
+                if (prog) {
+                    dev->gl_attach_shader(prog, vs_gl);
+                    dev->gl_attach_shader(prog, ps_gl);
+                    dev->gl_link_program(prog);
+                    if (dev->gl_active_program && dev->gl_delete_program) {
+                        dev->gl_delete_program(dev->gl_active_program);
+                    }
+                    dev->gl_active_program = prog;
+                    dev->linked_vs_hash = dev->bound_vs_hash;
+                    dev->linked_ps_hash = dev->bound_ps_hash;
+                }
+            }
+            if (vs_gl) dev->gl_delete_shader(vs_gl);
+            if (ps_gl) dev->gl_delete_shader(ps_gl);
+        }
+    }
+    if (dev->gl_active_program && dev->gl_use_program) {
+        dev->gl_use_program(dev->gl_active_program);
+    }
+    if (dev->gl_bind_buffer) {
+        if (dev->bound_vb_gl) dev->gl_bind_buffer(0x8892u, dev->bound_vb_gl);
+        if (dev->bound_ib_gl) dev->gl_bind_buffer(0x8893u, dev->bound_ib_gl);
+    }
+}
+
 void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex) {
     if (!dev) return;
+    bind_gl_pipeline(dev);
     if (dev->gl_draw_arrays && dev->egl_surface) {
         dev->gl_draw_arrays(d3d_topo_to_gl_mode(dev->topology), (int32_t)start_vertex, (int32_t)vertex_count);
     }
@@ -459,6 +643,7 @@ void twd_gfx_draw_indexed(
     twd_gfx_device_t *dev, uint32_t index_count, uint32_t start_index, int32_t base_vertex) {
     (void)base_vertex;
     if (!dev) return;
+    bind_gl_pipeline(dev);
     if (dev->gl_draw_elements && dev->egl_surface) {
         const void *off_ptr = (const void *)(uintptr_t)((size_t)start_index * sizeof(uint16_t));
         dev->gl_draw_elements(d3d_topo_to_gl_mode(dev->topology), (int32_t)index_count, 0x1403u, off_ptr);
@@ -768,8 +953,11 @@ static int32_t shim_ctx_map(
 
 static void shim_ctx_unmap(void *self, void *resource, uint32_t subresource) {
     (void)self;
-    (void)resource;
     (void)subresource;
+    shim_com_obj_t *res = (shim_com_obj_t *)resource;
+    if (!res || res->magic != TWD_OBJ_MAGIC) return;
+    if (res->kind == TWD_KIND_BUFFER && res->buf) sync_gl_buffer(res->buf);
+    else if (res->kind == TWD_KIND_TEX2D && res->tex) sync_gl_texture(res->tex);
 }
 
 static void shim_ctx_update_subresource(
@@ -794,6 +982,9 @@ static void shim_ctx_update_subresource(
                    (const uint8_t *)src_data + (size_t)y * (src_row_pitch ? src_row_pitch : res->tex->row_pitch),
                    row_bytes);
         }
+        sync_gl_texture(res->tex);
+    } else if (res->kind == TWD_KIND_BUFFER && res->buf) {
+        sync_gl_buffer(res->buf);
     }
     if (ctx->gfx) ctx->gfx->update_calls++;
 }
@@ -818,14 +1009,22 @@ static void shim_ctx_ps_set_shader(void *self, void *ps, const void *const *cls,
     (void)cls;
     (void)num;
     shim_com_obj_t *ctx = (shim_com_obj_t *)self;
-    if (ctx && ctx->gfx) ctx->gfx->bound_ps = ps;
+    if (ctx && ctx->gfx) {
+        ctx->gfx->bound_ps = ps;
+        shim_com_obj_t *so = (shim_com_obj_t *)ps;
+        ctx->gfx->bound_ps_hash = (so && so->magic == TWD_OBJ_MAGIC) ? so->shader_hash : 0ULL;
+    }
 }
 
 static void shim_ctx_vs_set_shader(void *self, void *vs, const void *const *cls, uint32_t num) {
     (void)cls;
     (void)num;
     shim_com_obj_t *ctx = (shim_com_obj_t *)self;
-    if (ctx && ctx->gfx) ctx->gfx->bound_vs = vs;
+    if (ctx && ctx->gfx) {
+        ctx->gfx->bound_vs = vs;
+        shim_com_obj_t *so = (shim_com_obj_t *)vs;
+        ctx->gfx->bound_vs_hash = (so && so->magic == TWD_OBJ_MAGIC) ? so->shader_hash : 0ULL;
+    }
 }
 
 static void shim_ctx_ia_set_input_layout(void *self, void *layout) {
@@ -839,14 +1038,22 @@ static void shim_ctx_ia_set_vertex_buffers(
     (void)strides;
     (void)offsets;
     shim_com_obj_t *ctx = (shim_com_obj_t *)self;
-    if (ctx && ctx->gfx && num > 0u && vbs) ctx->gfx->bound_vb = vbs[0];
+    if (ctx && ctx->gfx && num > 0u && vbs) {
+        ctx->gfx->bound_vb = vbs[0];
+        shim_com_obj_t *bo = (shim_com_obj_t *)vbs[0];
+        ctx->gfx->bound_vb_gl = (bo && bo->magic == TWD_OBJ_MAGIC && bo->buf) ? bo->buf->gl_handle : 0u;
+    }
 }
 
 static void shim_ctx_ia_set_index_buffer(void *self, void *ib, uint32_t fmt, uint32_t offset) {
     (void)fmt;
     (void)offset;
     shim_com_obj_t *ctx = (shim_com_obj_t *)self;
-    if (ctx && ctx->gfx) ctx->gfx->bound_ib = ib;
+    if (ctx && ctx->gfx) {
+        ctx->gfx->bound_ib = ib;
+        shim_com_obj_t *bo = (shim_com_obj_t *)ib;
+        ctx->gfx->bound_ib_gl = (bo && bo->magic == TWD_OBJ_MAGIC && bo->buf) ? bo->buf->gl_handle : 0u;
+    }
 }
 
 static void shim_ctx_ia_set_primitive_topology(void *self, uint32_t topology) {

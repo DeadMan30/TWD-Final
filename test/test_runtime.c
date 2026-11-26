@@ -621,6 +621,7 @@ int main(void) {
     TWD_CHECK(tah.container_kind == TWD_TTARCH2_ECTT && tah.encrypted == 1 && tah.compressed == 1);
 
     TWD_CHECK(twd_gfx_has_gl_dispatch(rgfx) == 0);
+    TWD_CHECK(twd_gfx_gl_compile_glsl(rgfx, TWD_SHADER_STAGE_VS, "void main(){}") == 0u);
     twd_video_player_t *vp_pl = twd_video_create(rgfx);
     TWD_CHECK(vp_pl != NULL);
     TWD_CHECK(twd_video_set_source(vp_pl, "intro.mp4") == 0);

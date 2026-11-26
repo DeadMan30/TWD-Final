@@ -527,11 +527,12 @@ void twd_window_invalidate(twd_window_t *win);
 int twd_window_needs_paint(const twd_window_t *win);
 void twd_window_clear_paint(twd_window_t *win);
 
-/* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL, 4=GLES3) */
+/* Vulkan / EGL / GLES3 dynamic driver availability probe (bitmask: 1=Vulkan, 2=EGL, 4=GLES draw, 8=GLES resources/shaders) */
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev);
 int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap);
 uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev);
 int twd_gfx_has_gl_dispatch(const twd_gfx_device_t *dev);
+uint32_t twd_gfx_gl_compile_glsl(twd_gfx_device_t *dev, uint32_t stage, const char *glsl_src);
 
 typedef struct twd_dxgi_adapter_desc1 {
     uint16_t description[128];

@@ -1,0 +1,2 @@
+rootProject.name = "twd-final"
+include(":app")
