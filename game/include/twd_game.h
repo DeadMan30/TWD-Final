@@ -164,6 +164,10 @@ TWD_EXPORT void twd_engine_lua_pushboolean(twd_lua_state_t *L, int32_t b);
 TWD_EXPORT void twd_engine_lua_pushlightuserdata(twd_lua_state_t *L, void *p);
 TWD_EXPORT int32_t twd_engine_lua_pushthread(twd_lua_state_t *L);
 TWD_EXPORT int32_t twd_engine_lua_getctx(const twd_lua_state_t *L, int32_t *ctx);
+TWD_EXPORT void twd_engine_telemetry_cohort_init(void *ctx);
+TWD_EXPORT void twd_engine_rail_sdk_init(void);
+TWD_EXPORT uint8_t twd_engine_pc_shortcut_init(void *ctx);
+TWD_EXPORT uint8_t twd_engine_breakpad_http_upload(void);
 
 #ifdef __cplusplus
 }

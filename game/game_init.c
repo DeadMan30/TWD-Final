@@ -40,8 +40,14 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_handle_equals);
     twd_register_hook(0x1400b1970ULL, "engine_dlist_remove",
                       (void *)twd_engine_dlist_remove);
+    twd_register_hook(0x1401e60c0ULL, "engine_telemetry_cohort_init",
+                      (void *)twd_engine_telemetry_cohort_init);
     twd_register_hook(0x14034e1e0ULL, "engine_xorshift128_next",
                       (void *)twd_engine_xorshift128_next);
+    twd_register_hook(0x14035b640ULL, "engine_rail_sdk_init",
+                      (void *)twd_engine_rail_sdk_init);
+    twd_register_hook(0x14057f750ULL, "engine_pc_shortcut_init",
+                      (void *)twd_engine_pc_shortcut_init);
     twd_register_hook(0x140951910ULL, "engine_lua_atpanic",
                       (void *)twd_engine_lua_atpanic);
     twd_register_hook(0x140951950ULL, "engine_lua_absindex",
@@ -68,6 +74,8 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_lua_pushthread);
     twd_register_hook(0x140952fa0ULL, "engine_lua_getctx",
                       (void *)twd_engine_lua_getctx);
+    twd_register_hook(0x140bbb400ULL, "engine_breakpad_http_upload",
+                      (void *)twd_engine_breakpad_http_upload);
 }
 
 TWD_EXPORT

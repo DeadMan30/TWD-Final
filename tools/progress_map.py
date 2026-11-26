@@ -119,13 +119,19 @@ def library_totals(root: str, rows: list[dict]) -> dict[str, dict]:
             'verified': 0, 'verified_bytes': 0,
         })
     for r in read_csv(os.path.join(root, 'symbols', 'ghidra_functions.csv')):
-        e = entry(libs.of(int(r['address'], 16)))
+        lib = libs.of(int(r['address'], 16))
+        if lib in progress.EXCLUDED_LIBRARIES:
+            continue
+        e = entry(lib)
         e['functions'] += 1
         e['bytes'] += int(r['size'])
     for r in rows:
         if r['status'] not in progress.IMPLEMENTED:
             continue
-        e = entry(libs.of(int(r['address'], 16)))
+        lib = libs.of(int(r['address'], 16))
+        if lib in progress.EXCLUDED_LIBRARIES:
+            continue
+        e = entry(lib)
         e['replaced'] += 1
         e['replaced_bytes'] += int(r['size'])
         if r['status'] == 'verified':
@@ -413,8 +419,10 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
                                    f"{data['families']['count']} function families of tiny identical functions)",
                                    replaced + ')'], 13, fill=MUTED, room=room))
     y += 18
+    ex = data.get('excluded') or {}
+    ex_text = f" · excludes {ex['functions']:,} middleware/CRT funcs ({mb(ex['bytes'])})" if ex.get('functions') else ''
     parts.append(label(MARGIN, y, f"Code replaced: {pct_text(r['bytes'], t['bytes'])} of {mb(t['bytes'])} "
-                       f"({mb(r['bytes'])}); verified {pct_text(v['bytes'], t['bytes'])} ({mb(v['bytes'])})",
+                       f"({mb(r['bytes'])}); verified {pct_text(v['bytes'], t['bytes'])} ({mb(v['bytes'])}){ex_text}",
                        13, fill=MUTED, room=room))
     y += 14
     parts += draw_map(names, libs, MARGIN, y, WIDTH - 2 * MARGIN, MAP_HEIGHT)

@@ -195,6 +195,11 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_mat4_from_scale_translation_vec PRIVATE twdgame)
     add_test(NAME engine_mat4_from_scale_translation_vec COMMAND test_engine_mat4_from_scale_translation_vec)
 
+    add_executable(test_engine_pc_stubs
+                   game/engine/tests/test_engine_pc_stubs.c)
+    target_link_libraries(test_engine_pc_stubs PRIVATE twdgame)
+    add_test(NAME engine_pc_stubs COMMAND test_engine_pc_stubs)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files

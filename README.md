@@ -10,17 +10,20 @@
 
 ## What this is
 
-TWD-Final rewrites *The Walking Dead: The Final Season* (`WalkingDead4.exe`, PC x86-64) by hand as
-readable C and C++ source, one function at a time, with the final goal of running the game
-natively on Android. Every rewritten function is tested differentially against the original
-executable to prove identical behavior. This repository contains no game files or proprietary
-assets: you bring your own legally obtained PC copy of the game.
+TWD-Final rebuilds *The Walking Dead: The Final Season* (`WalkingDead4.exe`, PC x86-64) so the
+game runs natively on Android, prioritizing the critical boot, rendering, input, audio, and game
+loop paths needed to reach playable gameplay. Third-party open-source middleware (`openssl`,
+`bullet`, `curl`, `jsoncpp`, `zlib`, `enlighten`, MSVC `crt`, and internal Lua runtime internals)
+is excluded from the decompilation denominator and swapped with native/upstream libraries or shims
+in [runtime/](runtime/) rather than manually decompiled.
 
 ## Status
 
-**The game is not playable on Android yet.** The repository, progress pipeline, and initial PE
-function and import tables from `WalkingDead4.exe` are set up; Ghidra analysis, runtime bring-up,
-and the first verified function replacements are next.
+**The game is not playable on Android yet.** Runtime import coverage sits at **`439 / 556` PE
+imports (`78.96%`, milestone `5 of 5: Audio & GameLoop`)** via the Vulkan/GLES D3D11 shim, input,
+media, and filesystem layers in [runtime/](runtime/); see [BOOT_TRACE.md](docs/BOOT_TRACE.md) for
+the main-menu critical path and [STATUS.md](STATUS.md) for live numbers (with middleware/CRT excluded
+from the decompilation denominator).
 
 [![functions verified](https://deadman30.github.io/TWD-Final/badge-verified.svg)](STATUS.md)
 [![functions replaced](https://deadman30.github.io/TWD-Final/badge-replaced.svg)](STATUS.md)

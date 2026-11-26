@@ -91,7 +91,7 @@ def by_source_file(root: str, rows: list[dict]) -> list[dict]:
 
     def entry(address: str) -> dict | None:
         lib, name = files.of(int(address, 16))
-        if not name:
+        if not name or lib in progress.EXCLUDED_LIBRARIES:
             return None
         return out.setdefault(name, {'file': name, 'library': lib, 'functions': 0, 'bytes': 0,
                                      'replaced': 0, 'verified': 0})

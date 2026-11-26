@@ -28,6 +28,7 @@ DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMPLEMENTED = ('replaced', 'edge-verified', 'verified')
 EDGE = ('edge-verified', 'verified')
 BLOCKS = ('progress', 'target')
+EXCLUDED_LIBRARIES = frozenset({'bullet', 'crt', 'curl', 'enlighten', 'jsoncpp', 'openssl', 'zlib'})
 
 
 def sha256_file(path: str) -> str | None:
@@ -48,13 +49,43 @@ def pct(part: int, whole: int) -> float | None:
     return round(100.0 * part / whole, 2) if whole else None
 
 
+def read_source_runs(root: str) -> tuple[list[int], list[tuple[int, int, str]]]:
+    runs = sorted(
+        (int(r['address'], 16), int(r['last'], 16), r.get('library', ''))
+        for r in read_csv(os.path.join(root, 'symbols', 'source_files.csv'))
+    )
+    return [r[0] for r in runs], runs
+
+
+def library_of(starts: list[int], runs: list[tuple[int, int, str]], address: int) -> str:
+    import bisect
+    i = bisect.bisect_right(starts, address) - 1
+    if i >= 0 and address <= runs[i][1]:
+        return runs[i][2]
+    return ''
+
+
 def compute(root: str) -> dict:
     export = read_csv(os.path.join(root, 'symbols', 'ghidra_functions.csv'))
+    starts, runs = read_source_runs(root)
+    in_scope_export = []
+    excluded_f = 0
+    excluded_b = 0
+    for r in export:
+        lib = library_of(starts, runs, int(r['address'], 16))
+        if lib in EXCLUDED_LIBRARIES:
+            excluded_f += 1
+            excluded_b += int(r['size'])
+        else:
+            in_scope_export.append(r)
+
     funcs = read_csv(os.path.join(root, 'symbols', 'functions.csv'))
     members = fam.function_rows(root)
     funcs = funcs + members
-    total_f = len(export)
-    total_b = sum(int(r['size']) for r in export)
+    bin_total_f = len(export)
+    bin_total_b = sum(int(r['size']) for r in export)
+    total_f = len(in_scope_export)
+    total_b = sum(int(r['size']) for r in in_scope_export)
 
     def tally(rows: list[dict]) -> dict:
         return {'functions': len(rows), 'bytes': sum(int(r['size']) for r in rows)}
@@ -77,12 +108,14 @@ def compute(root: str) -> dict:
             s['verified'] += 1
     return {
         'schema': 1,
-        'slices': slices(export, funcs),
+        'slices': slices(in_scope_export, funcs),
         'inputs': {
             'ghidra_functions_sha256': sha256_file(os.path.join(root, 'symbols', 'ghidra_functions.csv')),
             'functions_sha256': sha256_file(os.path.join(root, 'symbols', 'functions.csv')),
             'families_sha256': sha256_file(os.path.join(root, 'symbols', 'families.csv')),
         },
+        'binary_total': {'functions': bin_total_f, 'bytes': bin_total_b},
+        'excluded': {'functions': excluded_f, 'bytes': excluded_b, 'libraries': sorted(EXCLUDED_LIBRARIES)},
         'total': {'functions': total_f, 'bytes': total_b},
         'tracked': tally(funcs),
         'replaced': {**tally(impl), 'functions_pct': pct(len(impl), total_f),
@@ -203,10 +236,18 @@ def render_progress(d: dict) -> str:
         return ('No function table committed yet (`symbols/ghidra_functions.csv`), '
                 'so there is no denominator.\n')
     t, r, e, v = d['total'], d['replaced'], d['edge_verified'], d['verified']
+    ex = d.get('excluded') or {}
+    ex_note = []
+    if ex.get('functions'):
+        libs = ', '.join(ex.get('libraries') or [])
+        ex_note = [
+            f"Excludes {ex['functions']:,} third-party middleware & CRT functions "
+            f"({ex['bytes']:,} bytes: {libs}) linked upstream or shimmed in `runtime/`.",
+        ]
     return '\n'.join([
         '| | Functions | Bytes |',
         '|---|---:|---:|',
-        f"| Target (`WalkingDead4.exe`) | {t['functions']} | {t['bytes']} |",
+        f"| Target (Engine & game, excl. middleware/CRT) | {t['functions']} | {t['bytes']} |",
         f"| Replaced | {r['functions']} ({fmt_pct(r['functions_pct'])}) | "
         f"{r['bytes']} ({fmt_pct(r['bytes_pct'])}) |",
         *family_row(d['families']),
@@ -216,6 +257,7 @@ def render_progress(d: dict) -> str:
         f"{v['bytes']} ({fmt_pct(v['bytes_pct'])}) |",
         '',
         'Each row includes the next: verified functions are also edge-verified and replaced.',
+        *ex_note,
         *family_note(d['families']),
         '',
         *render_runtime(d['runtime'], d.get('imports_summary')),
