@@ -333,3 +333,325 @@ void twd_eventlog_stub(const char *source, const char *msg) {
     (void)source;
     (void)msg;
 }
+
+/* ---------- GUID, COM Memory Stream & Factory Stub ---------- */
+
+static uint64_t g_guid_rng = 0x9e3779b97f4a7c15ULL;
+
+static uint32_t next_u32(void) {
+    uint64_t x = g_guid_rng ^ twd_time_now_ns();
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    g_guid_rng = x ? x : 0x517cc1b727220a95ULL;
+    return (uint32_t)((g_guid_rng * 0x2545F4914F6CDD1DULL) >> 32);
+}
+
+int twd_guid_generate(twd_guid_t *out) {
+    if (!out) return -1;
+    uint32_t r0 = next_u32();
+    uint32_t r1 = next_u32();
+    uint32_t r2 = next_u32();
+    uint32_t r3 = next_u32();
+    out->data1 = r0;
+    out->data2 = (uint16_t)(r1 & 0xffffu);
+    out->data3 = (uint16_t)(((r1 >> 16) & 0x0fffu) | 0x4000u); /* v4 */
+    out->data4[0] = (uint8_t)((r2 & 0x3fu) | 0x80u);           /* RFC 4122 variant */
+    out->data4[1] = (uint8_t)((r2 >> 8) & 0xffu);
+    out->data4[2] = (uint8_t)((r2 >> 16) & 0xffu);
+    out->data4[3] = (uint8_t)((r2 >> 24) & 0xffu);
+    out->data4[4] = (uint8_t)(r3 & 0xffu);
+    out->data4[5] = (uint8_t)((r3 >> 8) & 0xffu);
+    out->data4[6] = (uint8_t)((r3 >> 16) & 0xffu);
+    out->data4[7] = (uint8_t)((r3 >> 24) & 0xffu);
+    return 0;
+}
+
+static void put_hex_byte(char *dst, uint8_t b) {
+    static const char hx[] = "0123456789ABCDEF";
+    dst[0] = hx[(b >> 4) & 0xfu];
+    dst[1] = hx[b & 0xfu];
+}
+
+int twd_guid_to_string(const twd_guid_t *g, char *buf, size_t cap) {
+    if (!g || !buf || cap < 39u) return -1;
+    buf[0] = '{';
+    put_hex_byte(buf + 1, (uint8_t)(g->data1 >> 24));
+    put_hex_byte(buf + 3, (uint8_t)(g->data1 >> 16));
+    put_hex_byte(buf + 5, (uint8_t)(g->data1 >> 8));
+    put_hex_byte(buf + 7, (uint8_t)g->data1);
+    buf[9] = '-';
+    put_hex_byte(buf + 10, (uint8_t)(g->data2 >> 8));
+    put_hex_byte(buf + 12, (uint8_t)g->data2);
+    buf[14] = '-';
+    put_hex_byte(buf + 15, (uint8_t)(g->data3 >> 8));
+    put_hex_byte(buf + 17, (uint8_t)g->data3);
+    buf[19] = '-';
+    put_hex_byte(buf + 20, g->data4[0]);
+    put_hex_byte(buf + 22, g->data4[1]);
+    buf[24] = '-';
+    for (int i = 0; i < 6; i++) {
+        put_hex_byte(buf + 25 + i * 2, g->data4[2 + i]);
+    }
+    buf[37] = '}';
+    buf[38] = '\0';
+    return 38;
+}
+
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int twd_guid_from_string(const char *str, twd_guid_t *out) {
+    if (!str || !out) return -1;
+    if (str[0] == '{') str++;
+    if (strlen(str) < 36u || str[8] != '-' || str[13] != '-' || str[18] != '-' || str[23] != '-') {
+        return -1;
+    }
+    uint8_t raw[16];
+    size_t pos = 0;
+    for (int i = 0; i < 16; i++) {
+        while (str[pos] == '-') pos++;
+        int hi = hex_val(str[pos]);
+        int lo = hex_val(str[pos + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        raw[i] = (uint8_t)((hi << 4) | lo);
+        pos += 2;
+    }
+    out->data1 = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16) |
+                 ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
+    out->data2 = (uint16_t)(((uint16_t)raw[4] << 8) | raw[5]);
+    out->data3 = (uint16_t)(((uint16_t)raw[6] << 8) | raw[7]);
+    memcpy(out->data4, raw + 8, 8);
+    return 0;
+}
+
+struct twd_stream {
+    int32_t refs;
+    uint8_t *data;
+    size_t size;
+    size_t cap;
+    size_t pos;
+};
+
+twd_stream_t *twd_stream_create(const void *init_data, size_t len) {
+    twd_stream_t *st = (twd_stream_t *)calloc(1, sizeof(*st));
+    if (!st) return NULL;
+    st->refs = 1;
+    if (len > 0u) {
+        st->data = (uint8_t *)malloc(len);
+        if (!st->data) {
+            free(st);
+            return NULL;
+        }
+        st->cap = len;
+        st->size = len;
+        if (init_data) memcpy(st->data, init_data, len);
+        else memset(st->data, 0, len);
+    }
+    return st;
+}
+
+void twd_stream_retain(twd_stream_t *st) {
+    if (st) st->refs++;
+}
+
+uint32_t twd_stream_release(twd_stream_t *st) {
+    if (!st) return 0u;
+    int32_t rc = --st->refs;
+    if (rc > 0) return (uint32_t)rc;
+    free(st->data);
+    free(st);
+    return 0u;
+}
+
+size_t twd_stream_read(twd_stream_t *st, void *dst, size_t len) {
+    if (!st || !dst || len == 0u || st->pos >= st->size) return 0u;
+    size_t avail = st->size - st->pos;
+    size_t n = (len < avail) ? len : avail;
+    memcpy(dst, st->data + st->pos, n);
+    st->pos += n;
+    return n;
+}
+
+size_t twd_stream_write(twd_stream_t *st, const void *src, size_t len) {
+    if (!st || !src || len == 0u) return 0u;
+    size_t need = st->pos + len;
+    if (need < st->pos) return 0u;
+    if (need > st->cap) {
+        size_t new_cap = st->cap ? st->cap * 2u : 256u;
+        while (new_cap < need) new_cap *= 2u;
+        uint8_t *nb = (uint8_t *)realloc(st->data, new_cap);
+        if (!nb) return 0u;
+        st->data = nb;
+        st->cap = new_cap;
+    }
+    memcpy(st->data + st->pos, src, len);
+    st->pos = need;
+    if (need > st->size) st->size = need;
+    return len;
+}
+
+int64_t twd_stream_seek(twd_stream_t *st, int64_t offset, int whence) {
+    if (!st) return -1;
+    int64_t base = 0;
+    if (whence == TWD_SEEK_CUR) base = (int64_t)st->pos;
+    else if (whence == TWD_SEEK_END) base = (int64_t)st->size;
+    int64_t np = base + offset;
+    if (np < 0) return -1;
+    st->pos = (size_t)np;
+    return np;
+}
+
+size_t twd_stream_size(const twd_stream_t *st) {
+    return st ? st->size : 0u;
+}
+
+int32_t twd_com_create_instance_stub(const twd_guid_t *clsid, void **out_obj) {
+    (void)clsid;
+    if (out_obj) *out_obj = NULL;
+    return (int32_t)0x80040154u; /* REGDB_E_CLASSNOTREG for PC-only WMI/COM classes */
+}
+
+/* ---------- Memory Status, Multi-Wait, File Info & Locale PAL ---------- */
+
+int twd_memory_status(twd_memory_status_t *out) {
+    if (!out) return -1;
+    uint64_t fallback = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+    out->total_phys = fallback;
+    out->avail_phys = fallback / 2ULL;
+    out->total_virt = 128ULL * 1024ULL * 1024ULL * 1024ULL;
+    out->avail_virt = out->total_virt / 2ULL;
+    return 0;
+}
+
+int twd_wait_any(twd_event_t *const *events, uint32_t count, uint32_t timeout_ms) {
+    if (!events || count == 0u) return TWD_WAIT_ERROR;
+    uint64_t start_ns = twd_time_now_ns();
+    for (;;) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (events[i] && twd_event_wait(events[i], 0u) == TWD_WAIT_OK) {
+                return (int)i;
+            }
+        }
+        if (timeout_ms == 0u) return TWD_WAIT_TIMEOUT;
+        if (timeout_ms != TWD_WAIT_INFINITE) {
+            uint64_t elapsed_ms = (twd_time_now_ns() - start_ns) / 1000000ULL;
+            if (elapsed_ms >= (uint64_t)timeout_ms) return TWD_WAIT_TIMEOUT;
+        }
+        twd_sleep_ms(1u);
+    }
+}
+
+int twd_file_info(twd_file_t *f, uint64_t *out_size, uint64_t *out_mtime_ns) {
+    if (!f || f->handle < 0) return -1;
+    int64_t cur = twd_file_seek(f, 0, TWD_SEEK_CUR);
+    int64_t end = twd_file_seek(f, 0, TWD_SEEK_END);
+    if (cur >= 0) twd_file_seek(f, cur, TWD_SEEK_SET);
+    if (end < 0) return -1;
+    if (out_size) *out_size = (uint64_t)end;
+    if (out_mtime_ns) *out_mtime_ns = twd_unix_time_ns();
+    return 0;
+}
+
+uint16_t twd_lang_id(void) {
+    return 0x0409u; /* en-US default LCID */
+}
+
+/* ---------- Networking / Sockets PAL ---------- */
+
+static int g_net_init_count = 0;
+
+int twd_net_init(void) {
+    g_net_init_count++;
+    return 0;
+}
+
+void twd_net_shutdown(void) {
+    if (g_net_init_count > 0) g_net_init_count--;
+}
+
+int twd_net_last_error(void) {
+    return 0;
+}
+
+int twd_net_is_initialized(void) {
+    return g_net_init_count > 0 ? 1 : 0;
+}
+
+/* ---------- 2D Surface, DPI & Paint Invalidation PAL ---------- */
+
+#define TWD_PAINT_FLAG_DIRTY 0x80000000u
+
+twd_surface_t *twd_surface_create(uint32_t width, uint32_t height) {
+    if (width == 0u || height == 0u) return NULL;
+    if ((size_t)width > ((size_t)-1) / sizeof(uint32_t) / (size_t)height) return NULL;
+    twd_surface_t *s = (twd_surface_t *)calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->pixels = (uint32_t *)calloc((size_t)width * (size_t)height, sizeof(uint32_t));
+    if (!s->pixels) {
+        free(s);
+        return NULL;
+    }
+    s->width = width;
+    s->height = height;
+    return s;
+}
+
+void twd_surface_destroy(twd_surface_t *surf) {
+    if (!surf) return;
+    free(surf->pixels);
+    free(surf);
+}
+
+void twd_surface_fill(twd_surface_t *surf, uint32_t argb) {
+    if (!surf || !surf->pixels) return;
+    size_t count = (size_t)surf->width * (size_t)surf->height;
+    for (size_t i = 0; i < count; i++) {
+        surf->pixels[i] = argb;
+    }
+}
+
+int twd_surface_blit(twd_surface_t *dst, uint32_t dx, uint32_t dy,
+                     const twd_surface_t *src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h) {
+    if (!dst || !src || !dst->pixels || !src->pixels) return -1;
+    if (dx >= dst->width || dy >= dst->height || sx >= src->width || sy >= src->height) return 0;
+    uint32_t cw = w;
+    uint32_t ch = h;
+    if (cw > dst->width - dx) cw = dst->width - dx;
+    if (cw > src->width - sx) cw = src->width - sx;
+    if (ch > dst->height - dy) ch = dst->height - dy;
+    if (ch > src->height - sy) ch = src->height - sy;
+    for (uint32_t row = 0; row < ch; row++) {
+        memcpy(dst->pixels + (size_t)(dy + row) * dst->width + dx,
+               src->pixels + (size_t)(sy + row) * src->width + sx,
+               (size_t)cw * sizeof(uint32_t));
+    }
+    return 0;
+}
+
+void twd_display_dpi(int *out_dpi_x, int *out_dpi_y) {
+    if (out_dpi_x) *out_dpi_x = 96;
+    if (out_dpi_y) *out_dpi_y = 96;
+}
+
+void twd_window_invalidate(twd_window_t *win) {
+    if (twd_window_is_valid(win)) {
+        win->style |= TWD_PAINT_FLAG_DIRTY;
+    }
+}
+
+int twd_window_needs_paint(const twd_window_t *win) {
+    if (!twd_window_is_valid(win)) return 0;
+    return (win->style & TWD_PAINT_FLAG_DIRTY) ? 1 : 0;
+}
+
+void twd_window_clear_paint(twd_window_t *win) {
+    if (twd_window_is_valid(win)) {
+        win->style &= ~TWD_PAINT_FLAG_DIRTY;
+    }
+}
+

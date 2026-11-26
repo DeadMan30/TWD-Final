@@ -390,6 +390,64 @@ int twd_telemetry_enabled(void);
 uint32_t twd_wininet_offline_status(void);
 void twd_eventlog_stub(const char *source, const char *msg);
 
+/* GUID, COM Memory Stream & Factory Stub (ole32 + OLEAUT32) */
+typedef struct twd_guid {
+    uint32_t data1;
+    uint16_t data2;
+    uint16_t data3;
+    uint8_t data4[8];
+} twd_guid_t;
+
+typedef struct twd_stream twd_stream_t;
+
+int twd_guid_generate(twd_guid_t *out);
+int twd_guid_to_string(const twd_guid_t *g, char *buf, size_t cap);
+int twd_guid_from_string(const char *str, twd_guid_t *out);
+twd_stream_t *twd_stream_create(const void *init_data, size_t len);
+void twd_stream_retain(twd_stream_t *st);
+uint32_t twd_stream_release(twd_stream_t *st);
+size_t twd_stream_read(twd_stream_t *st, void *dst, size_t len);
+size_t twd_stream_write(twd_stream_t *st, const void *src, size_t len);
+int64_t twd_stream_seek(twd_stream_t *st, int64_t offset, int whence);
+size_t twd_stream_size(const twd_stream_t *st);
+int32_t twd_com_create_instance_stub(const twd_guid_t *clsid, void **out_obj);
+
+/* Memory Status, Multi-Wait, File Info & Locale PAL (KERNEL32) */
+typedef struct twd_memory_status {
+    uint64_t total_phys;
+    uint64_t avail_phys;
+    uint64_t total_virt;
+    uint64_t avail_virt;
+} twd_memory_status_t;
+
+int twd_memory_status(twd_memory_status_t *out);
+int twd_wait_any(twd_event_t *const *events, uint32_t count, uint32_t timeout_ms);
+int twd_file_info(twd_file_t *f, uint64_t *out_size, uint64_t *out_mtime_ns);
+uint16_t twd_lang_id(void);
+
+/* Networking / Sockets PAL (WS2_32) */
+int twd_net_init(void);
+void twd_net_shutdown(void);
+int twd_net_last_error(void);
+int twd_net_is_initialized(void);
+
+/* 2D Surface, DPI & Paint Invalidation PAL (GDI32 + USER32 + COMCTL32) */
+typedef struct twd_surface {
+    uint32_t width;
+    uint32_t height;
+    uint32_t *pixels;
+} twd_surface_t;
+
+twd_surface_t *twd_surface_create(uint32_t width, uint32_t height);
+void twd_surface_destroy(twd_surface_t *surf);
+void twd_surface_fill(twd_surface_t *surf, uint32_t argb);
+int twd_surface_blit(twd_surface_t *dst, uint32_t dx, uint32_t dy,
+                     const twd_surface_t *src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h);
+void twd_display_dpi(int *out_dpi_x, int *out_dpi_y);
+void twd_window_invalidate(twd_window_t *win);
+int twd_window_needs_paint(const twd_window_t *win);
+void twd_window_clear_paint(twd_window_t *win);
+
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
 const twd_hook_entry_t *twd_hook_at(uint32_t index);

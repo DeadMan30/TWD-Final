@@ -346,6 +346,67 @@ int main(void) {
     TWD_CHECK(twd_wininet_offline_status() != 0u);
     twd_eventlog_stub("TWD4", "noop");
 
+    /* GUID, COM IStream, Memory Status, Multi-Wait, Sockets & 2D Surface PAL */
+    twd_guid_t g1, g2;
+    TWD_CHECK(twd_guid_generate(&g1) == 0);
+    char gstr[48];
+    TWD_CHECK(twd_guid_to_string(&g1, gstr, sizeof(gstr)) == 38);
+    TWD_CHECK(twd_guid_from_string(gstr, &g2) == 0);
+    TWD_CHECK(memcmp(&g1, &g2, sizeof(twd_guid_t)) == 0);
+    void *com_obj = (void *)&sentinel;
+    TWD_CHECK(twd_com_create_instance_stub(&g1, &com_obj) != 0 && com_obj == NULL);
+
+    twd_stream_t *st = twd_stream_create("AB", 2u);
+    TWD_CHECK(st != NULL && twd_stream_size(st) == 2u);
+    TWD_CHECK(twd_stream_seek(st, 0, TWD_SEEK_END) == 2);
+    TWD_CHECK(twd_stream_write(st, "CD", 2u) == 2u && twd_stream_size(st) == 4u);
+    TWD_CHECK(twd_stream_seek(st, 1, TWD_SEEK_SET) == 1);
+    char sbuf[4] = {0};
+    TWD_CHECK(twd_stream_read(st, sbuf, 3u) == 3u && memcmp(sbuf, "BCD", 3) == 0);
+    TWD_CHECK(twd_stream_release(st) == 0u);
+
+    twd_memory_status_t mst;
+    TWD_CHECK(twd_memory_status(&mst) == 0 && mst.total_phys > 0ULL);
+
+    twd_event_t ev_a, ev_b;
+    TWD_CHECK(twd_event_init(&ev_a, 0, 0) == 0);
+    TWD_CHECK(twd_event_init(&ev_b, 0, 0) == 0);
+    twd_event_t *ev_list[2];
+    ev_list[0] = &ev_a;
+    ev_list[1] = &ev_b;
+    TWD_CHECK(twd_wait_any(ev_list, 2u, 0u) == TWD_WAIT_TIMEOUT);
+    TWD_CHECK(twd_event_set(&ev_b) == 0);
+    TWD_CHECK(twd_wait_any(ev_list, 2u, 100u) == 1);
+    twd_event_destroy(&ev_a);
+    twd_event_destroy(&ev_b);
+
+    TWD_CHECK(twd_lang_id() == 0x0409u);
+    TWD_CHECK(twd_net_init() == 0 && twd_net_is_initialized() == 1 && twd_net_last_error() == 0);
+    twd_net_shutdown();
+    TWD_CHECK(twd_net_is_initialized() == 0);
+
+    twd_surface_t *s_src = twd_surface_create(4u, 4u);
+    twd_surface_t *s_dst = twd_surface_create(8u, 8u);
+    TWD_CHECK(s_src != NULL && s_dst != NULL);
+    twd_surface_fill(s_src, 0xff112233u);
+    twd_surface_fill(s_dst, 0u);
+    TWD_CHECK(twd_surface_blit(s_dst, 2u, 3u, s_src, 0u, 0u, 4u, 4u) == 0);
+    TWD_CHECK(s_dst->pixels[3u * 8u + 2u] == 0xff112233u);
+    twd_surface_destroy(s_src);
+    twd_surface_destroy(s_dst);
+
+    int dpix = 0, dpiy = 0;
+    twd_display_dpi(&dpix, &dpiy);
+    TWD_CHECK(dpix == 96 && dpiy == 96);
+
+    twd_window_t *pwin = twd_window_create("Paint", 0, 0, 640, 480, 0u);
+    TWD_CHECK(pwin != NULL && twd_window_needs_paint(pwin) == 0);
+    twd_window_invalidate(pwin);
+    TWD_CHECK(twd_window_needs_paint(pwin) == 1);
+    twd_window_clear_paint(pwin);
+    TWD_CHECK(twd_window_needs_paint(pwin) == 0);
+    twd_window_destroy(pwin);
+
     twd_platform_shutdown();
     printf("test_runtime: ok\n");
     return 0;
