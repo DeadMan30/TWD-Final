@@ -94,14 +94,6 @@ static int boot_load_prefs_prop(const char *rel_path,
     return (sz > 0u) ? 1 : 0;
 }
 
-static int boot_probe_vfs_flag(const char *rel_path) {
-    size_t sz = 0u;
-    void *buf = twd_asset_read_alloc(rel_path, &sz);
-    if (!buf) return 0;
-    twd_asset_free(buf);
-    return (sz > 0u) ? 1 : 0;
-}
-
 static int boot_on_init(void *user) {
     twd_boot_loop_state_t *st = (twd_boot_loop_state_t *)user;
     if (!st || !st->gfx) return -1;
@@ -200,8 +192,29 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     local_stats.found_prefs_prop =
         boot_load_prefs_prop("prefs.prop", &local_stats, &w, &h) ||
         boot_load_prefs_prop("config/prefs.prop", &local_stats, &w, &h);
-    local_stats.found_boot_lua = boot_probe_vfs_flag("_boot.lua") ||
-                                 boot_probe_vfs_flag("scripts/_boot.lua");
+    {
+        const char *boot_path = NULL;
+        size_t boot_sz = 0u;
+        void *boot_buf = twd_asset_read_alloc("_boot.lua", &boot_sz);
+        if (boot_buf) {
+            boot_path = "_boot.lua";
+        } else {
+            boot_buf = twd_asset_read_alloc("scripts/_boot.lua", &boot_sz);
+            if (boot_buf) boot_path = "scripts/_boot.lua";
+        }
+        if (boot_buf && boot_sz > 0u) {
+            local_stats.found_boot_lua = 1;
+            twd_lua_vm_t *lvm = twd_lua_vm_create();
+            if (lvm) {
+                if (twd_lua_vm_exec_buffer(lvm, boot_buf, boot_sz, boot_path) == 0) {
+                    local_stats.boot_script_ran = 1;
+                    local_stats.boot_scripts_executed = twd_lua_vm_executed_count(lvm);
+                }
+                twd_lua_vm_destroy(lvm);
+            }
+        }
+        if (boot_buf) twd_asset_free(boot_buf);
+    }
 
     /* 3. Create window + graphics device / DXBC shader cache */
     twd_boot_loop_state_t st;

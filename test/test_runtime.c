@@ -961,6 +961,92 @@ int main(void) {
         TWD_CHECK(twd_propset_parse_memory(pbuf, o - 4u, &ps) != 0);
     }
 
+    /* Telltale Lua 5.2 chunk unwrapper + bytecode/text VM test */
+    {
+        static const uint8_t s_xor_key = 0x5Au;
+        /* Helper block encoded via XOR callback in memory */
+        uint8_t bc[256];
+        memset(bc, 0, sizeof(bc));
+        size_t bi = 0u;
+        /* Header verified at 0x1409670a0: "\x1bLua", 0x52, 0, 1, 4, 4, 4, 4, 0, tail */
+        memcpy(bc + bi, "\x1bLua\x52\x00\x01\x04\x04\x04\x04\x00\x19\x93\r\n\x1a\n", 18u);
+        bi += 18u;
+        /* Proto: linedef(4), lastlinedef(4), numparams(1), is_vararg(1), maxstacksize(1) */
+        bi += 8u;
+        bc[bi++] = 0u; bc[bi++] = 1u; bc[bi++] = 4u;
+        /* 5 instructions:
+         * 0: GETTABUP R0, U0, RK(K0)  [op=6, A=0, B=0, C=256]
+         * 1: LOADK    R1, K1          [op=1, A=1, Bx=1]
+         * 2: CALL     R0, 2, 1        [op=29, A=0, B=2, C=1]
+         * 3: SETTABUP U0, RK(K2), RK(K3) [op=8, A=0, B=258, C=259]
+         * 4: RETURN   R0, 1           [op=31, A=0, B=1]
+         */
+        bc[bi++] = 5u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        uint32_t insns[5] = {
+            6u | (0u << 6u) | (0u << 23u) | (0x100u << 14u),
+            1u | (1u << 6u) | (1u << 14u),
+            29u | (0u << 6u) | (2u << 23u) | (1u << 14u),
+            8u | (0u << 6u) | (0x102u << 23u) | (0x103u << 14u),
+            31u | (0u << 6u) | (1u << 23u)
+        };
+        for (int ii = 0; ii < 5; ++ii) {
+            uint32_t iv = insns[ii];
+            bc[bi++] = (uint8_t)(iv & 0xFFu);
+            bc[bi++] = (uint8_t)((iv >> 8u) & 0xFFu);
+            bc[bi++] = (uint8_t)((iv >> 16u) & 0xFFu);
+            bc[bi++] = (uint8_t)((iv >> 24u) & 0xFFu);
+        }
+        /* 4 constants: "ResourceSetEnable", "Boot", "GameScore", 42.5f */
+        bc[bi++] = 4u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        bc[bi++] = 4u; /* LUA_TSTRING */
+        bc[bi++] = 18u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        memcpy(bc + bi, "ResourceSetEnable", 18u); bi += 18u;
+        bc[bi++] = 4u;
+        bc[bi++] = 5u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        memcpy(bc + bi, "Boot", 5u); bi += 5u;
+        bc[bi++] = 4u;
+        bc[bi++] = 10u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        memcpy(bc + bi, "GameScore", 10u); bi += 10u;
+        bc[bi++] = 3u; /* LUA_TNUMBER (float) */
+        float fscore = 42.5f;
+        memcpy(bc + bi, &fscore, 4u); bi += 4u;
+        /* sizep=0, sizeupvalues=0, debug(source=0, nlines=0, nloc=0, nup=0) */
+        for (int z = 0; z < 6; ++z) {
+            bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u; bc[bi++] = 0u;
+        }
+
+        twd_lua_vm_t *lvm = twd_lua_vm_create();
+        TWD_CHECK(lvm != NULL);
+        TWD_CHECK(twd_lua_vm_exec_buffer(lvm, bc, bi, "boot_bc.lua") == 0);
+        TWD_CHECK(twd_lua_vm_last_chunk_kind(lvm) == TWD_LUA_CHUNK_BYTECODE);
+        const twd_lua_val_t *gv = twd_lua_vm_get_global(lvm, "GameScore");
+        TWD_CHECK(gv != NULL && gv->kind == TWD_LUA_T_NUM && gv->u.num == 42.5f);
+        char lkv[16];
+        TWD_CHECK(twd_kv_get("lua.resource_set", "Boot", lkv, sizeof(lkv)) == 1 && strcmp(lkv, "1") == 0);
+
+        /* Test text chunk + RenderSetTextureQuality */
+        static const char s_txt[] =
+            "-- boot text\n"
+            "RenderSetTextureQuality(3)\n"
+            "LocalFlag = true\n";
+        TWD_CHECK(twd_lua_vm_exec_buffer(lvm, s_txt, sizeof(s_txt) - 1u, "boot_txt.lua") == 0);
+        TWD_CHECK(twd_lua_vm_last_chunk_kind(lvm) == TWD_LUA_CHUNK_TEXT);
+        TWD_CHECK(twd_kv_get("lua.render", "texture_quality", lkv, sizeof(lkv)) == 1 && strcmp(lkv, "3") == 0);
+        const twd_lua_val_t *fv = twd_lua_vm_get_global(lvm, "LocalFlag");
+        TWD_CHECK(fv != NULL && fv->kind == TWD_LUA_T_BOOL && fv->u.b == 1);
+
+        /* Missing decrypt callback on \x1bLEn returns -2 and reports TWD_LUA_CHUNK_LEN */
+        uint8_t len_chunk[256];
+        memcpy(len_chunk, bc, bi);
+        len_chunk[2] = 'E'; len_chunk[3] = 'n';
+        twd_lua_set_decrypt_callback(NULL, NULL);
+        TWD_CHECK(twd_lua_vm_exec_buffer(lvm, len_chunk, bi, "enc.lua") == -2);
+        TWD_CHECK(twd_lua_vm_last_chunk_kind(lvm) == TWD_LUA_CHUNK_LEN);
+        TWD_CHECK(s_xor_key == 0x5Au);
+
+        twd_lua_vm_destroy(lvm);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

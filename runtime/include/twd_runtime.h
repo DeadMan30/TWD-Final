@@ -735,6 +735,63 @@ float twd_propset_get_f32(const twd_propset_t *ps, const char *key, float defaul
 const char *twd_propset_get_str(const twd_propset_t *ps, const char *key, const char *default_val);
 int twd_propset_get_vec2(const twd_propset_t *ps, const char *key, float *out_x, float *out_y);
 
+/* --- Lua 5.2 script chunk unwrapper & lightweight boot VM --- */
+typedef enum twd_lua_chunk_kind {
+    TWD_LUA_CHUNK_UNKNOWN = 0,
+    TWD_LUA_CHUNK_TEXT = 1,
+    TWD_LUA_CHUNK_BYTECODE = 2,
+    TWD_LUA_CHUNK_LEN = 3,
+    TWD_LUA_CHUNK_LEO = 4
+} twd_lua_chunk_kind_t;
+
+typedef enum twd_lua_val_kind {
+    TWD_LUA_T_NIL = 0,
+    TWD_LUA_T_BOOL = 1,
+    TWD_LUA_T_NUM = 3,
+    TWD_LUA_T_STR = 4,
+    TWD_LUA_T_TABLE = 5,
+    TWD_LUA_T_CFUNC = 6
+} twd_lua_val_kind_t;
+
+typedef struct twd_lua_vm twd_lua_vm_t;
+
+typedef struct twd_lua_val {
+    twd_lua_val_kind_t kind;
+    union {
+        int b;
+        float num;
+        char *str;
+        void *ptr;
+    } u;
+} twd_lua_val_t;
+
+typedef int (*twd_lua_decrypt_fn)(void *buf, size_t len, void *user);
+typedef int (*twd_lua_cfunc_t)(twd_lua_vm_t *vm,
+                               void *user,
+                               int nargs,
+                               const twd_lua_val_t *args,
+                               twd_lua_val_t *out_ret);
+
+void twd_lua_set_decrypt_callback(twd_lua_decrypt_fn fn, void *user);
+int twd_lua_unwrap_chunk(const void *data,
+                         size_t len,
+                         twd_lua_chunk_kind_t *out_kind,
+                         uint8_t **out_buf,
+                         size_t *out_len);
+void twd_lua_free_buf(void *ptr);
+
+twd_lua_vm_t *twd_lua_vm_create(void);
+void twd_lua_vm_destroy(twd_lua_vm_t *vm);
+int twd_lua_vm_register(twd_lua_vm_t *vm, const char *name, twd_lua_cfunc_t fn, void *user);
+int twd_lua_vm_set_global_str(twd_lua_vm_t *vm, const char *name, const char *val);
+int twd_lua_vm_set_global_num(twd_lua_vm_t *vm, const char *name, float val);
+int twd_lua_vm_set_global_bool(twd_lua_vm_t *vm, const char *name, int val);
+const twd_lua_val_t *twd_lua_vm_get_global(const twd_lua_vm_t *vm, const char *name);
+int twd_lua_vm_exec_buffer(twd_lua_vm_t *vm, const void *data, size_t len, const char *chunk_name);
+int twd_lua_vm_exec_vfs(twd_lua_vm_t *vm, const char *rel_path);
+uint32_t twd_lua_vm_executed_count(const twd_lua_vm_t *vm);
+twd_lua_chunk_kind_t twd_lua_vm_last_chunk_kind(const twd_lua_vm_t *vm);
+
 /* Audio & FMOD Studio / Core PAL (libfmodstudio/libfmod bridge + software PCM16 mixer) */
 #define TWD_AUDIO_CAP_FMOD_STUDIO 1
 #define TWD_AUDIO_CAP_FMOD_CORE   2

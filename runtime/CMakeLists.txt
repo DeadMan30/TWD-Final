@@ -7,6 +7,7 @@ add_library(twdrt STATIC
     subsystems.c
     ttarch2.c
     audio_shim.c
+    lua_vm.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>

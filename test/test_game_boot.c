@@ -23,7 +23,13 @@ static void wr_u64(uint8_t *p, uint64_t v) {
 
 int main(void) {
     /* Build temporary game dir containing one synthetic NCTT+TTA4 archive with boot assets. */
-    static const char s_boot_lua[] = "-- synthetic boot";
+    static const char s_boot_lua[] =
+        "-- synthetic boot\n"
+        "ResourceSetEnable(\"Boot\")\n"
+        "RenderSetTextureQuality(2)\n"
+        "DoFile(\"scripts/boot_sub.lua\")\n";
+    static const char s_sub_lua[] =
+        "ResourceSetEnable(\"Menu\")\n";
     uint8_t s_prefs[128];
     memset(s_prefs, 0, sizeof(s_prefs));
     size_t po = 0u;
@@ -59,16 +65,17 @@ int main(void) {
     wr_u32(s_prefs + def_sz_off, (uint32_t)(po - prop_start));
 
     static const uint8_t s_bank[16] = {'R','I','F','F', 8,0,0,0, 'F','E','V',' ', 1,0,0,0};
-    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0";
+    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0";
 
     enum {
-        N_ENT = 3,
+        N_ENT = 4,
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
         PREFS_LEN = 113,
         BANK_LEN = sizeof(s_bank),
-        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN
+        SUB_LEN = sizeof(s_sub_lua) - 1,
+        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN
     };
     if (po != (size_t)PREFS_LEN) return 99;
 
@@ -82,25 +89,31 @@ int main(void) {
     wr_u32(toc + 4u, (uint32_t)NAMES_SZ);
     wr_u32(toc + 8u, (uint32_t)N_ENT);
 
-    wr_u64(toc + 12u + 0u, 1ULL);
-    wr_u64(toc + 12u + 8u, 0ULL);
-    wr_u32(toc + 12u + 16u, (uint32_t)BOOT_LEN);
-    wr_u16(toc + 12u + 26u, 0u);
+    wr_u64(toc + 12u + 0u * 28u + 0u, 1ULL);
+    wr_u64(toc + 12u + 0u * 28u + 8u, 0ULL);
+    wr_u32(toc + 12u + 0u * 28u + 16u, (uint32_t)BOOT_LEN);
+    wr_u16(toc + 12u + 0u * 28u + 26u, 0u);
 
-    wr_u64(toc + 40u + 0u, 2ULL);
-    wr_u64(toc + 40u + 8u, (uint64_t)BOOT_LEN);
-    wr_u32(toc + 40u + 16u, (uint32_t)PREFS_LEN);
-    wr_u16(toc + 40u + 26u, 10u);
+    wr_u64(toc + 12u + 1u * 28u + 0u, 2ULL);
+    wr_u64(toc + 12u + 1u * 28u + 8u, (uint64_t)BOOT_LEN);
+    wr_u32(toc + 12u + 1u * 28u + 16u, (uint32_t)PREFS_LEN);
+    wr_u16(toc + 12u + 1u * 28u + 26u, 10u);
 
-    wr_u64(toc + 68u + 0u, 3ULL);
-    wr_u64(toc + 68u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN));
-    wr_u32(toc + 68u + 16u, (uint32_t)BANK_LEN);
-    wr_u16(toc + 68u + 26u, 21u);
+    wr_u64(toc + 12u + 2u * 28u + 0u, 3ULL);
+    wr_u64(toc + 12u + 2u * 28u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN));
+    wr_u32(toc + 12u + 2u * 28u + 16u, (uint32_t)BANK_LEN);
+    wr_u16(toc + 12u + 2u * 28u + 26u, 21u);
+
+    wr_u64(toc + 12u + 3u * 28u + 0u, twd_crc64(0ULL, "scripts/boot_sub.lua"));
+    wr_u64(toc + 12u + 3u * 28u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN + BANK_LEN));
+    wr_u32(toc + 12u + 3u * 28u + 16u, (uint32_t)SUB_LEN);
+    wr_u16(toc + 12u + 3u * 28u + 26u, 33u);
 
     memcpy(toc + 12u + N_ENT * 28u, names, NAMES_SZ);
     memcpy(toc + DATA_BASE, s_boot_lua, BOOT_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN, s_prefs, PREFS_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN, s_bank, BANK_LEN);
+    memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN, s_sub_lua, SUB_LEN);
 
     if (twd_mkdir("twd_boot_smoke_dir") != 0) return 1;
     twd_file_t f;
@@ -129,7 +142,8 @@ int main(void) {
     if (stats.hook_count == 0u) return 6;
     if (stats.mounted_archives != 1) return 7;
     if (stats.found_prefs_prop != 1 || stats.prefs_meta_version != 6u ||
-        stats.prefs_property_count != 3u || stats.found_boot_lua != 1) return 8;
+        stats.prefs_property_count != 3u || stats.found_boot_lua != 1 ||
+        stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1600u || stats.height != 900u) return 10;
     if (stats.frames_rendered != 4ULL || stats.clean_shutdown != 1) return 11;
@@ -137,9 +151,13 @@ int main(void) {
     char kv[32];
     if (twd_kv_get("prefs", "windowed", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 12;
     if (twd_kv_get("prefs", "fx_brush_quality", kv, sizeof(kv)) <= 0 || strcmp(kv, "2") != 0) return 13;
+    if (twd_kv_get("lua.resource_set", "Boot", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 14;
+    if (twd_kv_get("lua.resource_set", "Menu", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 15;
+    if (twd_kv_get("lua.render", "texture_quality", kv, sizeof(kv)) <= 0 || strcmp(kv, "2") != 0) return 16;
 
-    printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, res=%ux%u, frames=%llu)\n",
+    printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, lua=%u, res=%ux%u, frames=%llu)\n",
            stats.hook_count, stats.mounted_archives, stats.prefs_property_count,
-           stats.width, stats.height, (unsigned long long)stats.frames_rendered);
+           stats.boot_scripts_executed, stats.width, stats.height,
+           (unsigned long long)stats.frames_rendered);
     return 0;
 }
