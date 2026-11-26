@@ -170,6 +170,31 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_lua_getctx PRIVATE twdgame)
     add_test(NAME engine_lua_getctx COMMAND test_engine_lua_getctx)
 
+    add_executable(test_engine_meta_slot_init_ptr
+                   game/engine/tests/test_engine_meta_slot_init_ptr.c)
+    target_link_libraries(test_engine_meta_slot_init_ptr PRIVATE twdgame)
+    add_test(NAME engine_meta_slot_init_ptr COMMAND test_engine_meta_slot_init_ptr)
+
+    add_executable(test_engine_mat4_uniform_scale
+                   game/engine/tests/test_engine_mat4_uniform_scale.c)
+    target_link_libraries(test_engine_mat4_uniform_scale PRIVATE twdgame)
+    add_test(NAME engine_mat4_uniform_scale COMMAND test_engine_mat4_uniform_scale)
+
+    add_executable(test_engine_mat4_diagonal_scale
+                   game/engine/tests/test_engine_mat4_diagonal_scale.c)
+    target_link_libraries(test_engine_mat4_diagonal_scale PRIVATE twdgame)
+    add_test(NAME engine_mat4_diagonal_scale COMMAND test_engine_mat4_diagonal_scale)
+
+    add_executable(test_engine_mat4_from_translation
+                   game/engine/tests/test_engine_mat4_from_translation.c)
+    target_link_libraries(test_engine_mat4_from_translation PRIVATE twdgame)
+    add_test(NAME engine_mat4_from_translation COMMAND test_engine_mat4_from_translation)
+
+    add_executable(test_engine_mat4_from_scale_translation_vec
+                   game/engine/tests/test_engine_mat4_from_scale_translation_vec.c)
+    target_link_libraries(test_engine_mat4_from_scale_translation_vec PRIVATE twdgame)
+    add_test(NAME engine_mat4_from_scale_translation_vec COMMAND test_engine_mat4_from_scale_translation_vec)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files

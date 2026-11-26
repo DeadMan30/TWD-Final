@@ -17,6 +17,11 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef struct twd_atomic_slot {
+    uint8_t _pad[0x20];
+    int64_t val;
+} twd_atomic_slot_t;
+
 typedef struct twd_meta_member {
     const char *name;
     uint8_t _pad[0x18];
@@ -119,6 +124,7 @@ typedef struct twd_lua_state {
 TWD_EXPORT void twd_game_register_hooks(void);
 TWD_EXPORT uint32_t twd_game_hook_count(void);
 TWD_EXPORT const twd_hook_entry_t *twd_game_hook_at(uint32_t index);
+TWD_EXPORT int64_t twd_engine_meta_slot_init_ptr(twd_atomic_slot_t *obj, int64_t val);
 TWD_EXPORT twd_meta_member_t *twd_engine_meta_member_find_str(const twd_meta_class_desc_t *desc,
                                                               const twd_string_t *name);
 TWD_EXPORT twd_meta_member_t *twd_engine_meta_member_find(const twd_meta_class_desc_t *desc,
@@ -134,6 +140,11 @@ TWD_EXPORT void twd_engine_meta_vtable_destruct(const twd_meta_class_desc_t *des
 TWD_EXPORT void twd_engine_meta_vtable_delete(const twd_meta_class_desc_t *desc, void *obj);
 TWD_EXPORT void *twd_engine_meta_op_find(const twd_meta_class_desc_t *desc, int32_t op_id);
 TWD_EXPORT void twd_engine_mat4_identity(float mat[16]);
+TWD_EXPORT void twd_engine_mat4_uniform_scale(float mat[16], float s);
+TWD_EXPORT void twd_engine_mat4_diagonal_scale(float mat[16], float sx, float sy, float sz);
+TWD_EXPORT void twd_engine_mat4_from_translation(float mat[16], const float t[3]);
+TWD_EXPORT void twd_engine_mat4_from_scale_translation_vec(float mat[16], const float s[3],
+                                                           const float t[3]);
 TWD_EXPORT void twd_engine_rbtree_rotate_right(twd_rbtree_node_t **head_ptr,
                                                twd_rbtree_node_t *where);
 TWD_EXPORT bool twd_engine_handle_equals(const twd_handle_obj_t *const *lhs,

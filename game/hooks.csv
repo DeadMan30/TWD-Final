@@ -1,4 +1,5 @@
 address,replacement,system,returns
+0x140032340,twd_engine_meta_slot_init_ptr,engine,i64
 0x140032360,twd_engine_meta_member_find_str,engine,i64
 0x1400323c0,twd_engine_meta_member_find,engine,i64
 0x140032410,twd_engine_meta_op_register,engine,void
@@ -10,6 +11,10 @@ address,replacement,system,returns
 0x1400325f0,twd_engine_meta_vtable_delete,engine,void
 0x140032620,twd_engine_meta_op_find,engine,i64
 0x1400359f0,twd_engine_mat4_identity,engine,void
+0x140037630,twd_engine_mat4_uniform_scale,engine,void
+0x140037670,twd_engine_mat4_diagonal_scale,engine,void
+0x140037960,twd_engine_mat4_from_translation,engine,void
+0x1400379b0,twd_engine_mat4_from_scale_translation_vec,engine,void
 0x140057650,twd_engine_rbtree_rotate_right,engine,void
 0x140074930,twd_engine_handle_equals,engine,i8
 0x1400b1970,twd_engine_dlist_remove,engine,i8

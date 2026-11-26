@@ -3,7 +3,11 @@
 
 #include <stddef.h>
 #include <string.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
+_Static_assert(offsetof(twd_atomic_slot_t, val) == 0x20, "atomic slot val offset");
 _Static_assert(offsetof(twd_meta_member_t, next) == 0x20, "meta member next offset");
 _Static_assert(offsetof(twd_meta_vtable_t, move_construct) == 0x28, "meta vtable move offset");
 _Static_assert(offsetof(twd_meta_op_node_t, fn) == 0x08, "meta op fn offset");
@@ -12,6 +16,27 @@ _Static_assert(offsetof(twd_meta_class_desc_t, members) == 0x28, "meta desc memb
 _Static_assert(offsetof(twd_meta_class_desc_t, ops) == 0x30, "meta desc ops offset");
 _Static_assert(offsetof(twd_meta_class_desc_t, vtable) == 0x40, "meta desc vtable offset");
 _Static_assert(offsetof(twd_string_t, cap) == 0x20, "string cap offset");
+
+/*
+ * Original: WalkingDead4.exe @ 0x140032340 (13 bytes, 1 caller)
+ *
+ * Atomically initializes obj->val (+0x20) with val if currently 0 and returns
+ * the resulting stored value.
+ */
+TWD_EXPORT
+int64_t twd_engine_meta_slot_init_ptr(twd_atomic_slot_t *obj, int64_t val) {
+#ifdef _MSC_VER
+    int64_t prev = _InterlockedCompareExchange64(&obj->val, val, 0);
+    return prev == 0 ? val : prev;
+#else
+    int64_t expected = 0;
+    if (__atomic_compare_exchange_n(&obj->val, &expected, val, 0, __ATOMIC_SEQ_CST,
+                                    __ATOMIC_SEQ_CST)) {
+        return val;
+    }
+    return expected;
+#endif
+}
 
 /*
  * Original: WalkingDead4.exe @ 0x140032360 (84 bytes, 1 caller)
