@@ -282,6 +282,11 @@ int twd_quit_requested(int *out_code) {
     return g_quit_flag;
 }
 
+void twd_clear_quit(void) {
+    g_quit_flag = 0;
+    g_quit_code = 0;
+}
+
 typedef struct twd_thread_ctx {
     twd_thread_fn fn;
     void *arg;

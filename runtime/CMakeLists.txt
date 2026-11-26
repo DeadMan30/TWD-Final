@@ -4,6 +4,7 @@ add_library(twdrt STATIC
     pal.c
     gfx_shim.c
     subsystems.c
+    android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>
 )

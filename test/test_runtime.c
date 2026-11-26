@@ -22,6 +22,32 @@ typedef struct thread_test_ctx {
     int value;
 } thread_test_ctx_t;
 
+typedef struct loop_test_ctx {
+    int inited;
+    int ticks;
+    int renders;
+    int shutdown;
+} loop_test_ctx_t;
+
+static int test_loop_init(void *user) {
+    ((loop_test_ctx_t *)user)->inited = 1;
+    return 0;
+}
+
+static void test_loop_tick(void *user, uint64_t dt_ns) {
+    (void)dt_ns;
+    ((loop_test_ctx_t *)user)->ticks++;
+}
+
+static void test_loop_render(void *user, twd_gfx_device_t *gfx) {
+    (void)gfx;
+    ((loop_test_ctx_t *)user)->renders++;
+}
+
+static void test_loop_shutdown(void *user) {
+    ((loop_test_ctx_t *)user)->shutdown = 1;
+}
+
 static int worker_thread_fn(void *arg) {
     thread_test_ctx_t *ctx = (thread_test_ctx_t *)arg;
     twd_sem_post(ctx->sem, 1);
@@ -442,11 +468,48 @@ int main(void) {
     TWD_CHECK(twd_d3d11_create_device_shim(rwin, 800u, 600u, NULL, &rd3d, NULL, NULL) == 0);
     twd_gfx_device_t *rgfx = twd_d3d11_get_gfx_device(rd3d);
     TWD_CHECK(twd_gfx_has_driver_symbols(rgfx) == 0);
+    char drv_name[32];
+    TWD_CHECK(twd_gfx_probe_driver(rgfx, drv_name, sizeof(drv_name)) == TWD_GFX_BACKEND_NONE);
+    TWD_CHECK(strcmp(drv_name, "Headless") == 0);
+
+    static const uint8_t iid_dxgi_dev[16] = {
+        0xfa, 0x77, 0xec, 0x54, 0x77, 0x13, 0xe6, 0x44,
+        0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x82, 0xc0, 0x12
+    };
+    void *dxgi_dev = NULL;
+    typedef int32_t (*fn_qi_t)(void *, const void *, void **);
+    typedef int32_t (*fn_get_ad_t)(void *, void **);
+    typedef int32_t (*fn_get_desc1_t)(void *, twd_dxgi_adapter_desc1_t *);
+    TWD_CHECK(((fn_qi_t)(*(void *const **)rd3d)[0])(rd3d, iid_dxgi_dev, &dxgi_dev) == 0 && dxgi_dev != NULL);
+    void *dxgi_ad = NULL;
+    TWD_CHECK(((fn_get_ad_t)(*(void *const **)dxgi_dev)[7])(dxgi_dev, &dxgi_ad) == 0 && dxgi_ad != NULL);
+    twd_dxgi_adapter_desc1_t adesc;
+    TWD_CHECK(((fn_get_desc1_t)(*(void *const **)dxgi_ad)[10])(dxgi_ad, &adesc) == 0);
+    char ad_utf8[64];
+    TWD_CHECK(twd_utf16_to_utf8(adesc.description, -1, ad_utf8, sizeof(ad_utf8)) > 0);
+    TWD_CHECK(strcmp(ad_utf8, "TWD-Final Vulkan/GLES") == 0);
+    TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)dxgi_ad)[2])(dxgi_ad) == 0u);
+    TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)dxgi_dev)[2])(dxgi_dev) == 0u);
+
     twd_android_on_resize(rwin, rgfx, 2400u, 1080u);
     twd_gfx_stats_t rstats;
     twd_gfx_get_stats(rgfx, &rstats);
     TWD_CHECK(rstats.width == 2400u && rstats.height == 1080u && twd_window_needs_paint(rwin) == 1);
     TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_RESIZE);
+
+    loop_test_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    twd_app_callbacks_t lcb;
+    lcb.on_init = test_loop_init;
+    lcb.on_tick = test_loop_tick;
+    lcb.on_render = test_loop_render;
+    lcb.on_shutdown = test_loop_shutdown;
+    lcb.user = &lctx;
+    lcb.max_frames = 3u;
+    twd_clear_quit();
+    TWD_CHECK(twd_android_run_frame_loop(rwin, rgfx, &lcb) == 3ULL);
+    TWD_CHECK(lctx.inited == 1 && lctx.ticks == 3 && lctx.renders == 3 && lctx.shutdown == 1);
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

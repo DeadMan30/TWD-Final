@@ -103,6 +103,20 @@ int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
     return dev ? dev->driver_caps : 0;
 }
 
+int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap) {
+    const char *name = "Headless";
+    int backend = dev ? dev->backend : twd_gfx_select_backend(-1);
+    if (backend == TWD_GFX_BACKEND_VULKAN) name = "Vulkan";
+    else if (backend == TWD_GFX_BACKEND_GLES3) name = "OpenGL ES 3";
+    if (out_name && cap > 0u) {
+        size_t n = strlen(name);
+        if (n >= cap) n = cap - 1u;
+        memcpy(out_name, name, n);
+        out_name[n] = '\0';
+    }
+    return backend;
+}
+
 void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (!dev) return;
     if (--dev->refs > 0) return;
@@ -245,10 +259,12 @@ int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {
 #define TWD_KIND_DEVICE   1u
 #define TWD_KIND_CONTEXT  2u
 #define TWD_KIND_SWAP     3u
-#define TWD_KIND_BUFFER   4u
-#define TWD_KIND_TEX2D    5u
-#define TWD_KIND_VIEW     6u
-#define TWD_KIND_GENERIC  7u
+#define TWD_KIND_BUFFER      4u
+#define TWD_KIND_TEX2D       5u
+#define TWD_KIND_VIEW        6u
+#define TWD_KIND_GENERIC     7u
+#define TWD_KIND_DXGI_DEV    8u
+#define TWD_KIND_DXGI_ADAPT  9u
 
 typedef struct shim_com_obj {
     const void *const *lpVtbl;
@@ -267,7 +283,14 @@ static twd_vfn_t g_dev_vtbl[43];
 static twd_vfn_t g_ctx_vtbl[115];
 static twd_vfn_t g_swap_vtbl[18];
 static twd_vfn_t g_child_vtbl[16];
+static twd_vfn_t g_dxgi_dev_vtbl[12];
+static twd_vfn_t g_dxgi_adapter_vtbl[11];
 static int g_vtbls_init = 0;
+
+static const uint8_t k_iid_dxgi_device[16] = {
+    0xfa, 0x77, 0xec, 0x54, 0x77, 0x13, 0xe6, 0x44,
+    0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x82, 0xc0, 0x12
+};
 
 static shim_com_obj_t *alloc_shim_obj(
     const void *const *vtbl, uint32_t kind, twd_gfx_device_t *gfx, shim_com_obj_t *parent) {
@@ -284,9 +307,15 @@ static shim_com_obj_t *alloc_shim_obj(
 }
 
 static int32_t shim_query_interface(void *self, const void *riid, void **ppv) {
-    (void)riid;
     if (!self || !ppv) return (int32_t)0x80070057u; /* E_INVALIDARG */
     shim_com_obj_t *o = (shim_com_obj_t *)self;
+    if (riid && o->kind == TWD_KIND_DEVICE &&
+        memcmp(riid, k_iid_dxgi_device, sizeof(k_iid_dxgi_device)) == 0) {
+        shim_com_obj_t *dxgi = alloc_shim_obj(g_dxgi_dev_vtbl, TWD_KIND_DXGI_DEV, o->gfx, NULL);
+        if (!dxgi) return (int32_t)0x8007000Eu;
+        *ppv = dxgi;
+        return 0;
+    }
     o->refcount++;
     *ppv = self;
     return 0; /* S_OK */
@@ -490,6 +519,27 @@ static int32_t shim_swap_resize_buffers(
            ? 0 : (int32_t)0x80070057u;
 }
 
+static int32_t shim_dxgi_get_adapter(void *self, void **pp_adapter) {
+    shim_com_obj_t *dx = (shim_com_obj_t *)self;
+    if (!dx || !pp_adapter) return (int32_t)0x80070057u;
+    shim_com_obj_t *ad = alloc_shim_obj(g_dxgi_adapter_vtbl, TWD_KIND_DXGI_ADAPT, dx->gfx, NULL);
+    if (!ad) return (int32_t)0x8007000Eu;
+    *pp_adapter = ad;
+    return 0;
+}
+
+static int32_t shim_dxgi_adapter_get_desc1(void *self, twd_dxgi_adapter_desc1_t *desc) {
+    (void)self;
+    if (!desc) return (int32_t)0x80070057u;
+    memset(desc, 0, sizeof(*desc));
+    twd_utf8_to_utf16("TWD-Final Vulkan/GLES", -1, desc->description, 128);
+    desc->vendor_id = 0x13B5u;
+    desc->device_id = 0x5457u;
+    desc->dedicated_video_mem = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    desc->shared_system_mem = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    return 0;
+}
+
 static void init_shim_vtbls(void) {
     if (g_vtbls_init) return;
     size_t i;
@@ -543,6 +593,23 @@ static void init_shim_vtbls(void) {
     g_swap_vtbl[8]  = (twd_vfn_t)&shim_swap_present;
     g_swap_vtbl[9]  = (twd_vfn_t)&shim_swap_get_buffer;
     g_swap_vtbl[13] = (twd_vfn_t)&shim_swap_resize_buffers;
+
+    for (i = 0; i < sizeof(g_dxgi_dev_vtbl) / sizeof(g_dxgi_dev_vtbl[0]); i++) {
+        g_dxgi_dev_vtbl[i] = (twd_vfn_t)&shim_noop_ok;
+    }
+    g_dxgi_dev_vtbl[0] = (twd_vfn_t)&shim_query_interface;
+    g_dxgi_dev_vtbl[1] = (twd_vfn_t)&shim_add_ref;
+    g_dxgi_dev_vtbl[2] = (twd_vfn_t)&shim_release;
+    g_dxgi_dev_vtbl[7] = (twd_vfn_t)&shim_dxgi_get_adapter;
+
+    for (i = 0; i < sizeof(g_dxgi_adapter_vtbl) / sizeof(g_dxgi_adapter_vtbl[0]); i++) {
+        g_dxgi_adapter_vtbl[i] = (twd_vfn_t)&shim_noop_ok;
+    }
+    g_dxgi_adapter_vtbl[0]  = (twd_vfn_t)&shim_query_interface;
+    g_dxgi_adapter_vtbl[1]  = (twd_vfn_t)&shim_add_ref;
+    g_dxgi_adapter_vtbl[2]  = (twd_vfn_t)&shim_release;
+    g_dxgi_adapter_vtbl[8]  = (twd_vfn_t)&shim_dxgi_adapter_get_desc1;
+    g_dxgi_adapter_vtbl[10] = (twd_vfn_t)&shim_dxgi_adapter_get_desc1;
 
     g_vtbls_init = 1;
 }

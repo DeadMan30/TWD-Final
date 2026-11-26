@@ -210,6 +210,7 @@ void twd_window_push_event(const twd_win_event_t *evt);
 int twd_window_poll_event(twd_win_event_t *out_evt);
 void twd_post_quit(int exit_code);
 int twd_quit_requested(int *out_code);
+void twd_clear_quit(void);
 int twd_system_metric(int metric_id);
 
 /* Graphics Backend PAL + D3D11 -> Vulkan / GLES Shim */
@@ -450,12 +451,39 @@ void twd_window_clear_paint(twd_window_t *win);
 
 /* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL) */
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev);
+int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap);
 
-/* Android GameActivity Lifecycle, Surface, Assets & Touch Bridge */
+typedef struct twd_dxgi_adapter_desc1 {
+    uint16_t description[128];
+    uint32_t vendor_id;
+    uint32_t device_id;
+    uint32_t subsys_id;
+    uint32_t revision;
+    uint64_t dedicated_video_mem;
+    uint64_t dedicated_system_mem;
+    uint64_t shared_system_mem;
+    uint32_t luid_low;
+    int32_t luid_high;
+    uint32_t flags;
+    uint32_t _pad;
+} twd_dxgi_adapter_desc1_t;
+
+_Static_assert(sizeof(twd_dxgi_adapter_desc1_t) == 0x138, "DXGI_ADAPTER_DESC1 size");
+
+/* Android GameActivity / NativeActivity Lifecycle, Surface, Assets & Frame Loop */
 #define TWD_TOUCH_DOWN   0
 #define TWD_TOUCH_UP     1
 #define TWD_TOUCH_MOVE   2
 #define TWD_TOUCH_CANCEL 3
+
+typedef struct twd_app_callbacks {
+    int (*on_init)(void *user);
+    void (*on_tick)(void *user, uint64_t dt_ns);
+    void (*on_render)(void *user, twd_gfx_device_t *gfx);
+    void (*on_shutdown)(void *user);
+    void *user;
+    uint32_t max_frames;
+} twd_app_callbacks_t;
 
 void twd_android_set_native_window(void *native_window);
 void *twd_android_get_native_window(void);
@@ -468,6 +496,7 @@ void twd_android_on_key(int keycode, int down);
 void twd_android_on_focus(int has_focus);
 int twd_android_has_focus(void);
 void twd_android_on_resize(twd_window_t *win, twd_gfx_device_t *dev, uint32_t width, uint32_t height);
+uint64_t twd_android_run_frame_loop(twd_window_t *win, twd_gfx_device_t *gfx, const twd_app_callbacks_t *cb);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
