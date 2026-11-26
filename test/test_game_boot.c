@@ -342,11 +342,12 @@ int main(void) {
         twd_blowfish_t bbf;
         if (twd_blowfish_init(&bbf, k_boot_key, strlen(k_boot_key)) != 0) return 18;
 
-        static const char k_leo_txt[] = "SceneOpen(\"Boot.scene\") ";
-        uint8_t b_leo[4 + 24];
+        static const char k_leo_txt[] = "LoadScript(\"sub_ok\") SceneOpen(\"Boot.scene\") ";
+        uint8_t b_leo[4 + 48];
         memcpy(b_leo, "\x1bLEo", 4u);
-        memcpy(b_leo + 4u, k_leo_txt, 24u);
-        if (twd_blowfish_encrypt_v7(&bbf, b_leo + 4u, 24u) != 0) return 19;
+        memset(b_leo + 4u, ' ', 48u);
+        memcpy(b_leo + 4u, k_leo_txt, sizeof(k_leo_txt) - 1u);
+        if (twd_blowfish_encrypt_v7(&bbf, b_leo + 4u, 48u) != 0) return 19;
 
         enum { BE_NAMES = 12, BE_TOC = 12 + 28, BE_RAW = BE_TOC + BE_NAMES + sizeof(b_leo) };
         uint8_t b_chunk[5 + BE_RAW + 8];

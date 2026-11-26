@@ -34,8 +34,11 @@ typedef struct twd_boot_loop_state {
     twd_save_mgr_t *save_mgr;
     twd_gfx_texture_t *splash_tex;
     twd_gfx_texture_t *boot_mesh_tex;
+    twd_gfx_texture_t *boot_font_page_tex;
     twd_font_t boot_font;
     int has_boot_font;
+    twd_landb_t boot_landb;
+    int has_boot_landb;
     twd_d3dmesh_t boot_mesh;
     twd_d3dmesh_gpu_t boot_mesh_gpu;
     int has_boot_mesh;
@@ -338,6 +341,97 @@ static int lua_save_remove_files(twd_lua_vm_t *vm, void *user, int argc, const t
 static int lua_save_has_space(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
     (void)vm; (void)user; (void)argc; (void)argv;
     if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = 1; }
+    return 0;
+}
+
+typedef struct boot_lua_ctx {
+    char required[32][64];
+    uint32_t required_count;
+} boot_lua_ctx_t;
+
+static int lua_ret_const_bool(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm; (void)argc; (void)argv;
+    if (ret) {
+        ret->kind = TWD_LUA_T_BOOL;
+        ret->u.b = (user != NULL) ? 1 : 0;
+    }
+    return 0;
+}
+
+static int lua_ret_nil(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm; (void)user; (void)argc; (void)argv;
+    if (ret) ret->kind = TWD_LUA_T_NIL;
+    return 0;
+}
+
+static int lua_resource_exists(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm; (void)user;
+    int ex = 0;
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        ex = twd_ttarch2_exists_mounted(argv[0].u.str);
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ex; }
+    return 0;
+}
+
+static int boot_exec_lua_name(twd_lua_vm_t *vm, const char *name) {
+    if (!vm || !name || name[0] == '\0') return -1;
+    if (twd_lua_vm_exec_vfs(vm, name) == 0) return 0;
+    size_t nl = strlen(name);
+    if ((nl < 4u || strcmp(name + nl - 4u, ".lua") != 0) && nl + 5u < 160u) {
+        char with_ext[160];
+        memcpy(with_ext, name, nl);
+        memcpy(with_ext + nl, ".lua", 5u);
+        if (twd_lua_vm_exec_vfs(vm, with_ext) == 0) return 0;
+    }
+    return -1;
+}
+
+static int lua_load_script(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)user;
+    int ok = 0;
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        if (boot_exec_lua_name(vm, argv[0].u.str) == 0) ok = 1;
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_game_mode(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)user;
+    int ok = 0;
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        (void)twd_kv_set("lua.game", "mode", argv[0].u.str);
+        if (boot_exec_lua_name(vm, argv[0].u.str) == 0) ok = 1;
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_require(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    boot_lua_ctx_t *ctx = (boot_lua_ctx_t *)user;
+    int ok = 0;
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str && argv[0].u.str[0] != '\0') {
+        const char *m = argv[0].u.str;
+        int already = 0;
+        if (ctx) {
+            for (uint32_t i = 0u; i < ctx->required_count; ++i) {
+                if (strcmp(ctx->required[i], m) == 0) {
+                    already = 1;
+                    break;
+                }
+            }
+            if (!already && ctx->required_count < 32u) {
+                size_t ml = strlen(m);
+                if (ml >= sizeof(ctx->required[0])) ml = sizeof(ctx->required[0]) - 1u;
+                memcpy(ctx->required[ctx->required_count], m, ml);
+                ctx->required[ctx->required_count][ml] = '\0';
+                ctx->required_count++;
+            }
+        }
+        ok = already ? 1 : (boot_exec_lua_name(vm, m) == 0 ? 1 : 0);
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
     return 0;
 }
 
@@ -759,6 +853,35 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 (void)twd_lua_vm_register(lvm, "SaveLoadClearRuntimeProperties", lua_save_clear_props, &st);
                 (void)twd_lua_vm_register(lvm, "SaveLoadRemoveUserFiles", lua_save_remove_files, &st);
                 (void)twd_lua_vm_register(lvm, "SaveLoadHasAvailableSpace", lua_save_has_space, &st);
+                boot_lua_ctx_t bctx;
+                memset(&bctx, 0, sizeof(bctx));
+                (void)twd_lua_vm_register(lvm, "LoadScript", lua_load_script, NULL);
+                (void)twd_lua_vm_register(lvm, "GameMode", lua_game_mode, NULL);
+                (void)twd_lua_vm_register(lvm, "require", lua_require, &bctx);
+                (void)twd_lua_vm_register(lvm, "ResourceExists", lua_resource_exists, NULL);
+                (void)twd_lua_vm_register(lvm, "IsToolBuild", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsRunningFromMaya", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformAppleTV", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformXboxOne", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformPS4", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformAndroid", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformIOS", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "IsPlatformSmallScreen", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "Input_UseCursor", lua_ret_const_bool, (void *)(uintptr_t)1u);
+                (void)twd_lua_vm_register(lvm, "Input_UseTouch", lua_ret_const_bool, NULL);
+                (void)twd_lua_vm_register(lvm, "DebugMenu_AddButton", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "DebugMenu_AddCustomButton", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "DebugMenu_ToggleButtons", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "OverlayShowLoadingScreen", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "SceneSetTimeScale", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "InputMapperAddEvent", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "ThreadStart", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "Vector", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "FileSetExtension", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "CreateResource", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "DLCStatus_Refresh", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "UserManager_AutomaticallyLogIn", lua_ret_nil, NULL);
+                (void)twd_lua_vm_register(lvm, "PlatformAppleTV_SetMenuSuspendAllowed", lua_ret_nil, NULL);
                 if (twd_lua_vm_exec_buffer(lvm, boot_buf, boot_sz, boot_path) == 0) {
                     local_stats.boot_script_ran = 1;
                     local_stats.boot_scripts_executed = twd_lua_vm_executed_count(lvm);
@@ -844,18 +967,59 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 }
                 if (tbuf) twd_asset_free(tbuf);
             }
-            size_t fsz = 0u;
-            void *fbuf = twd_asset_read_alloc("ui_boot.font", &fsz);
-            if (fbuf && fsz > 0u) {
-                if (twd_font_parse_memory(fbuf, fsz, &st.boot_font) == 0) {
-                    local_stats.boot_fonts_loaded++;
-                    st.has_boot_font = 1;
-                    if (st.splash_tex) {
-                        (void)twd_font_attach_page(&st.boot_font, 0u, st.splash_tex);
+            {
+                static const char *const k_boot_fonts[] = {
+                    "ui_boot.font", "default.font", "MenuBody.font"
+                };
+                for (size_t fi = 0u; fi < sizeof(k_boot_fonts) / sizeof(k_boot_fonts[0]) && !st.has_boot_font; ++fi) {
+                    size_t fsz = 0u;
+                    void *fbuf = twd_asset_read_alloc(k_boot_fonts[fi], &fsz);
+                    if (fbuf && fsz > 0u && twd_font_parse_memory(fbuf, fsz, &st.boot_font) == 0) {
+                        local_stats.boot_fonts_loaded++;
+                        st.has_boot_font = 1;
+                        if (st.boot_font.page_count > 0u && st.boot_font.page_hashes[0] != 0ULL) {
+                            size_t psz = 0u;
+                            void *pbuf = twd_ttarch2_lookup_mounted_crc64_alloc(st.boot_font.page_hashes[0], &psz);
+                            if (pbuf && psz > 0u) {
+                                st.boot_font_page_tex = twd_d3dtx_upload_gfx_texture(st.gfx, pbuf, psz, NULL);
+                                if (st.boot_font_page_tex) {
+                                    (void)twd_font_attach_page(&st.boot_font, 0u, st.boot_font_page_tex);
+                                    local_stats.boot_textures_loaded++;
+                                }
+                            }
+                            if (pbuf) twd_ttarch2_free(pbuf);
+                        }
+                        if (!st.boot_font_page_tex && st.splash_tex) {
+                            (void)twd_font_attach_page(&st.boot_font, 0u, st.splash_tex);
+                        }
                     }
+                    if (fbuf) twd_asset_free(fbuf);
                 }
             }
-            if (fbuf) twd_asset_free(fbuf);
+            {
+                size_t lbsz = 0u;
+                void *lbbuf = twd_asset_read_alloc("boot_english.landb", &lbsz);
+                if (lbbuf && lbsz > 0u && twd_landb_parse_memory(lbbuf, lbsz, &st.boot_landb) == 0) {
+                    st.has_boot_landb = 1;
+                    if (st.scenes) {
+                        const char *pri = twd_scene_mgr_primary_name(st.scenes);
+                        twd_scene_t *psc = pri ? twd_scene_mgr_find(st.scenes, pri) : NULL;
+                        if (psc) {
+                            twd_scene_agent_t *ag_start = twd_scene_find_agent(psc, "ui_boot_start");
+                            const char *start_txt = twd_landb_find_text(&st.boot_landb, 0x17a04004u);
+                            if (ag_start && start_txt && ag_start->ui_text[0] == '\0') {
+                                twd_landb_strip_markup(start_txt, ag_start->ui_text, sizeof(ag_start->ui_text));
+                            }
+                            twd_scene_agent_t *ag_legal = twd_scene_find_agent(psc, "ui_boot_legalText");
+                            const char *legal_txt = twd_landb_find_text(&st.boot_landb, 0x17a04007u);
+                            if (ag_legal && legal_txt && ag_legal->ui_text[0] == '\0') {
+                                twd_landb_strip_markup(legal_txt, ag_legal->ui_text, sizeof(ag_legal->ui_text));
+                            }
+                        }
+                    }
+                }
+                if (lbbuf) twd_asset_free(lbbuf);
+            }
 
             if (st.scenes) {
                 const char *pri = twd_scene_mgr_primary_name(st.scenes);
@@ -989,6 +1153,8 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         twd_d3dmesh_free(&st.boot_mesh);
     }
     if (st.has_boot_font) twd_font_free(&st.boot_font);
+    if (st.has_boot_landb) twd_landb_free(&st.boot_landb);
+    if (st.boot_font_page_tex) twd_gfx_texture_destroy(st.boot_font_page_tex);
     if (st.boot_mesh_tex) twd_gfx_texture_destroy(st.boot_mesh_tex);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);
     if (st.save_mgr) twd_save_mgr_destroy(st.save_mgr);

@@ -909,6 +909,23 @@ uint32_t twd_scene_mgr_scene_count(const twd_scene_mgr_t *mgr);
 uint32_t twd_scene_mgr_total_agent_count(const twd_scene_mgr_t *mgr);
 const char *twd_scene_mgr_primary_name(const twd_scene_mgr_t *mgr);
 
+/* Telltale Language Database (.landb) Localization Parser */
+typedef struct twd_landb_entry {
+    uint32_t res_id;
+    uint64_t anim_crc64;
+    char *text;
+} twd_landb_entry_t;
+
+typedef struct twd_landb {
+    uint32_t entry_count;
+    twd_landb_entry_t *entries;
+} twd_landb_t;
+
+int twd_landb_parse_memory(const void *data, size_t size, twd_landb_t *out);
+void twd_landb_free(twd_landb_t *lb);
+const char *twd_landb_find_text(const twd_landb_t *lb, uint32_t res_id);
+void twd_landb_strip_markup(const char *src, char *dst, size_t cap);
+
 /* Telltale D3DMesh (.d3dmesh / T3MeshData / T3GFXBuffer) parser, VB/IB GPU upload & wire/shaded draw */
 #define TWD_D3DMESH_MAX_BATCHES   64u
 #define TWD_D3DMESH_MAX_TEXTURES  16u
@@ -992,7 +1009,8 @@ typedef enum twd_lua_val_kind {
     TWD_LUA_T_NUM = 3,
     TWD_LUA_T_STR = 4,
     TWD_LUA_T_TABLE = 5,
-    TWD_LUA_T_CFUNC = 6
+    TWD_LUA_T_CFUNC = 6,
+    TWD_LUA_T_CLOSURE = 7
 } twd_lua_val_kind_t;
 
 typedef struct twd_lua_vm twd_lua_vm_t;

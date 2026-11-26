@@ -412,3 +412,132 @@ const char *twd_scene_mgr_primary_name(const twd_scene_mgr_t *mgr) {
     if (!mgr || mgr->scene_count == 0u) return NULL;
     return mgr->scenes[0].name;
 }
+
+/* ---------- Language Database (.landb) Localization Parser ---------- */
+
+void twd_landb_free(twd_landb_t *lb) {
+    if (!lb) return;
+    if (lb->entries) {
+        for (uint32_t i = 0u; i < lb->entry_count; ++i) {
+            free(lb->entries[i].text);
+        }
+        free(lb->entries);
+    }
+    memset(lb, 0, sizeof(*lb));
+}
+
+int twd_landb_parse_memory(const void *data, size_t size, twd_landb_t *out) {
+    if (!data || !out || size < 24u) return -1;
+    memset(out, 0, sizeof(*out));
+
+    twd_metastream_header_t ms;
+    if (twd_metastream_parse_header(data, size, &ms) != 0) {
+        return -1;
+    }
+    const uint8_t *buf = (const uint8_t *)data;
+    size_t pos = ms.payload_offset;
+    size_t limit = size;
+    if (ms.default_size > 0u && ms.payload_offset <= size &&
+        (size_t)ms.default_size <= size - ms.payload_offset) {
+        limit = ms.payload_offset + (size_t)ms.default_size;
+    }
+
+    if (pos + 20u > limit) return -1;
+    /* MetaBlock(2x u32 = 12B) + uint32 count(+12) + uint32 array_bytes(+16) */
+    uint32_t cnt_res = sc_rd_u32(buf + pos + 12u);
+    uint32_t arr_sz = sc_rd_u32(buf + pos + 16u);
+    if (arr_sz < 4u || (size_t)arr_sz > limit - (pos + 16u)) {
+        return -1;
+    }
+    size_t res_end = pos + 16u + (size_t)arr_sz;
+    size_t cur = pos + 20u;
+    if (cnt_res == 0u || cnt_res > 65536u) return 0;
+
+    out->entries = (twd_landb_entry_t *)calloc((size_t)cnt_res, sizeof(twd_landb_entry_t));
+    if (!out->entries) return -1;
+
+    for (uint32_t i = 0u; i < cnt_res && cur + 24u <= res_end; ++i) {
+        uint32_t rid = sc_rd_u32(buf + cur + 4u);
+        uint64_t anim = sc_rd_u64(buf + cur + 8u);
+        size_t p2 = cur + 24u;
+        int ok = 1;
+        for (int bi = 0; bi < 3; ++bi) {
+            if (sc_read_block(buf, res_end, &p2, NULL, NULL) != 0) {
+                ok = 0;
+                break;
+            }
+        }
+        if (!ok || p2 + 4u > res_end) break;
+        p2 += 4u; /* pad/flags */
+
+        size_t ts = 0u, te = 0u;
+        if (sc_read_block(buf, res_end, &p2, &ts, &te) != 0) break;
+        size_t tp = ts;
+        if (sc_read_block(buf, te, &tp, NULL, NULL) != 0) break;
+        size_t ls = 0u, le = 0u;
+        if (sc_read_block(buf, te, &tp, &ls, &le) != 0) break;
+
+        char *txt = NULL;
+        if (le - ls >= 4u) {
+            uint32_t slen = sc_rd_u32(buf + ls);
+            size_t avail = (le - ls) - 4u;
+            size_t cp = ((size_t)slen <= avail) ? (size_t)slen : avail;
+            txt = (char *)malloc(cp + 1u);
+            if (!txt) {
+                twd_landb_free(out);
+                return -1;
+            }
+            if (cp > 0u) memcpy(txt, buf + ls + 4u, cp);
+            txt[cp] = '\0';
+        }
+        /* Trailing per-entry metadata block */
+        if (sc_read_block(buf, res_end, &p2, NULL, NULL) != 0) {
+            free(txt);
+            break;
+        }
+
+        out->entries[out->entry_count].res_id = rid;
+        out->entries[out->entry_count].anim_crc64 = anim;
+        out->entries[out->entry_count].text = txt;
+        out->entry_count++;
+        cur = p2;
+    }
+    return 0;
+}
+
+const char *twd_landb_find_text(const twd_landb_t *lb, uint32_t res_id) {
+    if (!lb || !lb->entries) return NULL;
+    for (uint32_t i = 0u; i < lb->entry_count; ++i) {
+        if (lb->entries[i].res_id == res_id) return lb->entries[i].text;
+    }
+    return NULL;
+}
+
+void twd_landb_strip_markup(const char *src, char *dst, size_t cap) {
+    if (!dst || cap == 0u) return;
+    dst[0] = '\0';
+    if (!src) return;
+    size_t out = 0u;
+    for (const char *p = src; *p && out + 1u < cap; ) {
+        if (*p == '^') {
+            const char *q = strchr(p + 1, '^');
+            if (q) {
+                p = q + 1;
+                continue;
+            }
+        } else if (*p == '<') {
+            const char *q = strchr(p + 1, '>');
+            if (q) {
+                p = q + 1;
+                continue;
+            }
+        }
+        if (*p == ' ' && out > 0u && dst[out - 1u] == ' ') {
+            ++p;
+            continue;
+        }
+        dst[out++] = *p++;
+    }
+    while (out > 0u && dst[out - 1u] == ' ') out--;
+    dst[out] = '\0';
+}

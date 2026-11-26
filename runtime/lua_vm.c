@@ -213,12 +213,27 @@ static int table_set(lua_table_t *t, const char *key, const twd_lua_val_t *val) 
     return val_copy(&ent->val, val);
 }
 
-/* Track all heap tables created during VM lifetime for deterministic cleanup. */
+/* Track all heap tables, closures, and protos created during VM lifetime for deterministic cleanup. */
+typedef struct lua_proto lua_proto_t;
+static void proto_free(lua_proto_t *p);
+
+typedef struct lua_closure {
+    lua_proto_t *pr;
+    twd_lua_val_t *upvals;
+    uint32_t nupvals;
+} lua_closure_t;
+
 struct twd_lua_vm {
     lua_table_t *globals;
     lua_table_t **tables;
     uint32_t table_count;
     uint32_t table_cap;
+    lua_closure_t **closures;
+    uint32_t closure_count;
+    uint32_t closure_cap;
+    lua_proto_t **protos;
+    uint32_t proto_count;
+    uint32_t proto_cap;
     uint32_t executed_count;
     uint32_t call_depth;
     twd_lua_chunk_kind_t last_kind;
@@ -239,6 +254,46 @@ static lua_table_t *vm_alloc_table(twd_lua_vm_t *vm) {
     }
     vm->tables[vm->table_count++] = t;
     return t;
+}
+
+static int vm_own_proto(twd_lua_vm_t *vm, lua_proto_t *pr) {
+    if (!vm || !pr) return -1;
+    if (vm->proto_count == vm->proto_cap) {
+        uint32_t nc = (vm->proto_cap == 0u) ? 16u : vm->proto_cap * 2u;
+        lua_proto_t **np = (lua_proto_t **)realloc(vm->protos, (size_t)nc * sizeof(*np));
+        if (!np) return -1;
+        vm->protos = np;
+        vm->proto_cap = nc;
+    }
+    vm->protos[vm->proto_count++] = pr;
+    return 0;
+}
+
+static lua_closure_t *vm_alloc_closure(twd_lua_vm_t *vm, lua_proto_t *pr, uint32_t nupvals) {
+    lua_closure_t *cl = (lua_closure_t *)calloc(1u, sizeof(*cl));
+    if (!cl) return NULL;
+    cl->pr = pr;
+    cl->nupvals = nupvals;
+    if (nupvals > 0u) {
+        cl->upvals = (twd_lua_val_t *)calloc((size_t)nupvals, sizeof(twd_lua_val_t));
+        if (!cl->upvals) {
+            free(cl);
+            return NULL;
+        }
+    }
+    if (vm->closure_count == vm->closure_cap) {
+        uint32_t nc = (vm->closure_cap == 0u) ? 16u : vm->closure_cap * 2u;
+        lua_closure_t **ncl = (lua_closure_t **)realloc(vm->closures, (size_t)nc * sizeof(*ncl));
+        if (!ncl) {
+            free(cl->upvals);
+            free(cl);
+            return NULL;
+        }
+        vm->closures = ncl;
+        vm->closure_cap = nc;
+    }
+    vm->closures[vm->closure_count++] = cl;
+    return cl;
 }
 
 /* --- Built-in WD4 boot globals --- */
@@ -343,6 +398,20 @@ void twd_lua_vm_destroy(twd_lua_vm_t *vm) {
         table_destroy(vm->tables[i]);
     }
     free(vm->tables);
+    for (uint32_t i = 0u; i < vm->closure_count; ++i) {
+        if (vm->closures[i]) {
+            for (uint32_t j = 0u; j < vm->closures[i]->nupvals; ++j) {
+                val_clear(&vm->closures[i]->upvals[j]);
+            }
+            free(vm->closures[i]->upvals);
+            free(vm->closures[i]);
+        }
+    }
+    free(vm->closures);
+    for (uint32_t i = 0u; i < vm->proto_count; ++i) {
+        proto_free(vm->protos[i]);
+    }
+    free(vm->protos);
     free(vm);
 }
 
@@ -404,7 +473,7 @@ twd_lua_chunk_kind_t twd_lua_vm_last_chunk_kind(const twd_lua_vm_t *vm) {
 
 /* --- Lua 5.2 Telltale bytecode parser + VM --- */
 
-typedef struct lua_proto {
+struct lua_proto {
     uint8_t numparams;
     uint8_t is_vararg;
     uint8_t maxstacksize;
@@ -414,7 +483,10 @@ typedef struct lua_proto {
     twd_lua_val_t *k;
     uint32_t sizep;
     struct lua_proto **p;
-} lua_proto_t;
+    uint32_t sizeup;
+    uint8_t *up_instack;
+    uint8_t *up_idx;
+};
 
 static void proto_free(lua_proto_t *p) {
     if (!p) return;
@@ -427,6 +499,8 @@ static void proto_free(lua_proto_t *p) {
         for (uint32_t i = 0u; i < p->sizep; ++i) proto_free(p->p[i]);
         free(p->p);
     }
+    free(p->up_instack);
+    free(p->up_idx);
     free(p);
 }
 
@@ -548,6 +622,16 @@ static int bc_read_proto(const uint8_t *b,
     uint32_t sizeup = rd_u32_le(b + *pos);
     *pos += 4u;
     if (sizeup > 4096u || (size_t)sizeup * 2u > len - *pos) { proto_free(pr); return -1; }
+    pr->sizeup = sizeup;
+    if (sizeup > 0u) {
+        pr->up_instack = (uint8_t *)malloc((size_t)sizeup);
+        pr->up_idx = (uint8_t *)malloc((size_t)sizeup);
+        if (!pr->up_instack || !pr->up_idx) { proto_free(pr); return -1; }
+        for (uint32_t i = 0u; i < sizeup; ++i) {
+            pr->up_instack[i] = b[*pos + (size_t)i * 2u];
+            pr->up_idx[i] = b[*pos + (size_t)i * 2u + 1u];
+        }
+    }
     *pos += (size_t)sizeup * 2u;
 
     /* Debug info: source str, lineinfo, locvars, upvalue names */
@@ -597,14 +681,86 @@ static int vm_is_truthy(const twd_lua_val_t *v) {
     return 1;
 }
 
-static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
+static int vm_key_from_val(const twd_lua_val_t *kv, char *buf, size_t cap, const char **out_key) {
+    if (!kv || !out_key) return -1;
+    if (kv->kind == TWD_LUA_T_STR && kv->u.str) {
+        *out_key = kv->u.str;
+        return 0;
+    }
+    if (kv->kind == TWD_LUA_T_NUM && cap >= 16u) {
+        int iv = (int)kv->u.num;
+        size_t p = cap;
+        buf[--p] = '\0';
+        unsigned u = (iv < 0) ? (unsigned)(-iv) : (unsigned)iv;
+        do {
+            buf[--p] = (char)('0' + (u % 10u));
+            u /= 10u;
+        } while (u != 0u && p > 1u);
+        if (iv < 0 && p > 0u) buf[--p] = '-';
+        *out_key = &buf[p];
+        return 0;
+    }
+    return -1;
+}
+
+static int vm_val_eq(const twd_lua_val_t *x, const twd_lua_val_t *y) {
+    if (!x || !y) return 0;
+    if (x->kind != y->kind) return 0;
+    switch (x->kind) {
+    case TWD_LUA_T_NIL: return 1;
+    case TWD_LUA_T_BOOL: return (x->u.b != 0) == (y->u.b != 0);
+    case TWD_LUA_T_NUM: return x->u.num == y->u.num;
+    case TWD_LUA_T_STR:
+        return strcmp(x->u.str ? x->u.str : "", y->u.str ? y->u.str : "") == 0;
+    default:
+        return x->u.ptr == y->u.ptr;
+    }
+}
+
+static int vm_val_to_str(const twd_lua_val_t *v, char *tmp, size_t tcap, const char **out_s, size_t *out_n) {
+    if (!v || !out_s || !out_n) return -1;
+    if (v->kind == TWD_LUA_T_STR) {
+        *out_s = v->u.str ? v->u.str : "";
+        *out_n = strlen(*out_s);
+        return 0;
+    }
+    if (v->kind == TWD_LUA_T_NUM && tcap >= 16u) {
+        int iv = (int)v->u.num;
+        size_t p = tcap;
+        tmp[--p] = '\0';
+        unsigned u = (iv < 0) ? (unsigned)(-iv) : (unsigned)iv;
+        do {
+            tmp[--p] = (char)('0' + (u % 10u));
+            u /= 10u;
+        } while (u != 0u && p > 1u);
+        if (iv < 0 && p > 0u) tmp[--p] = '-';
+        *out_s = &tmp[p];
+        *out_n = tcap - 1u - p;
+        return 0;
+    }
+    return -1;
+}
+
+static int vm_exec_proto_closure(twd_lua_vm_t *vm,
+                                 const lua_proto_t *pr,
+                                 twd_lua_val_t *upvals,
+                                 uint32_t nupvals,
+                                 int call_nargs,
+                                 const twd_lua_val_t *call_args,
+                                 twd_lua_val_t *out_ret) {
+    if (vm->call_depth >= 16u) return -1;
     uint32_t nreg = (pr->maxstacksize < 32u) ? 64u : (uint32_t)pr->maxstacksize + 16u;
     twd_lua_val_t *reg = (twd_lua_val_t *)calloc((size_t)nreg, sizeof(twd_lua_val_t));
     if (!reg) return -1;
 
+    for (int ai = 0; ai < call_nargs && (uint32_t)ai < pr->numparams && (uint32_t)ai < nreg; ++ai) {
+        (void)val_copy(&reg[ai], &call_args[ai]);
+    }
+
     int rc = 0;
     uint32_t pc = 0u;
     uint32_t steps = 0u;
+    uint32_t top = nreg;
     while (pc < pr->sizecode && steps < 1000000u) {
         steps++;
         uint32_t ins = pr->code[pc++];
@@ -632,10 +788,19 @@ static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
         case 4u: /* OP_LOADNIL */
             for (uint32_t i = a; i <= a + b && i < nreg; ++i) val_clear(&reg[i]);
             break;
-        case 6u: { /* OP_GETTABUP (up0 = _G) */
+        case 5u: /* OP_GETUPVAL */
+            if (upvals && b < nupvals) (void)val_copy(&reg[a], &upvals[b]);
+            else val_clear(&reg[a]);
+            break;
+        case 6u: { /* OP_GETTABUP */
             const twd_lua_val_t *kv = vm_rk(reg, nreg, pr, c);
-            if (b == 0u && kv && kv->kind == TWD_LUA_T_STR && kv->u.str) {
-                const twd_lua_val_t *gv = table_get(vm->globals, kv->u.str);
+            char kbuf[32];
+            const char *ks = NULL;
+            lua_table_t *src_t = (upvals && b < nupvals && upvals[b].kind == TWD_LUA_T_TABLE)
+                ? (lua_table_t *)upvals[b].u.ptr
+                : ((b == 0u) ? vm->globals : NULL);
+            if (src_t && vm_key_from_val(kv, kbuf, sizeof(kbuf), &ks) == 0) {
+                const twd_lua_val_t *gv = table_get(src_t, ks);
                 if (gv) (void)val_copy(&reg[a], gv);
                 else val_clear(&reg[a]);
             } else {
@@ -645,9 +810,11 @@ static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
         }
         case 7u: { /* OP_GETTABLE */
             const twd_lua_val_t *kv = vm_rk(reg, nreg, pr, c);
+            char kbuf[32];
+            const char *ks = NULL;
             if (b < nreg && reg[b].kind == TWD_LUA_T_TABLE &&
-                kv && kv->kind == TWD_LUA_T_STR && kv->u.str) {
-                const twd_lua_val_t *tv = table_get((const lua_table_t *)reg[b].u.ptr, kv->u.str);
+                vm_key_from_val(kv, kbuf, sizeof(kbuf), &ks) == 0) {
+                const twd_lua_val_t *tv = table_get((const lua_table_t *)reg[b].u.ptr, ks);
                 if (tv) (void)val_copy(&reg[a], tv);
                 else val_clear(&reg[a]);
             } else {
@@ -655,20 +822,30 @@ static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
             }
             break;
         }
-        case 8u: { /* OP_SETTABUP (up0 = _G) */
+        case 8u: { /* OP_SETTABUP */
             const twd_lua_val_t *kv = vm_rk(reg, nreg, pr, b);
             const twd_lua_val_t *vv = vm_rk(reg, nreg, pr, c);
-            if (a == 0u && kv && kv->kind == TWD_LUA_T_STR && kv->u.str && vv) {
-                (void)table_set(vm->globals, kv->u.str, vv);
+            char kbuf[32];
+            const char *ks = NULL;
+            lua_table_t *dst_t = (upvals && a < nupvals && upvals[a].kind == TWD_LUA_T_TABLE)
+                ? (lua_table_t *)upvals[a].u.ptr
+                : ((a == 0u) ? vm->globals : NULL);
+            if (dst_t && vm_key_from_val(kv, kbuf, sizeof(kbuf), &ks) == 0 && vv) {
+                (void)table_set(dst_t, ks, vv);
             }
             break;
         }
+        case 9u: /* OP_SETUPVAL */
+            if (upvals && b < nupvals) (void)val_copy(&upvals[b], &reg[a]);
+            break;
         case 10u: { /* OP_SETTABLE */
             const twd_lua_val_t *kv = vm_rk(reg, nreg, pr, b);
             const twd_lua_val_t *vv = vm_rk(reg, nreg, pr, c);
+            char kbuf[32];
+            const char *ks = NULL;
             if (reg[a].kind == TWD_LUA_T_TABLE &&
-                kv && kv->kind == TWD_LUA_T_STR && kv->u.str && vv) {
-                (void)table_set((lua_table_t *)reg[a].u.ptr, kv->u.str, vv);
+                vm_key_from_val(kv, kbuf, sizeof(kbuf), &ks) == 0 && vv) {
+                (void)table_set((lua_table_t *)reg[a].u.ptr, ks, vv);
             }
             break;
         }
@@ -678,6 +855,23 @@ static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
             if (nt) {
                 reg[a].kind = TWD_LUA_T_TABLE;
                 reg[a].u.ptr = nt;
+            }
+            break;
+        }
+        case 12u: { /* OP_SELF */
+            if (b < nreg && a + 1u < nreg) {
+                const twd_lua_val_t *kv = vm_rk(reg, nreg, pr, c);
+                char kbuf[32];
+                const char *ks = NULL;
+                (void)val_copy(&reg[a + 1u], &reg[b]);
+                if (reg[b].kind == TWD_LUA_T_TABLE &&
+                    vm_key_from_val(kv, kbuf, sizeof(kbuf), &ks) == 0) {
+                    const twd_lua_val_t *mv = table_get((const lua_table_t *)reg[b].u.ptr, ks);
+                    if (mv) (void)val_copy(&reg[a], mv);
+                    else val_clear(&reg[a]);
+                } else {
+                    val_clear(&reg[a]);
+                }
             }
             break;
         }
@@ -704,37 +898,191 @@ static int vm_exec_proto(twd_lua_vm_t *vm, const lua_proto_t *pr) {
                 reg[a].u.b = r;
             }
             break;
+        case 21u: { /* OP_LEN */
+            float len_v = 0.0f;
+            if (b < nreg) {
+                if (reg[b].kind == TWD_LUA_T_STR && reg[b].u.str) {
+                    len_v = (float)strlen(reg[b].u.str);
+                } else if (reg[b].kind == TWD_LUA_T_TABLE && reg[b].u.ptr) {
+                    len_v = (float)((const lua_table_t *)reg[b].u.ptr)->count;
+                }
+            }
+            val_clear(&reg[a]);
+            reg[a].kind = TWD_LUA_T_NUM;
+            reg[a].u.num = len_v;
+            break;
+        }
+        case 22u: { /* OP_CONCAT */
+            if (b <= c && c < nreg) {
+                size_t tot = 0u;
+                for (uint32_t i = b; i <= c; ++i) {
+                    char tb[32]; const char *s = NULL; size_t sn = 0u;
+                    if (vm_val_to_str(&reg[i], tb, sizeof(tb), &s, &sn) == 0) tot += sn;
+                }
+                char *buf = (char *)malloc(tot + 1u);
+                if (buf) {
+                    size_t w = 0u;
+                    for (uint32_t i = b; i <= c; ++i) {
+                        char tb[32]; const char *s = NULL; size_t sn = 0u;
+                        if (vm_val_to_str(&reg[i], tb, sizeof(tb), &s, &sn) == 0 && sn > 0u) {
+                            memcpy(buf + w, s, sn);
+                            w += sn;
+                        }
+                    }
+                    buf[w] = '\0';
+                    val_clear(&reg[a]);
+                    reg[a].kind = TWD_LUA_T_STR;
+                    reg[a].u.str = buf;
+                }
+            }
+            break;
+        }
         case 23u: /* OP_JMP */
             if (sbx >= 0) pc += (uint32_t)sbx;
             else if ((uint32_t)(-sbx) <= pc) pc -= (uint32_t)(-sbx);
             break;
+        case 24u: { /* OP_EQ */
+            const twd_lua_val_t *vb = vm_rk(reg, nreg, pr, b);
+            const twd_lua_val_t *vc = vm_rk(reg, nreg, pr, c);
+            if (vm_val_eq(vb, vc) != (a != 0u)) pc++;
+            break;
+        }
+        case 25u: case 26u: { /* OP_LT / OP_LE */
+            const twd_lua_val_t *vb = vm_rk(reg, nreg, pr, b);
+            const twd_lua_val_t *vc = vm_rk(reg, nreg, pr, c);
+            int res = 0;
+            if (vb && vc && vb->kind == TWD_LUA_T_NUM && vc->kind == TWD_LUA_T_NUM) {
+                res = (op == 25u) ? (vb->u.num < vc->u.num) : (vb->u.num <= vc->u.num);
+            }
+            if (res != (a != 0u)) pc++;
+            break;
+        }
         case 27u: /* OP_TEST */
             if (vm_is_truthy(&reg[a]) != (c != 0u)) pc++;
             break;
+        case 28u: /* OP_TESTSET */
+            if (b < nreg) {
+                if (vm_is_truthy(&reg[b]) != (c != 0u)) {
+                    pc++;
+                } else {
+                    (void)val_copy(&reg[a], &reg[b]);
+                }
+            }
+            break;
         case 29u: /* OP_CALL */
         case 30u: { /* OP_TAILCALL */
-            int nargs = (b == 0u) ? 0 : (int)(b - 1u);
+            int nargs = (b == 0u) ? ((top > a + 1u) ? (int)(top - (a + 1u)) : 0) : (int)(b - 1u);
             twd_lua_val_t ret;
             memset(&ret, 0, sizeof(ret));
+            const twd_lua_val_t *args = (nargs > 0 && a + 1u + (uint32_t)nargs <= nreg) ? &reg[a + 1u] : NULL;
             if (reg[a].kind == TWD_LUA_T_CFUNC && reg[a].u.ptr) {
                 const lua_cfunc_binding_t *bind = (const lua_cfunc_binding_t *)reg[a].u.ptr;
-                const twd_lua_val_t *args = (a + 1u + (uint32_t)nargs <= nreg) ? &reg[a + 1u] : NULL;
                 int crc = bind->fn(vm, bind->user, args ? nargs : 0, args, &ret);
                 if (crc != 0) {
                     val_clear(&ret);
                     rc = crc;
                     goto done;
                 }
+            } else if (reg[a].kind == TWD_LUA_T_CLOSURE && reg[a].u.ptr) {
+                const lua_closure_t *cl = (const lua_closure_t *)reg[a].u.ptr;
+                if (cl->pr) {
+                    vm->call_depth++;
+                    int crc = vm_exec_proto_closure(
+                        vm, cl->pr, cl->upvals, cl->nupvals, args ? nargs : 0, args, &ret);
+                    vm->call_depth--;
+                    if (crc != 0) {
+                        val_clear(&ret);
+                        rc = crc;
+                        goto done;
+                    }
+                }
             }
             if (c != 1u) {
                 (void)val_copy(&reg[a], &ret);
             }
+            top = (c == 0u) ? (a + 1u) : (a + c);
             val_clear(&ret);
-            if (op == 30u) goto done;
+            if (op == 30u) {
+                if (out_ret && c != 1u) (void)val_copy(out_ret, &reg[a]);
+                goto done;
+            }
             break;
         }
         case 31u: /* OP_RETURN */
+            if (out_ret && b != 1u) {
+                (void)val_copy(out_ret, &reg[a]);
+            }
             goto done;
+        case 32u: /* OP_FORLOOP */
+            if (a + 3u < nreg && reg[a].kind == TWD_LUA_T_NUM &&
+                reg[a + 1u].kind == TWD_LUA_T_NUM && reg[a + 2u].kind == TWD_LUA_T_NUM) {
+                float step = reg[a + 2u].u.num;
+                float idx = reg[a].u.num + step;
+                float limit = reg[a + 1u].u.num;
+                int cont = (step >= 0.0f) ? (idx <= limit) : (idx >= limit);
+                if (cont) {
+                    reg[a].u.num = idx;
+                    reg[a + 3u].kind = TWD_LUA_T_NUM;
+                    reg[a + 3u].u.num = idx;
+                    if (sbx >= 0) pc += (uint32_t)sbx;
+                    else if ((uint32_t)(-sbx) <= pc) pc -= (uint32_t)(-sbx);
+                }
+            }
+            break;
+        case 33u: /* OP_FORPREP */
+            if (a + 2u < nreg && reg[a].kind == TWD_LUA_T_NUM && reg[a + 2u].kind == TWD_LUA_T_NUM) {
+                reg[a].u.num -= reg[a + 2u].u.num;
+            }
+            if (sbx >= 0) pc += (uint32_t)sbx;
+            else if ((uint32_t)(-sbx) <= pc) pc -= (uint32_t)(-sbx);
+            break;
+        case 34u: /* OP_TFORCALL */
+            if (a + 3u < nreg) val_clear(&reg[a + 3u]);
+            break;
+        case 35u: /* OP_TFORLOOP */
+            if (a + 1u < nreg && reg[a + 1u].kind != TWD_LUA_T_NIL) {
+                (void)val_copy(&reg[a], &reg[a + 1u]);
+                if (sbx >= 0) pc += (uint32_t)sbx;
+                else if ((uint32_t)(-sbx) <= pc) pc -= (uint32_t)(-sbx);
+            }
+            break;
+        case 36u: /* OP_SETLIST */
+            if (reg[a].kind == TWD_LUA_T_TABLE && c > 0u) {
+                uint32_t nitems = (b == 0u) ? ((top > a + 1u) ? (top - (a + 1u)) : 0u) : b;
+                uint32_t base_idx = (c - 1u) * 50u;
+                for (uint32_t i = 1u; i <= nitems && a + i < nreg; ++i) {
+                    twd_lua_val_t kv;
+                    kv.kind = TWD_LUA_T_NUM;
+                    kv.u.num = (float)(base_idx + i);
+                    char kbuf[32]; const char *ks = NULL;
+                    if (vm_key_from_val(&kv, kbuf, sizeof(kbuf), &ks) == 0) {
+                        (void)table_set((lua_table_t *)reg[a].u.ptr, ks, &reg[a + i]);
+                    }
+                }
+            }
+            break;
+        case 37u: /* OP_CLOSURE */
+            if (bx < pr->sizep && pr->p[bx]) {
+                lua_proto_t *sub = pr->p[bx];
+                lua_closure_t *cl = vm_alloc_closure(vm, sub, sub->sizeup);
+                if (cl) {
+                    for (uint32_t ui = 0u; ui < sub->sizeup; ++ui) {
+                        uint8_t u_idx = sub->up_idx[ui];
+                        if (sub->up_instack[ui]) {
+                            if (u_idx < nreg) (void)val_copy(&cl->upvals[ui], &reg[u_idx]);
+                        } else if (upvals && u_idx < nupvals) {
+                            (void)val_copy(&cl->upvals[ui], &upvals[u_idx]);
+                        } else if (u_idx == 0u && vm->globals) {
+                            cl->upvals[ui].kind = TWD_LUA_T_TABLE;
+                            cl->upvals[ui].u.ptr = vm->globals;
+                        }
+                    }
+                    val_clear(&reg[a]);
+                    reg[a].kind = TWD_LUA_T_CLOSURE;
+                    reg[a].u.ptr = cl;
+                }
+            }
+            break;
         default:
             break;
         }
@@ -758,9 +1106,15 @@ static int vm_exec_bytecode(twd_lua_vm_t *vm, const uint8_t *b, size_t len) {
     size_t pos = 18u;
     lua_proto_t *root = NULL;
     if (bc_read_proto(b, &pos, len, sz_size_t, sz_num, 0, &root) != 0) return -1;
-    int rc = vm_exec_proto(vm, root);
-    proto_free(root);
-    return rc;
+    if (vm_own_proto(vm, root) != 0) {
+        proto_free(root);
+        return -1;
+    }
+    twd_lua_val_t env_val;
+    memset(&env_val, 0, sizeof(env_val));
+    env_val.kind = TWD_LUA_T_TABLE;
+    env_val.u.ptr = vm->globals;
+    return vm_exec_proto_closure(vm, root, &env_val, 1u, 0, NULL, NULL);
 }
 
 /* --- Lightweight Lua text script runner --- */

@@ -2000,6 +2000,76 @@ int main(void) {
         twd_asset_unmount_ttarch2(mem_arc);
         twd_ttarch2_close(mem_arc);
 
+        /* Synthetic LanguageDB (.landb) + Lua 5.2 closure/upval/concat/eq/forloop bytecode tests */
+        uint8_t ldb[256];
+        memset(ldb, 0, sizeof(ldb));
+        size_t ldo = 0u;
+        memcpy(ldb + ldo, "6VSM", 4u); ldo += 4u;
+        size_t l_def = ldo; ldo += 4u;
+        ldo += 8u;
+        ttarch_wr_u32(ldb + ldo, 0u); ldo += 4u;
+        size_t l_start = ldo;
+        ttarch_wr_u32(ldb + ldo, 8u); ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 4u); ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 8u); ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 1u); ldo += 4u; /* 1 entry */
+        size_t l_arr = ldo; ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 0x20u); ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 0x17a04004u); ldo += 4u;
+        ldo += 16u; /* anim crc64 + extra id/pad */
+        for (int bi = 0; bi < 3; ++bi) { ttarch_wr_u32(ldb + ldo, 8u); ldo += 8u; }
+        ldo += 4u;
+        size_t t_blk = ldo; ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, 8u); ldo += 8u; /* empty speech */
+        static const char k_lb_raw[] = "^font:X^Click ^<img:a>^to Begin  ";
+        uint32_t k_lb_len = (uint32_t)(sizeof(k_lb_raw) - 1u);
+        ttarch_wr_u32(ldb + ldo, 8u + k_lb_len); ldo += 4u;
+        ttarch_wr_u32(ldb + ldo, k_lb_len); ldo += 4u;
+        memcpy(ldb + ldo, k_lb_raw, k_lb_len); ldo += k_lb_len;
+        ttarch_wr_u32(ldb + t_blk, (uint32_t)(ldo - t_blk));
+        ttarch_wr_u32(ldb + ldo, 8u); ldo += 8u; /* trailing blk */
+        ttarch_wr_u32(ldb + l_arr, (uint32_t)(ldo - l_arr));
+        ttarch_wr_u32(ldb + l_def, (uint32_t)(ldo - l_start));
+
+        twd_landb_t plb;
+        TWD_CHECK(twd_landb_parse_memory(ldb, ldo, &plb) == 0);
+        TWD_CHECK(plb.entry_count == 1u);
+        TWD_CHECK(twd_landb_find_text(&plb, 0x17a04004u) != NULL);
+        char clean_lb[64];
+        twd_landb_strip_markup("^font:A^Press <btn>  Start ", clean_lb, sizeof(clean_lb));
+        TWD_CHECK(strcmp(clean_lb, "Press Start") == 0);
+        twd_landb_free(&plb);
+
+        /* Synthetic Lua 5.2 closure + OP_CLOSURE(37) + OP_CALL(29) returning value via OP_RETURN(31) */
+        static const uint8_t k_lua52_closure[] = {
+            0x1Bu, 'L', 'u', 'a', 0x52u, 0x00u, 0x01u, 0x04u, 0x04u, 0x04u, 0x04u, 0x00u,
+            0x19u, 0x93u, 0x0Du, 0x0Au, 0x1Au, 0x0Au,
+            /* Root proto: 4 insns: OP_CLOSURE(r0, p0); OP_CALL(r0, 1 arg->b=1, 2->c=2); OP_SETTABUP(u0, K0="ans", r0); OP_RETURN */
+            0,0,0,0, 0,0,0,0, 0, 0, 4,
+            4,0,0,0,
+            0x25u, 0x00u, 0x00u, 0x00u, /* OP_CLOSURE r0, p0 (bx=0) */
+            0x1Du, 0x80u, 0x80u, 0x00u, /* OP_CALL r0, b=1 (0 args), c=2 (1 ret) */
+            0x08u, 0x00u, 0x00u, 0x80u, /* OP_SETTABUP u0, b=256("ans"), c=0 */
+            0x1Fu, 0x00u, 0x80u, 0x00u, /* OP_RETURN */
+            /* 1 constant: "ans" */
+            1,0,0,0, 4, 4,0,0,0, 'a','n','s',0,
+            /* 1 child proto: */
+            1,0,0,0,
+            0,0,0,0, 0,0,0,0, 0, 0, 2,
+            2,0,0,0,
+            0x01u, 0x00u, 0x00u, 0x00u, /* OP_LOADK r0, K0=99 */
+            0x1Fu, 0x00u, 0x00u, 0x01u, /* OP_RETURN r0, b=2 (1 val) */
+            1,0,0,0, 3, 0x00u, 0x00u, 0xC6u, 0x42u, /* float 99.0f = 0x42c60000 */
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, /* sub proto debug */
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0  /* root upvals/debug */
+        };
+        twd_lua_vm_t *cv = twd_lua_vm_create();
+        TWD_CHECK(cv != NULL);
+        TWD_CHECK(twd_lua_vm_exec_buffer(cv, k_lua52_closure, sizeof(k_lua52_closure), "cl.lc") == 0);
+        const twd_lua_val_t *ansv = twd_lua_vm_get_global(cv, "ans");
+        TWD_CHECK(ansv != NULL && ansv->kind == TWD_LUA_T_NUM && ansv->u.num == 99.0f);
+        twd_lua_vm_destroy(cv);
+
         twd_crypto_clear_archive_key();
     }
 
