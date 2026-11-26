@@ -1466,8 +1466,20 @@ int main(void) {
         dm_pkt[mo++] = 3u; mo += 3u; /* vertex_count = 3 */
         mo += 4u; /* flags */
         { uint32_t lsz = (uint32_t)(mo - lods_start) + 4u; memcpy(dm_pkt + lods_blk_off, &lsz, 4u); }
-        /* 6 empty DCArray blocks */
-        for (uint32_t dci = 0u; dci < 6u; ++dci) {
+        /* 6 blocks: mTextures (1 entry "tri.d3dtx"), mMaterials (1 entry "Mat_UI"), + 4 empty */
+        /* mTextures block: 4 (outer blk) + 4 (cnt=1) + 4 (inner blk=17) + 4 (len=9) + 9 ("tri.d3dtx") = 25 */
+        dm_pkt[mo++] = 25u; mo += 3u;
+        dm_pkt[mo++] = 1u; mo += 3u;
+        dm_pkt[mo++] = 17u; mo += 3u;
+        dm_pkt[mo++] = 9u; mo += 3u;
+        memcpy(dm_pkt + mo, "tri.d3dtx", 9u); mo += 9u;
+        /* mMaterials block: 4 (outer blk) + 4 (cnt=1) + 4 (inner blk=14) + 4 (len=6) + 6 ("Mat_UI") = 22 */
+        dm_pkt[mo++] = 22u; mo += 3u;
+        dm_pkt[mo++] = 1u; mo += 3u;
+        dm_pkt[mo++] = 14u; mo += 3u;
+        dm_pkt[mo++] = 6u; mo += 3u;
+        memcpy(dm_pkt + mo, "Mat_UI", 6u); mo += 6u;
+        for (uint32_t dci = 0u; dci < 4u; ++dci) {
             dm_pkt[mo++] = 8u; mo += 3u; mo += 4u;
         }
         mo += 4u; /* mVertexStreams = 0 */
@@ -1482,11 +1494,15 @@ int main(void) {
             memcpy(dm_pkt + mo, idxs, sizeof(idxs));
             mo += sizeof(idxs);
         }
-        /* Vertex T3GFXBuffer: num=3, stride=12, {(0,0,0), (1,0,0), (0,1,0)} */
+        /* Vertex T3GFXBuffer: num=3, stride=20, {(vx,vy,vz, u,v)} */
         dm_pkt[mo++] = 3u; mo += 3u;
-        dm_pkt[mo++] = 12u; mo += 3u;
+        dm_pkt[mo++] = 20u; mo += 3u;
         {
-            float vtx[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+            float vtx[15] = {
+                0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f, 1.0f
+            };
             memcpy(dm_pkt + mo, vtx, sizeof(vtx));
             mo += sizeof(vtx);
         }
@@ -1502,7 +1518,9 @@ int main(void) {
         TWD_CHECK(strcmp(dmesh.name, "tri") == 0);
         TWD_CHECK(dmesh.version == 55 && dmesh.lod_count == 1u);
         TWD_CHECK(dmesh.batch_count == 1u && dmesh.batches[0].num_indices == 3u);
-        TWD_CHECK(dmesh.vertex_count == 3u && dmesh.vertex_stride == 12u);
+        TWD_CHECK(dmesh.texture_count == 1u && strcmp(dmesh.textures[0], "tri.d3dtx") == 0);
+        TWD_CHECK(dmesh.material_count == 1u && strcmp(dmesh.materials[0], "Mat_UI") == 0);
+        TWD_CHECK(dmesh.vertex_count == 3u && dmesh.vertex_stride == 20u);
         TWD_CHECK(dmesh.index_count == 3u && dmesh.index_stride == 2u);
 
         twd_d3dmesh_gpu_t dgpu;
@@ -1514,6 +1532,32 @@ int main(void) {
         size_t mp_off = ((size_t)24u * 48u + 24u) * 4u;
         TWD_CHECK(mb_px[mp_off + 0u] == 250u && mb_px[mp_off + 1u] == 30u && mb_px[mp_off + 2u] == 220u);
 
+        /* Direct textured twd_gfx_draw_triangle + shaded/textured twd_d3dmesh_draw_shaded */
+        static const uint8_t yellow_2x2[16] = {
+            240u, 200u, 40u, 255u, 240u, 200u, 40u, 255u,
+            240u, 200u, 40u, 255u, 240u, 200u, 40u, 255u
+        };
+        twd_gfx_texture_t *tri_tex = twd_gfx_texture_create(mdev, 2u, 2u, 28u);
+        TWD_CHECK(tri_tex != NULL);
+        TWD_CHECK(twd_gfx_texture_update(tri_tex, yellow_2x2, sizeof(yellow_2x2)) == 0);
+
+        twd_gfx_clear(mdev, clr_bg, 1.0f, 0u);
+        twd_gfx_vertex2d_t tv[3] = {
+            { 6.0f,  6.0f, 0.0f, 0.0f, 0.0f, {255u, 255u, 255u, 255u}},
+            {16.0f,  6.0f, 0.0f, 1.0f, 0.0f, {255u, 255u, 255u, 255u}},
+            { 6.0f, 16.0f, 0.0f, 0.0f, 1.0f, {255u, 255u, 255u, 255u}}
+        };
+        TWD_CHECK(twd_gfx_draw_triangle(mdev, tri_tex, tv) == 0);
+        size_t tp_off = ((size_t)8u * 48u + 8u) * 4u;
+        TWD_CHECK(mb_px[tp_off + 0u] == 240u && mb_px[tp_off + 1u] == 200u && mb_px[tp_off + 2u] == 40u);
+
+        twd_gfx_clear(mdev, clr_bg, 1.0f, 0u);
+        static const uint8_t full_white[4] = {255u, 255u, 255u, 255u};
+        TWD_CHECK(twd_d3dmesh_draw_shaded(mdev, &dmesh, tri_tex, 24.0f, 24.0f, 24.0f, full_white) == 0);
+        size_t sp_off = ((size_t)22u * 48u + 26u) * 4u;
+        TWD_CHECK(mb_px[sp_off + 0u] > 100u && mb_px[sp_off + 1u] > 80u && mb_px[sp_off + 2u] > 10u);
+
+        twd_gfx_texture_destroy(tri_tex);
         twd_d3dmesh_gpu_free(&dgpu);
         twd_d3dmesh_free(&dmesh);
         twd_gfx_device_destroy(mdev);

@@ -757,6 +757,90 @@ int twd_gfx_draw_sprite(
     return 0;
 }
 
+static float tri_edge(float ax, float ay, float bx, float by, float px, float py) {
+    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+static uint8_t clamp_u8_f(float v) {
+    if (v <= 0.0f) return 0u;
+    if (v >= 255.0f) return 255u;
+    return (uint8_t)(v + 0.5f);
+}
+
+static float wrap_uv_unit(float v) {
+    int32_t iv = (int32_t)v;
+    float frac = v - (float)iv;
+    if (frac < 0.0f) frac += 1.0f;
+    return frac;
+}
+
+int twd_gfx_draw_triangle(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3]) {
+    if (!dev || !dev->backbuffer || !v) return -1;
+    float area = tri_edge(v[0].x, v[0].y, v[1].x, v[1].y, v[2].x, v[2].y);
+    if (area > -1e-5f && area < 1e-5f) return 0;
+
+    float minx = v[0].x, maxx = v[0].x;
+    float miny = v[0].y, maxy = v[0].y;
+    for (int k = 1; k < 3; ++k) {
+        if (v[k].x < minx) minx = v[k].x;
+        if (v[k].x > maxx) maxx = v[k].x;
+        if (v[k].y < miny) miny = v[k].y;
+        if (v[k].y > maxy) maxy = v[k].y;
+    }
+
+    int32_t ix0 = (int32_t)minx - 1;
+    int32_t iy0 = (int32_t)miny - 1;
+    int32_t ix1 = (int32_t)maxx + 1;
+    int32_t iy1 = (int32_t)maxy + 1;
+    if (ix0 < 0) ix0 = 0;
+    if (iy0 < 0) iy0 = 0;
+    if (ix1 >= (int32_t)dev->width) ix1 = (int32_t)dev->width - 1;
+    if (iy1 >= (int32_t)dev->height) iy1 = (int32_t)dev->height - 1;
+    if (ix0 > ix1 || iy0 > iy1) return 0;
+
+    float inv_area = 1.0f / area;
+    const uint8_t *src_px = (tex_or_null && tex_or_null->pixels &&
+                             tex_or_null->width > 0u && tex_or_null->height > 0u)
+        ? (const uint8_t *)tex_or_null->pixels : NULL;
+
+    for (int32_t y = iy0; y <= iy1; ++y) {
+        float py = (float)y + 0.5f;
+        for (int32_t x = ix0; x <= ix1; ++x) {
+            float px = (float)x + 0.5f;
+            float w0 = tri_edge(v[1].x, v[1].y, v[2].x, v[2].y, px, py) * inv_area;
+            float w1 = tri_edge(v[2].x, v[2].y, v[0].x, v[0].y, px, py) * inv_area;
+            float w2 = 1.0f - w0 - w1;
+            if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
+
+            uint8_t cr = clamp_u8_f(w0 * (float)v[0].rgba[0] + w1 * (float)v[1].rgba[0] + w2 * (float)v[2].rgba[0]);
+            uint8_t cg = clamp_u8_f(w0 * (float)v[0].rgba[1] + w1 * (float)v[1].rgba[1] + w2 * (float)v[2].rgba[1]);
+            uint8_t cb = clamp_u8_f(w0 * (float)v[0].rgba[2] + w1 * (float)v[1].rgba[2] + w2 * (float)v[2].rgba[2]);
+            uint8_t ca = clamp_u8_f(w0 * (float)v[0].rgba[3] + w1 * (float)v[1].rgba[3] + w2 * (float)v[2].rgba[3]);
+
+            if (src_px) {
+                float uu = wrap_uv_unit(w0 * v[0].u + w1 * v[1].u + w2 * v[2].u);
+                float vv = wrap_uv_unit(w0 * v[0].v + w1 * v[1].v + w2 * v[2].v);
+                uint32_t tx = (uint32_t)(uu * (float)tex_or_null->width);
+                uint32_t ty = (uint32_t)(vv * (float)tex_or_null->height);
+                if (tx >= tex_or_null->width) tx = tex_or_null->width - 1u;
+                if (ty >= tex_or_null->height) ty = tex_or_null->height - 1u;
+                const uint8_t *sp = src_px + (size_t)ty * (size_t)tex_or_null->row_pitch + (size_t)tx * 4u;
+                cr = (uint8_t)(((uint32_t)cr * (uint32_t)sp[0]) / 255u);
+                cg = (uint8_t)(((uint32_t)cg * (uint32_t)sp[1]) / 255u);
+                cb = (uint8_t)(((uint32_t)cb * (uint32_t)sp[2]) / 255u);
+                ca = (uint8_t)(((uint32_t)ca * (uint32_t)sp[3]) / 255u);
+            }
+            uint8_t *dp = dev->backbuffer + ((size_t)y * (size_t)dev->width + (size_t)x) * 4u;
+            blend_pixel_rgba8(dp, cr, cg, cb, ca);
+        }
+    }
+    dev->draw_calls++;
+    return 0;
+}
+
 void twd_gfx_set_viewport(
     twd_gfx_device_t *dev, float x, float y, float w, float h, float min_d, float max_d) {
     if (!dev) return;

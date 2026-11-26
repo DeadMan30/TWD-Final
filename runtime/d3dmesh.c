@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "twd_runtime.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,6 +56,80 @@ static void dm_read_string(const uint8_t *bs_ptr, size_t bs_len, char *dst, size
     if (cp >= cap) cp = cap - 1u;
     if (cp > 0u) memcpy(dst, bs_ptr + 4u, cp);
     dst[cp] = '\0';
+}
+
+static void dm_parse_textures_block(const uint8_t *blk, size_t blk_len, twd_d3dmesh_t *out) {
+    if (!blk || blk_len < 4u || !out) return;
+    uint32_t cnt = dm_rd_u32(blk);
+    if (cnt == 0u || cnt > 256u) return;
+    size_t pos = 4u;
+    for (uint32_t i = 0u; i < cnt && out->texture_count < TWD_D3DMESH_MAX_TEXTURES && pos < blk_len; ++i) {
+        if (pos + 8u <= blk_len) {
+            uint32_t inner_blk = dm_rd_u32(blk + pos);
+            uint32_t slen = dm_rd_u32(blk + pos + 4u);
+            if (inner_blk >= 8u && (size_t)inner_blk <= blk_len - pos && slen == inner_blk - 8u) {
+                char *dst = out->textures[out->texture_count];
+                dm_read_string(blk + pos + 4u, (size_t)inner_blk - 4u, dst, 128u);
+                out->texture_crcs[out->texture_count] = twd_crc64(0ULL, dst);
+                out->texture_count++;
+                pos += (size_t)inner_blk;
+                continue;
+            }
+        }
+        /* Fallback fixed T3MeshTexture record: optional type (4B) + Handle CRC64 (8B) + optional inline blocked name */
+        size_t rem_items = (size_t)(cnt - i);
+        size_t stride = (blk_len - pos) / rem_items;
+        if (stride >= 12u) {
+            uint64_t hcrc = dm_rd_u64(blk + pos + 4u);
+            out->texture_crcs[out->texture_count] = hcrc;
+            if (stride >= 20u) {
+                uint32_t nblk = dm_rd_u32(blk + pos + 12u);
+                uint32_t nlen = dm_rd_u32(blk + pos + 16u);
+                if (nblk >= 8u && nblk <= stride - 12u && nlen == nblk - 8u) {
+                    dm_read_string(blk + pos + 16u, (size_t)nblk - 4u,
+                                   out->textures[out->texture_count], 128u);
+                }
+            }
+            out->texture_count++;
+            pos += stride;
+        } else {
+            break;
+        }
+    }
+}
+
+static void dm_parse_materials_block(const uint8_t *blk, size_t blk_len, twd_d3dmesh_t *out) {
+    if (!blk || blk_len < 4u || !out) return;
+    uint32_t cnt = dm_rd_u32(blk);
+    if (cnt == 0u || cnt > 256u) return;
+    size_t pos = 4u;
+    for (uint32_t i = 0u; i < cnt && out->material_count < TWD_D3DMESH_MAX_MATERIALS && pos < blk_len; ++i) {
+        if (pos + 8u <= blk_len) {
+            uint32_t inner_blk = dm_rd_u32(blk + pos);
+            uint32_t slen = dm_rd_u32(blk + pos + 4u);
+            if (inner_blk >= 8u && (size_t)inner_blk <= blk_len - pos && slen == inner_blk - 8u) {
+                dm_read_string(blk + pos + 4u, (size_t)inner_blk - 4u,
+                               out->materials[out->material_count], 128u);
+                out->material_count++;
+                pos += (size_t)inner_blk;
+                continue;
+            }
+        }
+        size_t rem_items = (size_t)(cnt - i);
+        size_t stride = (blk_len - pos) / rem_items;
+        if (stride >= 16u) {
+            uint32_t mblk = dm_rd_u32(blk + pos + 8u);
+            uint32_t mlen = dm_rd_u32(blk + pos + 12u);
+            if (mblk >= 8u && mblk <= stride - 8u && mlen == mblk - 8u) {
+                dm_read_string(blk + pos + 12u, (size_t)mblk - 4u,
+                               out->materials[out->material_count], 128u);
+            }
+            out->material_count++;
+            pos += stride;
+        } else {
+            break;
+        }
+    }
 }
 
 static int dm_read_gfx_buffer(const uint8_t *buf, size_t limit, size_t *cursor,
@@ -200,11 +275,17 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
         }
     }
 
-    /* Skip mTextures, mMaterials, mMaterialOverrides, mBones, mLocalTransforms, mMaterialRequirements */
+    /* Parse mTextures & mMaterials, skip mMaterialOverrides, mBones, mLocalTransforms, mMaterialRequirements */
     for (int ci = 0; ci < 6; ++ci) {
-        if (dm_read_block(buf, md_end, &mp, NULL, NULL) != 0) {
+        size_t c_s = 0u, c_e = 0u;
+        if (dm_read_block(buf, md_end, &mp, &c_s, &c_e) != 0) {
             twd_d3dmesh_free(out);
             return -1;
+        }
+        if (ci == 0) {
+            dm_parse_textures_block(buf + c_s, c_e - c_s, out);
+        } else if (ci == 1) {
+            dm_parse_materials_block(buf + c_s, c_e - c_s, out);
         }
     }
     /* Optional mVertexStreams DCArray or uint32 */
@@ -282,6 +363,41 @@ void twd_d3dmesh_gpu_free(twd_d3dmesh_gpu_t *gpu) {
     memset(gpu, 0, sizeof(*gpu));
 }
 
+static void dm_project_vertex(
+    const uint8_t *vp, uint32_t stride,
+    float cx, float cy, float scale,
+    float *out_vx, float *out_vy, float *out_vz,
+    float *out_sx, float *out_sy, float *out_u, float *out_v) {
+    float vx = dm_rd_f32(vp + 0u);
+    float vy = dm_rd_f32(vp + 4u);
+    float vz = dm_rd_f32(vp + 8u);
+    float z_div = (vz + 3.0f > 0.25f) ? (vz + 3.0f) : 0.25f;
+    float proj = scale / z_div;
+    *out_vx = vx;
+    *out_vy = vy;
+    *out_vz = vz;
+    *out_sx = cx + vx * proj;
+    *out_sy = cy - vy * proj;
+    if (stride >= 32u) {
+        *out_u = dm_rd_f32(vp + 24u);
+        *out_v = dm_rd_f32(vp + 28u);
+    } else if (stride >= 20u) {
+        *out_u = dm_rd_f32(vp + 12u);
+        *out_v = dm_rd_f32(vp + 16u);
+    } else {
+        *out_u = 0.0f;
+        *out_v = 0.0f;
+    }
+}
+
+static uint32_t dm_read_index(const twd_d3dmesh_t *mesh, uint32_t elem, uint32_t vcnt) {
+    size_t ioff = (size_t)elem * (size_t)mesh->index_stride;
+    uint32_t idx = (mesh->index_stride == 2u)
+        ? (uint32_t)dm_rd_u16(mesh->index_data + ioff)
+        : dm_rd_u32(mesh->index_data + ioff);
+    return (idx < vcnt) ? idx : 0u;
+}
+
 int twd_d3dmesh_draw_wire(
     twd_gfx_device_t *dev,
     const twd_d3dmesh_t *mesh,
@@ -297,28 +413,99 @@ int twd_d3dmesh_draw_wire(
 
     uint32_t tri_cnt = icnt / 3u;
     for (uint32_t t = 0u; t < tri_cnt; ++t) {
-        uint32_t idx[3];
-        for (int k = 0; k < 3; ++k) {
-            size_t ioff = ((size_t)t * 3u + (size_t)k) * (size_t)mesh->index_stride;
-            idx[k] = (mesh->index_stride == 2u)
-                ? (uint32_t)dm_rd_u16(mesh->index_data + ioff)
-                : dm_rd_u32(mesh->index_data + ioff);
-            if (idx[k] >= vcnt) idx[k] = 0u;
-        }
         int32_t sx[3], sy[3];
         for (int k = 0; k < 3; ++k) {
-            const uint8_t *vp = mesh->vertex_data + (size_t)idx[k] * (size_t)mesh->vertex_stride;
-            float vx = dm_rd_f32(vp + 0u);
-            float vy = dm_rd_f32(vp + 4u);
-            float vz = dm_rd_f32(vp + 8u);
-            float z_div = (vz + 3.0f > 0.25f) ? (vz + 3.0f) : 0.25f;
-            float proj = scale / z_div;
-            sx[k] = (int32_t)(cx + vx * proj + 0.5f);
-            sy[k] = (int32_t)(cy - vy * proj + 0.5f);
+            uint32_t idx = dm_read_index(mesh, t * 3u + (uint32_t)k, vcnt);
+            const uint8_t *vp = mesh->vertex_data + (size_t)idx * (size_t)mesh->vertex_stride;
+            float vx, vy, vz, fx, fy, fu, fv;
+            dm_project_vertex(vp, mesh->vertex_stride, cx, cy, scale, &vx, &vy, &vz, &fx, &fy, &fu, &fv);
+            sx[k] = (int32_t)(fx + 0.5f);
+            sy[k] = (int32_t)(fy + 0.5f);
         }
         (void)twd_gfx_draw_line(dev, sx[0], sy[0], sx[1], sy[1], rgba);
         (void)twd_gfx_draw_line(dev, sx[1], sy[1], sx[2], sy[2], rgba);
         (void)twd_gfx_draw_line(dev, sx[2], sy[2], sx[0], sy[0], rgba);
+    }
+    return 0;
+}
+
+typedef struct dm_tri_sort {
+    uint32_t tri_idx;
+    float avg_z;
+} dm_tri_sort_t;
+
+int twd_d3dmesh_draw_shaded(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *tex_or_null,
+    float cx, float cy, float scale,
+    const uint8_t rgba[4]) {
+    if (!dev || !mesh || !mesh->vertex_data || mesh->vertex_stride < 12u ||
+        !mesh->index_data || (mesh->index_stride != 2u && mesh->index_stride != 4u)) {
+        return -1;
+    }
+    uint32_t vcnt = (uint32_t)(mesh->vertex_bytes / mesh->vertex_stride);
+    uint32_t icnt = mesh->index_count;
+    if (vcnt == 0u || icnt < 3u) return -1;
+
+    static const uint8_t k_default_rgba[4] = {255u, 255u, 255u, 255u};
+    const uint8_t *base_rgba = rgba ? rgba : k_default_rgba;
+    uint32_t tri_cnt = icnt / 3u;
+
+    dm_tri_sort_t order_stack[256];
+    uint32_t sort_cnt = (tri_cnt <= 256u) ? tri_cnt : 0u;
+    if (sort_cnt > 0u) {
+        for (uint32_t t = 0u; t < sort_cnt; ++t) {
+            float zsum = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                uint32_t idx = dm_read_index(mesh, t * 3u + (uint32_t)k, vcnt);
+                zsum += dm_rd_f32(mesh->vertex_data + (size_t)idx * (size_t)mesh->vertex_stride + 8u);
+            }
+            order_stack[t].tri_idx = t;
+            order_stack[t].avg_z = zsum * (1.0f / 3.0f);
+        }
+        /* Back-to-front painter's sort (largest z first) */
+        for (uint32_t i = 1u; i < sort_cnt; ++i) {
+            dm_tri_sort_t key = order_stack[i];
+            uint32_t j = i;
+            while (j > 0u && order_stack[j - 1u].avg_z < key.avg_z) {
+                order_stack[j] = order_stack[j - 1u];
+                j--;
+            }
+            order_stack[j] = key;
+        }
+    }
+
+    for (uint32_t it = 0u; it < tri_cnt; ++it) {
+        uint32_t t = (sort_cnt > 0u) ? order_stack[it].tri_idx : it;
+        float vx[3], vy[3], vz[3];
+        twd_gfx_vertex2d_t tv[3];
+        for (int k = 0; k < 3; ++k) {
+            uint32_t idx = dm_read_index(mesh, t * 3u + (uint32_t)k, vcnt);
+            const uint8_t *vp = mesh->vertex_data + (size_t)idx * (size_t)mesh->vertex_stride;
+            dm_project_vertex(vp, mesh->vertex_stride, cx, cy, scale,
+                              &vx[k], &vy[k], &vz[k], &tv[k].x, &tv[k].y, &tv[k].u, &tv[k].v);
+            tv[k].z = vz[k];
+        }
+        float ax = vx[1] - vx[0], ay = vy[1] - vy[0], az = vz[1] - vz[0];
+        float bx = vx[2] - vx[0], by = vy[2] - vy[0], bz = vz[2] - vz[0];
+        float nx = ay * bz - az * by;
+        float ny = az * bx - ax * bz;
+        float nz = ax * by - ay * bx;
+        float nlen = sqrtf(nx * nx + ny * ny + nz * nz);
+        float shade = 1.0f;
+        if (nlen > 1e-6f) {
+            float dot_l = (nx * 0.35f + ny * 0.55f - nz * 0.75f) / nlen;
+            if (dot_l < 0.0f) dot_l = -dot_l;
+            shade = 0.55f + 0.45f * dot_l;
+        }
+        for (int k = 0; k < 3; ++k) {
+            tv[k].rgba[0] = (uint8_t)((float)base_rgba[0] * shade + 0.5f);
+            tv[k].rgba[1] = (uint8_t)((float)base_rgba[1] * shade + 0.5f);
+            tv[k].rgba[2] = (uint8_t)((float)base_rgba[2] * shade + 0.5f);
+            tv[k].rgba[3] = base_rgba[3];
+        }
+        (void)twd_gfx_draw_triangle(dev, tex_or_null, tv);
     }
     return 0;
 }

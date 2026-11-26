@@ -21,6 +21,7 @@ typedef struct twd_boot_loop_state {
     twd_scene_mgr_t *scenes;
     twd_save_mgr_t *save_mgr;
     twd_gfx_texture_t *splash_tex;
+    twd_gfx_texture_t *boot_mesh_tex;
     twd_font_t boot_font;
     int has_boot_font;
     twd_d3dmesh_t boot_mesh;
@@ -494,10 +495,31 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         }
     }
     if (st->has_boot_mesh) {
-        static const uint8_t k_wire_amber[4] = {240u, 200u, 80u, 255u};
+        static const uint8_t k_mesh_tint[4] = {245u, 225u, 190u, 255u};
         uint32_t dw = st->cfg.width ? st->cfg.width : 1280u;
         uint32_t dh = st->cfg.height ? st->cfg.height : 720u;
-        (void)twd_d3dmesh_draw_wire(gfx, &st->boot_mesh, (float)dw * 0.5f, (float)dh * 0.5f, 180.0f, k_wire_amber);
+        float cam_x = 0.0f;
+        float cam_y = 0.0f;
+        if (st->scenes) {
+            const char *pri = twd_scene_mgr_primary_name(st->scenes);
+            twd_scene_t *psc = pri ? twd_scene_mgr_find(st->scenes, pri) : NULL;
+            if (psc) {
+                for (uint32_t ai = 0u; ai < psc->agent_count; ++ai) {
+                    const char *aname = psc->agents[ai].name;
+                    if ((strncmp(aname, "Cam", 3u) == 0 || strstr(aname, "Camera") != NULL)) {
+                        cam_x = psc->agents[ai].pos[0];
+                        cam_y = psc->agents[ai].pos[1];
+                        break;
+                    }
+                }
+            }
+        }
+        const twd_gfx_texture_t *mtex = st->boot_mesh_tex ? st->boot_mesh_tex : st->splash_tex;
+        (void)twd_d3dmesh_draw_shaded(
+            gfx, &st->boot_mesh, mtex,
+            (float)dw * 0.5f - cam_x * 20.0f,
+            (float)dh * 0.5f + cam_y * 20.0f,
+            180.0f, k_mesh_tint);
     }
     if (st->has_boot_font) {
         static const uint8_t k_white[4] = {255u, 255u, 255u, 255u};
@@ -739,6 +761,23 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                         if (twd_d3dmesh_upload_gfx(st.gfx, &st.boot_mesh, &st.boot_mesh_gpu) == 0) {
                             local_stats.boot_meshes_loaded++;
                             st.has_boot_mesh = 1;
+                            if (st.boot_mesh.texture_count > 0u && st.boot_mesh.textures[0][0] != '\0') {
+                                char tname[144];
+                                size_t tn = strlen(st.boot_mesh.textures[0]);
+                                if (tn < 128u) {
+                                    memcpy(tname, st.boot_mesh.textures[0], tn + 1u);
+                                    if (tn < 6u || strcmp(tname + tn - 6u, ".d3dtx") != 0) {
+                                        memcpy(tname + tn, ".d3dtx", 7u);
+                                    }
+                                    size_t mts = 0u;
+                                    void *mtb = twd_asset_read_alloc(tname, &mts);
+                                    if (mtb && mts > 0u) {
+                                        st.boot_mesh_tex = twd_d3dtx_upload_gfx_texture(st.gfx, mtb, mts, NULL);
+                                        if (st.boot_mesh_tex) local_stats.boot_textures_loaded++;
+                                    }
+                                    if (mtb) twd_asset_free(mtb);
+                                }
+                            }
                         } else {
                             twd_d3dmesh_free(&st.boot_mesh);
                         }
@@ -790,6 +829,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         twd_d3dmesh_free(&st.boot_mesh);
     }
     if (st.has_boot_font) twd_font_free(&st.boot_font);
+    if (st.boot_mesh_tex) twd_gfx_texture_destroy(st.boot_mesh_tex);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);
     if (st.save_mgr) twd_save_mgr_destroy(st.save_mgr);
     if (st.scenes) twd_scene_mgr_destroy(st.scenes);

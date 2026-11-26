@@ -389,6 +389,17 @@ int twd_gfx_draw_sprite(
     int32_t dx, int32_t dy, int32_t dw, int32_t dh,
     const uint8_t rgba_tint[4]);
 
+typedef struct twd_gfx_vertex2d {
+    float x, y, z;
+    float u, v;
+    uint8_t rgba[4];
+} twd_gfx_vertex2d_t;
+
+int twd_gfx_draw_triangle(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3]);
+
 /* DXBC -> GLSL ES 3.00 / SPIR-V Shader Translation & Cache */
 #define TWD_SHADER_STAGE_VS 0u
 #define TWD_SHADER_STAGE_PS 1u
@@ -893,8 +904,10 @@ uint32_t twd_scene_mgr_scene_count(const twd_scene_mgr_t *mgr);
 uint32_t twd_scene_mgr_total_agent_count(const twd_scene_mgr_t *mgr);
 const char *twd_scene_mgr_primary_name(const twd_scene_mgr_t *mgr);
 
-/* Telltale D3DMesh (.d3dmesh / T3MeshData / T3GFXBuffer) parser, VB/IB GPU upload & wire draw */
-#define TWD_D3DMESH_MAX_BATCHES 64u
+/* Telltale D3DMesh (.d3dmesh / T3MeshData / T3GFXBuffer) parser, VB/IB GPU upload & wire/shaded draw */
+#define TWD_D3DMESH_MAX_BATCHES   64u
+#define TWD_D3DMESH_MAX_TEXTURES  16u
+#define TWD_D3DMESH_MAX_MATERIALS 16u
 
 typedef struct twd_d3dmesh_batch {
     uint32_t base_index;
@@ -920,6 +933,11 @@ typedef struct twd_d3dmesh {
     float pos_offset[3];
     uint32_t batch_count;
     twd_d3dmesh_batch_t *batches;
+    uint32_t texture_count;
+    char textures[TWD_D3DMESH_MAX_TEXTURES][128];
+    uint64_t texture_crcs[TWD_D3DMESH_MAX_TEXTURES];
+    uint32_t material_count;
+    char materials[TWD_D3DMESH_MAX_MATERIALS][128];
     uint8_t *vertex_data;
     size_t vertex_bytes;
     uint32_t index_count;
@@ -945,6 +963,12 @@ void twd_d3dmesh_gpu_free(twd_d3dmesh_gpu_t *gpu);
 int twd_d3dmesh_draw_wire(
     twd_gfx_device_t *dev,
     const twd_d3dmesh_t *mesh,
+    float cx, float cy, float scale,
+    const uint8_t rgba[4]);
+int twd_d3dmesh_draw_shaded(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *tex_or_null,
     float cx, float cy, float scale,
     const uint8_t rgba[4]);
 
