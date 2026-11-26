@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static void pump_android_input(void);
+
 uint64_t twd_android_run_frame_loop(
     twd_window_t *win, twd_gfx_device_t *gfx, const twd_app_callbacks_t *cb) {
     if (!cb) return 0ULL;
@@ -13,6 +15,7 @@ uint64_t twd_android_run_frame_loop(
     uint64_t last_ns = twd_time_now_ns();
     uint64_t frames = 0ULL;
     for (;;) {
+        pump_android_input();
         twd_win_event_t ev;
         while (twd_window_poll_event(&ev) > 0) {
             if (ev.kind == TWD_EVT_QUIT || ev.kind == TWD_EVT_CLOSE) {
@@ -48,11 +51,72 @@ uint64_t twd_android_run_frame_loop(
 }
 
 #ifdef __ANDROID__
+#include <android/input.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
 
+static AInputQueue *g_input_queue = NULL;
+
+static void pump_android_input(void) {
+    if (!g_input_queue) return;
+    AInputEvent *ev = NULL;
+    while (AInputQueue_getEvent(g_input_queue, &ev) >= 0) {
+        if (AInputQueue_preDispatchEvent(g_input_queue, ev)) {
+            continue;
+        }
+        int handled = 0;
+        int32_t etype = AInputEvent_getType(ev);
+        if (etype == AINPUT_EVENT_TYPE_KEY) {
+            int32_t act = AKeyEvent_getAction(ev);
+            int32_t code = AKeyEvent_getKeyCode(ev);
+            if (act == AKEY_EVENT_ACTION_DOWN || act == AKEY_EVENT_ACTION_UP) {
+                twd_android_on_key(code, act == AKEY_EVENT_ACTION_DOWN);
+                handled = 1;
+            }
+        } else if (etype == AINPUT_EVENT_TYPE_MOTION) {
+            int32_t src = AInputEvent_getSource(ev);
+            if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK) {
+                float lx = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_X, 0);
+                float ly = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_Y, 0);
+                float rx = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_Z, 0);
+                float ry = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_RZ, 0);
+                float lt = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_LTRIGGER, 0);
+                float rt = AMotionEvent_getAxisValue(ev, AMOTION_EVENT_AXIS_RTRIGGER, 0);
+                twd_gamepad_state_t cur;
+                uint16_t btns = (twd_input_get_gamepad_state(0u, &cur) == 0u) ? cur.buttons : 0u;
+                twd_android_on_motion_axis(0u, lx, ly, rx, ry, lt, rt, btns);
+                handled = 1;
+            } else {
+                int32_t raw_act = AMotionEvent_getAction(ev);
+                int32_t action = raw_act & AMOTION_EVENT_ACTION_MASK;
+                size_t ptr_idx = (size_t)((raw_act & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                                          >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+                int32_t ptr_id = AMotionEvent_getPointerId(ev, ptr_idx);
+                float x = AMotionEvent_getX(ev, ptr_idx);
+                float y = AMotionEvent_getY(ev, ptr_idx);
+                int mapped = -1;
+                if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
+                    mapped = TWD_TOUCH_DOWN;
+                } else if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_POINTER_UP) {
+                    mapped = TWD_TOUCH_UP;
+                } else if (action == AMOTION_EVENT_ACTION_MOVE) {
+                    mapped = TWD_TOUCH_MOVE;
+                } else if (action == AMOTION_EVENT_ACTION_CANCEL) {
+                    mapped = TWD_TOUCH_CANCEL;
+                }
+                if (mapped >= 0) {
+                    twd_android_on_touch(mapped, ptr_id, x, y);
+                    handled = 1;
+                }
+            }
+        }
+        AInputQueue_finishEvent(g_input_queue, ev, handled);
+    }
+}
+
 static void on_native_destroy(ANativeActivity *activity) {
     (void)activity;
+    g_input_queue = NULL;
     twd_post_quit(0);
     twd_platform_shutdown();
 }
@@ -84,6 +148,16 @@ static void on_native_window_destroyed(ANativeActivity *activity, ANativeWindow 
     twd_android_set_native_window(NULL);
 }
 
+static void on_input_queue_created(ANativeActivity *activity, AInputQueue *queue) {
+    (void)activity;
+    g_input_queue = queue;
+}
+
+static void on_input_queue_destroyed(ANativeActivity *activity, AInputQueue *queue) {
+    (void)activity;
+    if (g_input_queue == queue) g_input_queue = NULL;
+}
+
 void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void)) {
     ANativeActivity *activity = (ANativeActivity *)native_activity;
     if (!activity) return;
@@ -92,12 +166,17 @@ void twd_android_attach_native_activity(void *native_activity, void (*on_bind_ho
     activity->callbacks->onNativeWindowCreated = on_native_window_created;
     activity->callbacks->onNativeWindowResized = on_native_window_resized;
     activity->callbacks->onNativeWindowDestroyed = on_native_window_destroyed;
+    activity->callbacks->onInputQueueCreated = on_input_queue_created;
+    activity->callbacks->onInputQueueDestroyed = on_input_queue_destroyed;
     twd_android_set_asset_manager(activity->assetManager);
     twd_android_set_data_dirs(activity->internalDataPath, activity->externalDataPath);
     if (on_bind_hooks) on_bind_hooks();
     twd_platform_init();
 }
 #else
+static void pump_android_input(void) {
+}
+
 void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void)) {
     (void)native_activity;
     if (on_bind_hooks) on_bind_hooks();

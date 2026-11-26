@@ -48,6 +48,11 @@ static void test_loop_shutdown(void *user) {
     ((loop_test_ctx_t *)user)->shutdown = 1;
 }
 
+static int g_attach_hook_ran = 0;
+static void test_attach_hook_cb(void) {
+    g_attach_hook_ran = 1;
+}
+
 static int worker_thread_fn(void *arg) {
     thread_test_ctx_t *ctx = (thread_test_ctx_t *)arg;
     twd_sem_post(ctx->sem, 1);
@@ -468,6 +473,9 @@ int main(void) {
     TWD_CHECK(twd_d3d11_create_device_shim(rwin, 800u, 600u, NULL, &rd3d, NULL, NULL) == 0);
     twd_gfx_device_t *rgfx = twd_d3d11_get_gfx_device(rd3d);
     TWD_CHECK(twd_gfx_has_driver_symbols(rgfx) == 0);
+    TWD_CHECK(twd_gfx_gpu_count(rgfx) == 0u);
+    twd_android_attach_native_activity(NULL, test_attach_hook_cb);
+    TWD_CHECK(g_attach_hook_ran == 1);
     char drv_name[32];
     TWD_CHECK(twd_gfx_probe_driver(rgfx, drv_name, sizeof(drv_name)) == TWD_GFX_BACKEND_NONE);
     TWD_CHECK(strcmp(drv_name, "Headless") == 0);

@@ -452,6 +452,7 @@ void twd_window_clear_paint(twd_window_t *win);
 /* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL) */
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev);
 int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap);
+uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev);
 
 typedef struct twd_dxgi_adapter_desc1 {
     uint16_t description[128];

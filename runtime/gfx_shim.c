@@ -10,6 +10,16 @@ struct twd_gfx_device {
     void *native_window;
     void *backend_lib;
     int driver_caps;
+    uint32_t gpu_count;
+    void *vk_instance;
+    void (*vk_destroy_instance)(void *instance, const void *alloc);
+    void *egl_display;
+    void *egl_surface;
+    void *egl_context;
+    unsigned int (*egl_swap_buffers)(void *dpy, void *surf);
+    unsigned int (*egl_destroy_surface)(void *dpy, void *surf);
+    unsigned int (*egl_destroy_context)(void *dpy, void *ctx);
+    unsigned int (*egl_terminate)(void *dpy);
     uint32_t width;
     uint32_t height;
     int vsync;
@@ -73,11 +83,44 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
 #ifdef __ANDROID__
     if (dev->backend == TWD_GFX_BACKEND_VULKAN) {
         dev->backend_lib = twd_dynlib_open("libvulkan.so");
-        if (dev->backend_lib &&
-            twd_dynlib_sym(dev->backend_lib, "vkCreateInstance") &&
-            twd_dynlib_sym(dev->backend_lib, "vkEnumeratePhysicalDevices") &&
-            twd_dynlib_sym(dev->backend_lib, "vkCreateDevice")) {
+        typedef int32_t (*vk_create_inst_fn)(const void *, const void *, void **);
+        typedef int32_t (*vk_enum_gpus_fn)(void *, uint32_t *, void *);
+        typedef void (*vk_destroy_inst_fn)(void *, const void *);
+        vk_create_inst_fn vkCreateInst = dev->backend_lib
+            ? (vk_create_inst_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "vkCreateInstance")
+            : NULL;
+        vk_enum_gpus_fn vkEnumGpus = dev->backend_lib
+            ? (vk_enum_gpus_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "vkEnumeratePhysicalDevices")
+            : NULL;
+        vk_destroy_inst_fn vkDestroyInst = dev->backend_lib
+            ? (vk_destroy_inst_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "vkDestroyInstance")
+            : NULL;
+        if (vkCreateInst && vkEnumGpus && vkDestroyInst) {
             dev->driver_caps |= 1;
+            struct {
+                uint32_t sType;
+                uint32_t _pad0;
+                const void *pNext;
+                uint32_t flags;
+                uint32_t _pad1;
+                const void *pApplicationInfo;
+                uint32_t enabledLayerCount;
+                uint32_t _pad2;
+                const char *const *ppEnabledLayerNames;
+                uint32_t enabledExtensionCount;
+                uint32_t _pad3;
+                const char *const *ppEnabledExtensionNames;
+            } vk_ci;
+            memset(&vk_ci, 0, sizeof(vk_ci));
+            vk_ci.sType = 1u; /* VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO */
+            void *inst = NULL;
+            if (vkCreateInst(&vk_ci, NULL, &inst) == 0 && inst) {
+                uint32_t gpus = 0u;
+                vkEnumGpus(inst, &gpus, NULL);
+                dev->gpu_count = gpus;
+                dev->vk_instance = inst;
+                dev->vk_destroy_instance = vkDestroyInst;
+            }
         } else {
             if (dev->backend_lib) {
                 twd_dynlib_close(dev->backend_lib);
@@ -88,15 +131,63 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
     }
     if (dev->backend == TWD_GFX_BACKEND_GLES3 && !dev->backend_lib) {
         dev->backend_lib = twd_dynlib_open("libEGL.so");
-        if (dev->backend_lib &&
-            twd_dynlib_sym(dev->backend_lib, "eglGetDisplay") &&
-            twd_dynlib_sym(dev->backend_lib, "eglInitialize") &&
-            twd_dynlib_sym(dev->backend_lib, "eglSwapBuffers")) {
+        typedef void *(*egl_get_dpy_fn)(void *);
+        typedef unsigned int (*egl_init_fn)(void *, int32_t *, int32_t *);
+        typedef unsigned int (*egl_choose_fn)(void *, const int32_t *, void **, int32_t, int32_t *);
+        typedef void *(*egl_create_surf_fn)(void *, void *, void *, const int32_t *);
+        typedef void *(*egl_create_ctx_fn)(void *, void *, void *, const int32_t *);
+        typedef unsigned int (*egl_make_cur_fn)(void *, void *, void *, void *);
+        typedef unsigned int (*egl_swap_fn)(void *, void *);
+        typedef unsigned int (*egl_destroy_fn)(void *, void *);
+        typedef unsigned int (*egl_term_fn)(void *);
+        egl_get_dpy_fn getDpy = dev->backend_lib
+            ? (egl_get_dpy_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglGetDisplay")
+            : NULL;
+        egl_init_fn eglInit = dev->backend_lib
+            ? (egl_init_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglInitialize")
+            : NULL;
+        egl_swap_fn eglSwap = dev->backend_lib
+            ? (egl_swap_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglSwapBuffers")
+            : NULL;
+        if (getDpy && eglInit && eglSwap) {
             dev->driver_caps |= 2;
+            void *dpy = getDpy(NULL);
+            if (dpy && eglInit(dpy, NULL, NULL)) {
+                dev->egl_display = dpy;
+                dev->egl_swap_buffers = eglSwap;
+                dev->egl_destroy_surface = (egl_destroy_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglDestroySurface");
+                dev->egl_destroy_context = (egl_destroy_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglDestroyContext");
+                dev->egl_terminate = (egl_term_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglTerminate");
+                dev->gpu_count = 1u;
+                egl_choose_fn chooseCfg = (egl_choose_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglChooseConfig");
+                egl_create_surf_fn mkSurf = (egl_create_surf_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglCreateWindowSurface");
+                egl_create_ctx_fn mkCtx = (egl_create_ctx_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglCreateContext");
+                egl_make_cur_fn mkCur = (egl_make_cur_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglMakeCurrent");
+                if (dev->native_window && chooseCfg && mkSurf && mkCtx && mkCur) {
+                    static const int32_t cfg_attrs[] = {
+                        0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3040, 0x40, 0x3038
+                    };
+                    static const int32_t ctx_attrs[] = { 0x3098, 3, 0x3038 };
+                    void *cfg = NULL;
+                    int32_t ncfg = 0;
+                    if (chooseCfg(dpy, cfg_attrs, &cfg, 1, &ncfg) && ncfg > 0 && cfg) {
+                        void *surf = mkSurf(dpy, cfg, dev->native_window, NULL);
+                        void *ctx = mkCtx(dpy, cfg, NULL, ctx_attrs);
+                        if (surf && ctx && mkCur(dpy, surf, surf, ctx)) {
+                            dev->egl_surface = surf;
+                            dev->egl_context = ctx;
+                        }
+                    }
+                }
+            }
         }
     }
 #endif
     return dev;
+}
+
+uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev) {
+    return dev ? dev->gpu_count : 0u;
 }
 
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
@@ -120,6 +211,22 @@ int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap
 void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (!dev) return;
     if (--dev->refs > 0) return;
+    if (dev->egl_display) {
+        if (dev->egl_surface && dev->egl_destroy_surface) {
+            dev->egl_destroy_surface(dev->egl_display, dev->egl_surface);
+        }
+        if (dev->egl_context && dev->egl_destroy_context) {
+            dev->egl_destroy_context(dev->egl_display, dev->egl_context);
+        }
+        if (dev->egl_terminate) {
+            dev->egl_terminate(dev->egl_display);
+        }
+        dev->egl_display = NULL;
+    }
+    if (dev->vk_instance && dev->vk_destroy_instance) {
+        dev->vk_destroy_instance(dev->vk_instance, NULL);
+        dev->vk_instance = NULL;
+    }
     if (dev->backend_lib) {
         twd_dynlib_close(dev->backend_lib);
         dev->backend_lib = NULL;
@@ -249,6 +356,9 @@ void twd_gfx_draw_indexed(
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {
     (void)sync_interval;
     if (!dev) return -1;
+    if (dev->egl_display && dev->egl_surface && dev->egl_swap_buffers) {
+        dev->egl_swap_buffers(dev->egl_display, dev->egl_surface);
+    }
     dev->frame_index++;
     return 0;
 }
