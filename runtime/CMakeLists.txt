@@ -2,6 +2,8 @@
 add_library(twdrt STATIC
     hooks.c
     pal.c
+    gfx_shim.c
+    subsystems.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>
 )

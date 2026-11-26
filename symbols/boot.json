@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "imports_total": 556,
-  "imports_implemented": 110,
+  "imports_implemented": 186,
   "imports_bundled": 138,
   "imports_unresolved": 0,
   "milestones": [
@@ -12,12 +12,12 @@
     "Renderer (D3D11 -> Vulkan/GLES)",
     "Audio & GameLoop"
   ],
-  "milestone_index": 4,
-  "milestone": "Renderer (D3D11 -> Vulkan/GLES)",
+  "milestone_index": 5,
+  "milestone": "Audio & GameLoop",
   "first_unimplemented": {
-    "library": "d3d11.dll",
-    "symbol": "D3D11CreateDevice",
-    "caller": "Renderer init"
+    "library": "ole32.dll",
+    "symbol": "CoCreateInstance",
+    "caller": "COM/WMI/Media factory"
   },
   "outcome": "stopped_unimplemented_import"
 }

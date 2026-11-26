@@ -41,6 +41,13 @@ STARTUP_PROBE_CHAIN = [
     ('USER32.dll', 'CreateWindowExW', 'WinMain (0x14002f7b0)'),
     ('USER32.dll', 'PeekMessageW', 'WinMain message loop'),
     ('d3d11.dll', 'D3D11CreateDevice', 'Renderer init'),
+    ('MFPlat.DLL', 'MFStartup', 'Media init (0x1403d38a0)'),
+    ('ole32.dll', 'CoInitializeEx', 'Engine COM init'),
+    ('SHELL32.dll', 'SHGetFolderPathW', 'Save/Docs path init'),
+    ('DINPUT8.dll', 'DirectInput8Create', 'Input init (0x14057e2d0)'),
+    ('XINPUT9_1_0.dll', 'XInputGetState', 'Gamepad poll (0x14057bce0)'),
+    ('fmodstudio64.dll', '?initialize@System@Studio@FMOD@@QEAA?AW4FMOD_RESULT@@HIIPEAX@Z', 'FMOD Studio init'),
+    ('ole32.dll', 'CoCreateInstance', 'COM/WMI/Media factory'),
 ]
 
 
@@ -65,9 +72,18 @@ def build_boot_report(root: str) -> dict:
         and by_pair.get(('USER32.dll', 'CreateWindowExW')) == 'runtime'
         and by_pair.get(('USER32.dll', 'PeekMessageW')) == 'runtime'
     )
-    milestone_idx = 4 if (rt >= 100 and win_ready) else (
-        3 if (rt >= 60 and by_pair.get(('KERNEL32.dll', 'GetModuleFileNameW')) == 'runtime') else (
-            2 if rt >= 40 else (1 if rt > 0 else 0)
+    gfx_audio_ready = (
+        by_pair.get(('d3d11.dll', 'D3D11CreateDevice')) == 'runtime'
+        and by_pair.get(('MFPlat.DLL', 'MFStartup')) == 'runtime'
+        and by_pair.get(('DINPUT8.dll', 'DirectInput8Create')) == 'runtime'
+        and by_pair.get(('XINPUT9_1_0.dll', 'XInputGetState')) == 'runtime'
+        and bool(by_pair.get(('fmodstudio64.dll', '?initialize@System@Studio@FMOD@@QEAA?AW4FMOD_RESULT@@HIIPEAX@Z')))
+    )
+    milestone_idx = 5 if (rt >= 150 and win_ready and gfx_audio_ready) else (
+        4 if (rt >= 100 and win_ready) else (
+            3 if (rt >= 60 and by_pair.get(('KERNEL32.dll', 'GetModuleFileNameW')) == 'runtime') else (
+                2 if rt >= 40 else (1 if rt > 0 else 0)
+            )
         )
     )
     return {

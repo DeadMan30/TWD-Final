@@ -212,6 +212,184 @@ void twd_post_quit(int exit_code);
 int twd_quit_requested(int *out_code);
 int twd_system_metric(int metric_id);
 
+/* Graphics Backend PAL + D3D11 -> Vulkan / GLES Shim */
+#define TWD_GFX_BACKEND_NONE   0
+#define TWD_GFX_BACKEND_VULKAN 1
+#define TWD_GFX_BACKEND_GLES3  2
+
+#define TWD_GFX_BUF_VERTEX   1u
+#define TWD_GFX_BUF_INDEX    2u
+#define TWD_GFX_BUF_CONSTANT 3u
+
+#define TWD_D3D11_FEATURE_LEVEL_11_0 0xb000u
+
+typedef struct twd_gfx_desc {
+    void *native_window;
+    uint32_t width;
+    uint32_t height;
+    int preferred_backend;
+    int vsync;
+} twd_gfx_desc_t;
+
+typedef struct twd_gfx_stats {
+    int backend;
+    uint32_t width;
+    uint32_t height;
+    uint64_t frame_index;
+    uint64_t draw_calls;
+    uint64_t clear_calls;
+    uint32_t active_buffers;
+    uint32_t active_textures;
+    float last_clear_rgba[4];
+} twd_gfx_stats_t;
+
+typedef struct twd_gfx_device twd_gfx_device_t;
+typedef struct twd_gfx_buffer twd_gfx_buffer_t;
+typedef struct twd_gfx_texture twd_gfx_texture_t;
+
+int twd_gfx_select_backend(int preferred);
+twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc);
+void twd_gfx_device_destroy(twd_gfx_device_t *dev);
+int twd_gfx_resize(twd_gfx_device_t *dev, uint32_t width, uint32_t height);
+void twd_gfx_get_stats(const twd_gfx_device_t *dev, twd_gfx_stats_t *out);
+
+twd_gfx_buffer_t *twd_gfx_buffer_create(twd_gfx_device_t *dev, uint32_t kind, size_t byte_size, const void *initial_data);
+int twd_gfx_buffer_update(twd_gfx_buffer_t *buf, const void *data, size_t byte_size);
+void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf);
+
+twd_gfx_texture_t *twd_gfx_texture_create(twd_gfx_device_t *dev, uint32_t width, uint32_t height, uint32_t format);
+void twd_gfx_texture_destroy(twd_gfx_texture_t *tex);
+
+void twd_gfx_begin_frame(twd_gfx_device_t *dev);
+void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint8_t stencil);
+void twd_gfx_set_viewport(twd_gfx_device_t *dev, float x, float y, float w, float h, float min_d, float max_d);
+void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex);
+void twd_gfx_draw_indexed(twd_gfx_device_t *dev, uint32_t index_count, uint32_t start_index, int32_t base_vertex);
+int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval);
+
+typedef struct twd_d3d11_buffer_desc {
+    uint32_t byte_width;
+    uint32_t usage;
+    uint32_t bind_flags;
+    uint32_t cpu_access_flags;
+    uint32_t misc_flags;
+    uint32_t structure_byte_stride;
+} twd_d3d11_buffer_desc_t;
+
+typedef struct twd_d3d11_tex2d_desc {
+    uint32_t width;
+    uint32_t height;
+    uint32_t mip_levels;
+    uint32_t array_size;
+    uint32_t format;
+    uint32_t sample_count;
+    uint32_t sample_quality;
+    uint32_t usage;
+    uint32_t bind_flags;
+    uint32_t cpu_access_flags;
+    uint32_t misc_flags;
+} twd_d3d11_tex2d_desc_t;
+
+typedef struct twd_d3d11_subresource_data {
+    const void *sys_mem;
+    uint32_t sys_mem_pitch;
+    uint32_t sys_mem_slice_pitch;
+} twd_d3d11_subresource_data_t;
+
+typedef struct twd_d3d11_viewport {
+    float top_left_x;
+    float top_left_y;
+    float width;
+    float height;
+    float min_depth;
+    float max_depth;
+} twd_d3d11_viewport_t;
+
+int32_t twd_d3d11_create_device_shim(
+    twd_window_t *window,
+    uint32_t width,
+    uint32_t height,
+    uint32_t *out_feature_level,
+    void **out_device,
+    void **out_context,
+    void **out_swapchain);
+twd_gfx_device_t *twd_d3d11_get_gfx_device(void *d3d11_device);
+
+/* Input / Gamepad / Touch PAL (XInput + DInput8 + RawInput + Pointer) */
+#define TWD_MAX_GAMEPADS 4u
+#define TWD_PAD_DPAD_UP    0x0001u
+#define TWD_PAD_DPAD_DOWN  0x0002u
+#define TWD_PAD_DPAD_LEFT  0x0004u
+#define TWD_PAD_DPAD_RIGHT 0x0008u
+#define TWD_PAD_START      0x0010u
+#define TWD_PAD_BACK       0x0020u
+#define TWD_PAD_LB         0x0100u
+#define TWD_PAD_RB         0x0200u
+#define TWD_PAD_A          0x1000u
+#define TWD_PAD_B          0x2000u
+#define TWD_PAD_X          0x4000u
+#define TWD_PAD_Y          0x8000u
+
+typedef struct twd_gamepad_state {
+    uint32_t packet_number;
+    uint16_t buttons;
+    uint8_t left_trigger;
+    uint8_t right_trigger;
+    int16_t thumb_lx;
+    int16_t thumb_ly;
+    int16_t thumb_rx;
+    int16_t thumb_ry;
+} twd_gamepad_state_t;
+
+typedef struct twd_pointer_state {
+    float x;
+    float y;
+    uint32_t buttons;
+    int visible;
+} twd_pointer_state_t;
+
+void twd_input_set_gamepad_connected(uint32_t user_index, int connected);
+void twd_input_push_gamepad_state(uint32_t user_index, const twd_gamepad_state_t *state);
+uint32_t twd_input_get_gamepad_state(uint32_t user_index, twd_gamepad_state_t *out_state);
+uint32_t twd_input_set_rumble(uint32_t user_index, uint16_t left_motor, uint16_t right_motor);
+void twd_input_get_rumble(uint32_t user_index, uint16_t *out_left, uint16_t *out_right);
+uint32_t twd_input_get_gamepad_caps(uint32_t user_index, uint16_t *out_type, uint16_t *out_subtype);
+void twd_input_set_pointer(float x, float y, uint32_t buttons);
+void twd_input_get_pointer(twd_pointer_state_t *out);
+void twd_input_set_key(uint32_t vkey, int down);
+int twd_input_key_down(uint32_t vkey);
+int32_t twd_dinput8_create_stub(void **out_iface);
+
+/* Audio / Media Foundation Lifecycle PAL (MFPlat + FMOD Focus) */
+int32_t twd_media_startup(uint32_t version, uint32_t flags);
+int32_t twd_media_shutdown(void);
+int twd_media_is_initialized(void);
+void twd_audio_set_focus(int active);
+int twd_audio_has_focus(void);
+
+/* Save / AppData Directories, COM/KV Registry & Telemetry Stubs */
+#define TWD_DIR_SAVES  0
+#define TWD_DIR_CONFIG 1
+#define TWD_DIR_TEMP   2
+
+int twd_app_data_dir(int kind, char *buf, size_t cap);
+int twd_path_is_empty_dir(const char *path);
+
+int32_t twd_com_init(uint32_t coinit_flags);
+void twd_com_uninit(void);
+int twd_com_is_initialized(void);
+void *twd_com_alloc(size_t size);
+void *twd_com_realloc(void *ptr, size_t size);
+void twd_com_free(void *ptr);
+
+int twd_kv_set(const char *section, const char *key, const char *value);
+int twd_kv_get(const char *section, const char *key, char *buf, size_t cap);
+int twd_kv_delete(const char *section, const char *key);
+
+int twd_telemetry_enabled(void);
+uint32_t twd_wininet_offline_status(void);
+void twd_eventlog_stub(const char *source, const char *msg);
+
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
 const twd_hook_entry_t *twd_hook_at(uint32_t index);

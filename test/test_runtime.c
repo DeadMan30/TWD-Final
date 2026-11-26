@@ -220,6 +220,132 @@ int main(void) {
 
     twd_alert("TWD-Final", "runtime alert check");
 
+    /* Graphics PAL + D3D11 -> Vulkan/GLES COM shim */
+    TWD_CHECK(twd_gfx_select_backend(TWD_GFX_BACKEND_VULKAN) == TWD_GFX_BACKEND_VULKAN);
+    twd_window_t *gwin = twd_window_create("TWD4 Gfx", 0, 0, 1280, 720, 0u);
+    TWD_CHECK(gwin != NULL);
+    uint32_t feat = 0u;
+    void *d3d_dev = NULL;
+    void *d3d_ctx = NULL;
+    void *dxgi_sw = NULL;
+    TWD_CHECK(twd_d3d11_create_device_shim(gwin, 0u, 0u, &feat, &d3d_dev, &d3d_ctx, &dxgi_sw) == 0);
+    TWD_CHECK(feat == TWD_D3D11_FEATURE_LEVEL_11_0);
+    TWD_CHECK(d3d_dev != NULL && d3d_ctx != NULL && dxgi_sw != NULL);
+
+    void *const *dev_vtbl = *(void *const **)d3d_dev;
+    void *const *ctx_vtbl = *(void *const **)d3d_ctx;
+    void *const *sw_vtbl  = *(void *const **)dxgi_sw;
+
+    typedef uint32_t (*fn_get_fl_t)(void *);
+    typedef void (*fn_get_ctx_t)(void *, void **);
+    typedef int32_t (*fn_create_buf_t)(void *, const twd_d3d11_buffer_desc_t *,
+                                       const twd_d3d11_subresource_data_t *, void **);
+    typedef int32_t (*fn_create_tex_t)(void *, const twd_d3d11_tex2d_desc_t *,
+                                       const twd_d3d11_subresource_data_t *, void **);
+    typedef int32_t (*fn_create_rtv_t)(void *, const void *, const void *, void **);
+    typedef void (*fn_clear_rtv_t)(void *, void *, const float[4]);
+    typedef void (*fn_set_vp_t)(void *, uint32_t, const twd_d3d11_viewport_t *);
+    typedef void (*fn_draw_t)(void *, uint32_t, uint32_t);
+    typedef int32_t (*fn_present_t)(void *, uint32_t, uint32_t);
+    typedef int32_t (*fn_resize_t)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+    typedef uint32_t (*fn_release_t)(void *);
+
+    TWD_CHECK(((fn_get_fl_t)dev_vtbl[37])(d3d_dev) == TWD_D3D11_FEATURE_LEVEL_11_0);
+    void *ctx2 = NULL;
+    ((fn_get_ctx_t)dev_vtbl[40])(d3d_dev, &ctx2);
+    TWD_CHECK(ctx2 == d3d_ctx);
+    TWD_CHECK(((fn_release_t)ctx_vtbl[2])(ctx2) >= 1u);
+
+    twd_d3d11_buffer_desc_t bdesc;
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.byte_width = 256u;
+    bdesc.bind_flags = 1u;
+    void *vbuf = NULL;
+    TWD_CHECK(((fn_create_buf_t)dev_vtbl[3])(d3d_dev, &bdesc, NULL, &vbuf) == 0 && vbuf != NULL);
+
+    twd_d3d11_tex2d_desc_t tdesc;
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 64u;
+    tdesc.height = 64u;
+    tdesc.format = 28u;
+    void *tex = NULL;
+    void *rtv = NULL;
+    TWD_CHECK(((fn_create_tex_t)dev_vtbl[5])(d3d_dev, &tdesc, NULL, &tex) == 0 && tex != NULL);
+    TWD_CHECK(((fn_create_rtv_t)dev_vtbl[9])(d3d_dev, tex, NULL, &rtv) == 0 && rtv != NULL);
+
+    twd_d3d11_viewport_t vp = {0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
+    const float rgba[4] = {0.1f, 0.2f, 0.3f, 1.0f};
+    ((fn_set_vp_t)ctx_vtbl[44])(d3d_ctx, 1u, &vp);
+    ((fn_clear_rtv_t)ctx_vtbl[50])(d3d_ctx, rtv, rgba);
+    ((fn_draw_t)ctx_vtbl[13])(d3d_ctx, 3u, 0u);
+    TWD_CHECK(((fn_present_t)sw_vtbl[8])(dxgi_sw, 1u, 0u) == 0);
+    TWD_CHECK(((fn_resize_t)sw_vtbl[13])(dxgi_sw, 2u, 1920u, 1080u, 28u, 0u) == 0);
+
+    twd_gfx_stats_t gstats;
+    twd_gfx_get_stats(twd_d3d11_get_gfx_device(d3d_dev), &gstats);
+    TWD_CHECK(gstats.width == 1920u && gstats.height == 1080u);
+    TWD_CHECK(gstats.frame_index == 1u && gstats.draw_calls == 1u && gstats.clear_calls == 1u);
+    TWD_CHECK(gstats.active_buffers == 1u && gstats.active_textures == 1u);
+
+    TWD_CHECK(((fn_release_t)(*(void *const **)rtv)[2])(rtv) == 0u);
+    TWD_CHECK(((fn_release_t)(*(void *const **)tex)[2])(tex) == 0u);
+    TWD_CHECK(((fn_release_t)(*(void *const **)vbuf)[2])(vbuf) == 0u);
+    TWD_CHECK(((fn_release_t)dev_vtbl[2])(d3d_dev) == 0u);
+    TWD_CHECK(((fn_release_t)ctx_vtbl[2])(d3d_ctx) == 0u);
+    TWD_CHECK(((fn_release_t)sw_vtbl[2])(dxgi_sw) == 0u);
+    twd_window_destroy(gwin);
+
+    /* Input PAL */
+    twd_gamepad_state_t pad_in, pad_out;
+    memset(&pad_in, 0, sizeof(pad_in));
+    TWD_CHECK(twd_input_get_gamepad_state(0u, &pad_out) != 0u);
+    pad_in.buttons = TWD_PAD_A | TWD_PAD_START;
+    pad_in.thumb_lx = 12345;
+    twd_input_push_gamepad_state(0u, &pad_in);
+    TWD_CHECK(twd_input_get_gamepad_state(0u, &pad_out) == 0u);
+    TWD_CHECK(pad_out.buttons == (TWD_PAD_A | TWD_PAD_START) && pad_out.thumb_lx == 12345);
+    TWD_CHECK(twd_input_set_rumble(0u, 1000u, 2000u) == 0u);
+    uint16_t rl = 0u, rr = 0u;
+    twd_input_get_rumble(0u, &rl, &rr);
+    TWD_CHECK(rl == 1000u && rr == 2000u);
+    twd_input_set_pointer(640.0f, 360.0f, 1u);
+    twd_pointer_state_t pstate;
+    twd_input_get_pointer(&pstate);
+    TWD_CHECK(pstate.x == 640.0f && pstate.y == 360.0f && pstate.buttons == 1u);
+    twd_input_set_key(0x20u, 1);
+    TWD_CHECK(twd_input_key_down(0x20u) == 1);
+    void *di8 = NULL;
+    TWD_CHECK(twd_dinput8_create_stub(&di8) == 0 && di8 != NULL);
+    TWD_CHECK(((fn_release_t)(*(void *const **)di8)[2])(di8) == 0u);
+
+    /* Media, Audio Focus, Save Dir, COM/KV & Telemetry Stubs */
+    TWD_CHECK(twd_media_startup(0x20070u, 0u) == 0 && twd_media_is_initialized() == 1);
+    TWD_CHECK(twd_media_shutdown() == 0 && twd_media_is_initialized() == 0);
+    twd_audio_set_focus(0);
+    TWD_CHECK(twd_audio_has_focus() == 0);
+    twd_audio_set_focus(1);
+    TWD_CHECK(twd_audio_has_focus() == 1);
+
+    char appdir[512];
+    TWD_CHECK(twd_app_data_dir(TWD_DIR_SAVES, appdir, sizeof(appdir)) > 0);
+    TWD_CHECK(twd_com_init(0u) == 0 && twd_com_is_initialized() == 1);
+    void *cmem = twd_com_alloc(32u);
+    TWD_CHECK(cmem != NULL);
+    cmem = twd_com_realloc(cmem, 64u);
+    TWD_CHECK(cmem != NULL);
+    twd_com_free(cmem);
+    twd_com_uninit();
+    TWD_CHECK(twd_com_is_initialized() == 0);
+
+    TWD_CHECK(twd_kv_set("Graphics", "Fullscreen", "0") == 0);
+    char kv_val[32];
+    TWD_CHECK(twd_kv_get("Graphics", "Fullscreen", kv_val, sizeof(kv_val)) == 1 && strcmp(kv_val, "0") == 0);
+    TWD_CHECK(twd_kv_delete("Graphics", "Fullscreen") == 0);
+    TWD_CHECK(twd_kv_get("Graphics", "Fullscreen", kv_val, sizeof(kv_val)) < 0);
+    TWD_CHECK(twd_telemetry_enabled() == 0);
+    TWD_CHECK(twd_wininet_offline_status() != 0u);
+    twd_eventlog_stub("TWD4", "noop");
+
     twd_platform_shutdown();
     printf("test_runtime: ok\n");
     return 0;
