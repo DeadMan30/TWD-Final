@@ -30,6 +30,10 @@ if(NOT ANDROID)
     target_link_libraries(test_runtime PRIVATE twdrt)
     add_test(NAME runtime_abi COMMAND test_runtime)
 
+    add_executable(test_game_boot test/test_game_boot.c)
+    target_link_libraries(test_game_boot PRIVATE twdgame twdrt)
+    add_test(NAME game_boot_smoke COMMAND test_game_boot)
+
     add_executable(test_engine_xorshift128_next
                    game/engine/tests/test_engine_xorshift128_next.c)
     target_link_libraries(test_engine_xorshift128_next PRIVATE twdgame)

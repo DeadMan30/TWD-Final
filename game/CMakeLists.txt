@@ -9,6 +9,7 @@ list(FILTER TWD_GAME_SOURCES EXCLUDE REGEX "/tests/")
 add_library(twdgame SHARED
     ${TWD_GAME_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/game_init.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/boot_runtime.c
     $<$<BOOL:${ANDROID}>:${CMAKE_CURRENT_SOURCE_DIR}/android_main.c>
 )
 target_include_directories(twdgame PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

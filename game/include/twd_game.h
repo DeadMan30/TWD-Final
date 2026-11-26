@@ -121,9 +121,33 @@ typedef struct twd_lua_state {
     twd_lua_tvalue_t **base_ptr;
 } twd_lua_state_t;
 
+typedef struct twd_boot_config {
+    const char *game_dir;
+    const char *shader_cache_dir;
+    uint32_t width;
+    uint32_t height;
+    uint32_t max_frames;
+    int preferred_backend;
+} twd_boot_config_t;
+
+typedef struct twd_boot_stats {
+    uint32_t hook_count;
+    int mounted_archives;
+    int found_prefs_prop;
+    int found_boot_lua;
+    int gfx_backend;
+    int audio_caps;
+    uint32_t width;
+    uint32_t height;
+    uint64_t frames_rendered;
+    uint64_t elapsed_ns;
+    int clean_shutdown;
+} twd_boot_stats_t;
+
 TWD_EXPORT void twd_game_register_hooks(void);
 TWD_EXPORT uint32_t twd_game_hook_count(void);
 TWD_EXPORT const twd_hook_entry_t *twd_game_hook_at(uint32_t index);
+TWD_EXPORT int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats);
 TWD_EXPORT int64_t twd_engine_meta_slot_init_ptr(twd_atomic_slot_t *obj, int64_t val);
 TWD_EXPORT twd_meta_member_t *twd_engine_meta_member_find_str(const twd_meta_class_desc_t *desc,
                                                               const twd_string_t *name);
