@@ -7,4 +7,5 @@ first,last,library,notes
 0x1409edce0,0x140ae2fff,openssl,OpenSSL static library (openssl-cmake)
 0x140ae3000,0x140b71f70,bullet,Bullet Physics static library (btCollisionWorld / btRigidBody RTTI)
 0x140b71f80,0x140bb8b10,enlighten,Geomerics Enlighten SDK (geomerics.log + Geo/Enlighten RTTI)
-0x140bbf7b0,0x140c6d7dc,crt,MSVC C/C++ Runtime and static initializers
+0x140bb8b20,0x140bbf7a0,breakpad,Google Breakpad crash reporting SDK (MiniDumpWriteDump + HTTP upload)
+0x140bbf7b0,0x140c6d850,crt,MSVC C/C++ Runtime and static initializers

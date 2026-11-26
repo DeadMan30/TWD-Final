@@ -12,8 +12,8 @@
 
 TWD-Final rebuilds *The Walking Dead: The Final Season* (`WalkingDead4.exe`, PC x86-64) so the
 game runs natively on Android, prioritizing the critical boot, rendering, input, audio, and game
-loop paths needed to reach playable gameplay. Third-party open-source middleware (`openssl`,
-`bullet`, `curl`, `jsoncpp`, `zlib`, `enlighten`, MSVC `crt`, and internal Lua runtime internals)
+loop paths needed to reach playable gameplay. Third-party middleware (`openssl`, `bullet`, `curl`,
+`jsoncpp`, `zlib`, `enlighten`, `breakpad`, MSVC `crt`, and internal Lua runtime internals)
 is excluded from the decompilation denominator and swapped with native/upstream libraries or shims
 in [runtime/](runtime/) rather than manually decompiled.
 

@@ -2,6 +2,7 @@ library,group,group_short,name,short
 engine,Telltale Tool engine and game code,Engine and game,Telltale Tool engine and game,Engine and game
 bullet,Middleware and third-party libraries,Middleware,Bullet Physics,Bullet
 enlighten,Middleware and third-party libraries,Middleware,Geomerics Enlighten SDK,Enlighten
+breakpad,Middleware and third-party libraries,Middleware,Google Breakpad,Breakpad
 openssl,Middleware and third-party libraries,Middleware,OpenSSL (crypto and TLS),OpenSSL
 curl,Middleware and third-party libraries,Middleware,libcurl,libcurl
 zlib,Middleware and third-party libraries,Middleware,zlib compression,zlib

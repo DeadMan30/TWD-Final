@@ -28,7 +28,7 @@ DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMPLEMENTED = ('replaced', 'edge-verified', 'verified')
 EDGE = ('edge-verified', 'verified')
 BLOCKS = ('progress', 'target')
-EXCLUDED_LIBRARIES = frozenset({'bullet', 'crt', 'curl', 'enlighten', 'jsoncpp', 'openssl', 'zlib'})
+EXCLUDED_LIBRARIES = frozenset({'breakpad', 'bullet', 'crt', 'curl', 'enlighten', 'jsoncpp', 'openssl', 'zlib'})
 
 
 def sha256_file(path: str) -> str | None:
@@ -81,7 +81,10 @@ def compute(root: str) -> dict:
 
     funcs = read_csv(os.path.join(root, 'symbols', 'functions.csv'))
     members = fam.function_rows(root)
-    funcs = funcs + members
+    funcs = [
+        r for r in (funcs + members)
+        if library_of(starts, runs, int(r['address'], 16)) not in EXCLUDED_LIBRARIES
+    ]
     bin_total_f = len(export)
     bin_total_b = sum(int(r['size']) for r in export)
     total_f = len(in_scope_export)

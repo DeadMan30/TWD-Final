@@ -1091,4 +1091,5 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x140b986d0,0x140b998b0,13,4628,enlighten,,extent,medium
 0x140b99960,0x140b99960,1,329,enlighten,enlightenapi/libsrc/geocore/trigroup.cpp,direct,high
 0x140b99ab0,0x140bb89f0,167,122787,enlighten,,extent,medium
-0x140bbf7b8,0x140c6d7dc,4405,437757,crt,,extent,medium
+0x140bb8b20,0x140bbf70c,113,25473,breakpad,,extent,medium
+0x140bbf7b8,0x140c6d840,4406,437771,crt,,extent,medium
