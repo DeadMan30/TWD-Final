@@ -32,7 +32,7 @@
 #define TWD_TTARCH2_MAX_CHUNK_SZ 0x100000u
 #define TWD_TTARCH2_MAX_ENTRIES 250000u
 #define TWD_TTARCH2_MAX_NAMES   (64u * 1024u * 1024u)
-#define TWD_TTARCH2_MOUNT_MAX   64u
+#define TWD_TTARCH2_MOUNT_MAX   256u
 
 struct twd_ttarch2_record {
     uint64_t name_crc64;
@@ -218,9 +218,19 @@ static int ensure_chunk(twd_ttarch2_archive_t *arch, uint32_t chunk_idx) {
         }
     }
 
-    int64_t dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)target_raw);
-    if (dec < 0 && is_last && target_raw != arch->hdr.chunk_size) {
-        dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)arch->hdr.chunk_size);
+    int64_t dec = -1;
+    if (arch->hdr.compress_mode == 0u) {
+        size_t inf_out = 0u;
+        if (twd_inflate_raw(comp, comp_len, arch->chunk_raw, (size_t)arch->hdr.chunk_size, &inf_out) == 0 &&
+            inf_out > 0u) {
+            dec = (int64_t)inf_out;
+        }
+    }
+    if (dec < 0) {
+        dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)target_raw);
+        if (dec < 0 && is_last && target_raw != arch->hdr.chunk_size) {
+            dec = twd_oodle_decompress(comp, comp_len, arch->chunk_raw, (size_t)arch->hdr.chunk_size);
+        }
     }
     free(comp);
     if (dec <= 0 || dec > (int64_t)arch->hdr.chunk_size) return -1;
@@ -776,6 +786,8 @@ static propset_wire_t propset_classify_wire(uint64_t type_crc) {
     case 0xcd9c6e605f5af4b4ULL: return PW_STR;    /* String */
     case 0x004f023463d89fb0ULL: /* Symbol */
     case 0x387e6b9ca558ac8dULL: /* Handle<PropertySet> */
+    case 0x73e09e0f84717f0aULL: /* Handle<D3DMesh> */
+    case 0x52a09151f1c3f2c7ULL: /* Handle<T3Texture> */
         return PW_SYMBOL;
     case 0x7bbca244e61f1a07ULL: return PW_VEC2;   /* Vector2 */
     case 0x394c43af4ff52c94ULL: return PW_VEC3;   /* Vector3 */
@@ -945,10 +957,20 @@ int twd_propset_parse_stream(const void *data, size_t len, size_t *out_consumed,
     uint32_t prop_flags = rd_u32(b + pos + 4u);
     uint32_t body_size = rd_u32(b + pos + 8u);
     pos += 12u;
-    if (prop_ver < 0 || prop_ver > 16 || (size_t)body_size > end_off - pos) {
+    if (prop_ver < 0 || prop_ver > 16) {
         return -1;
     }
-    size_t block_end = pos + (size_t)body_size;
+    size_t body_hdr = pos - 4u;
+    size_t block_end = 0u;
+    if (body_size >= 4u && (size_t)body_size == end_off - body_hdr) {
+        block_end = body_hdr + (size_t)body_size;
+    } else if ((size_t)body_size <= end_off - pos) {
+        block_end = pos + (size_t)body_size;
+    } else if (body_size >= 4u && (size_t)body_size <= end_off - body_hdr) {
+        block_end = body_hdr + (size_t)body_size;
+    } else {
+        return -1;
+    }
 
     out->prop_version = prop_ver;
     out->prop_flags = prop_flags;

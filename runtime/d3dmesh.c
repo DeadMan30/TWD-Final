@@ -200,28 +200,56 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
     out->lod_param_crc = dm_rd_u64(buf + pos);
     pos += 8u;
 
-    /* Optional deprecated count + block (>= v19) */
+    /* Optional deprecated count + block (>= v19) & CP block (>= v52) */
+    size_t saved_after_header = pos;
+    int sequential_ok = 1;
     if (out->version >= 19) {
-        if (pos + 4u > limit) return -1;
-        uint32_t dep_cnt = dm_rd_u32(buf + pos);
-        pos += 4u;
-        if (dep_cnt > 0u) {
-            if (dm_read_block(buf, limit, &pos, NULL, NULL) != 0) return -1;
+        if (pos + 4u > limit) {
+            sequential_ok = 0;
+        } else {
+            uint32_t dep_cnt = dm_rd_u32(buf + pos);
+            pos += 4u;
+            if (dep_cnt > 0u) {
+                if (dm_read_block(buf, limit, &pos, NULL, NULL) != 0) {
+                    sequential_ok = 0;
+                }
+            }
+        }
+    }
+    if (sequential_ok && out->version >= 52) {
+        if (pos + 1u > limit) {
+            sequential_ok = 0;
+        } else {
+            uint8_t has_cp = buf[pos++];
+            if (has_cp) {
+                if (dm_read_block(buf, limit, &pos, NULL, NULL) != 0) {
+                    sequential_ok = 0;
+                }
+            }
         }
     }
 
-    /* Optional CP mesh data block (>= v52) */
-    if (out->version >= 52) {
-        if (pos + 1u > limit) return -1;
-        uint8_t has_cp = buf[pos++];
-        if (has_cp) {
-            if (dm_read_block(buf, limit, &pos, NULL, NULL) != 0) return -1;
-        }
-    }
-
-    /* mMeshData MetaBlock */
+    /* mMeshData MetaBlock (fall back to locating exact-to-end mMeshData on retail meshes with internal resources) */
     size_t md_start = 0u, md_end = 0u;
-    if (dm_read_block(buf, limit, &pos, &md_start, &md_end) != 0) return -1;
+    if (!sequential_ok || dm_read_block(buf, limit, &pos, &md_start, &md_end) != 0) {
+        int found_md = 0;
+        if (saved_after_header < limit && limit - saved_after_header >= 32u) {
+            for (size_t k = saved_after_header; k + 16u <= limit; ++k) {
+                uint32_t cand_sz = dm_rd_u32(buf + k);
+                if (cand_sz >= 32u && (size_t)cand_sz == limit - k) {
+                    uint32_t inner_sz = dm_rd_u32(buf + k + 4u);
+                    uint32_t inner_cnt = dm_rd_u32(buf + k + 8u);
+                    if (inner_sz >= 8u && inner_sz <= cand_sz - 4u && inner_cnt <= 32u) {
+                        md_start = k + 4u;
+                        md_end = k + (size_t)cand_sz;
+                        found_md = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!found_md) return -1;
+    }
     size_t mp = md_start;
 
     /* mLODs (blocked DCArray<T3MeshLOD>) */
@@ -244,11 +272,20 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
                     if (!out->batches) return -1;
                     for (uint32_t bi = 0u; bi < bc; ++bi) {
                         const uint8_t *bp = buf + b0_s + 4u + (size_t)bi * stride;
-                        out->batches[bi].base_index = dm_rd_u32(bp + 0u);
-                        out->batches[bi].start_index = dm_rd_u32(bp + 4u);
-                        out->batches[bi].num_primitives = dm_rd_u32(bp + 8u);
-                        out->batches[bi].num_indices = dm_rd_u32(bp + 12u);
-                        out->batches[bi].material_index = (stride >= 24u) ? dm_rd_i32(bp + 16u) : 0;
+                        if (stride >= 76u) {
+                            /* Retail v55 T3MeshBatch: bbox(24B) + bsphere(20B) + min/maxVert(8B) + base/start/prims/indices */
+                            out->batches[bi].base_index = dm_rd_u32(bp + 52u);
+                            out->batches[bi].start_index = dm_rd_u32(bp + 56u);
+                            out->batches[bi].num_primitives = dm_rd_u32(bp + 60u);
+                            out->batches[bi].num_indices = dm_rd_u32(bp + 64u);
+                            out->batches[bi].material_index = dm_rd_i32(bp + 72u);
+                        } else {
+                            out->batches[bi].base_index = dm_rd_u32(bp + 0u);
+                            out->batches[bi].start_index = dm_rd_u32(bp + 4u);
+                            out->batches[bi].num_primitives = dm_rd_u32(bp + 8u);
+                            out->batches[bi].num_indices = dm_rd_u32(bp + 12u);
+                            out->batches[bi].material_index = (stride >= 24u) ? dm_rd_i32(bp + 16u) : 0;
+                        }
                     }
                     out->batch_count = bc;
                 }
@@ -295,6 +332,119 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
             mp += (size_t)probe;
         } else {
             mp += 4u;
+        }
+    }
+
+    /* Retail MSV6 T3MeshData stores bbox/bsphere/posScale/posOffset + async T3GFXBuffer tail */
+    if (ms.async_size > 0u &&
+        ms.payload_offset + ms.default_size + ms.debug_size + ms.async_size <= size) {
+        if (mp + 84u <= md_end) {
+            float sx = dm_rd_f32(buf + mp + 48u);
+            float sy = dm_rd_f32(buf + mp + 52u);
+            float ox = dm_rd_f32(buf + mp + 72u);
+            float oy = dm_rd_f32(buf + mp + 76u);
+            if (fabsf(sx) > 1e-6f || fabsf(sy) > 1e-6f || fabsf(ox) > 1e-6f || fabsf(oy) > 1e-6f) {
+                for (int k = 0; k < 6; ++k) out->bbox_minmax[k] = dm_rd_f32(buf + mp + (size_t)k * 4u);
+                for (int k = 0; k < 3; ++k) out->pos_scale[k] = dm_rd_f32(buf + mp + 48u + (size_t)k * 4u);
+                for (int k = 0; k < 3; ++k) out->pos_offset[k] = dm_rd_f32(buf + mp + 72u + (size_t)k * 4u);
+            }
+        }
+        const uint8_t *async_ptr = buf + ms.payload_offset + (size_t)ms.default_size + (size_t)ms.debug_size;
+        for (uint32_t nb = 16u; nb >= 2u; --nb) {
+            size_t tbl_bytes = (size_t)nb * 20u;
+            if (tbl_bytes > limit - md_start) continue;
+            const uint8_t *tbl = buf + limit - tbl_bytes;
+            size_t sum_async = 0u;
+            int table_ok = 1;
+            int ib_idx = -1, vb_pos_idx = -1, vb_uv_idx = -1;
+            size_t offsets[16];
+            for (uint32_t bi = 0u; bi < nb; ++bi) {
+                const uint8_t *e = tbl + (size_t)bi * 20u;
+                uint32_t endian = dm_rd_u32(e + 0u);
+                uint32_t fmt = dm_rd_u32(e + 4u);
+                uint32_t usage = dm_rd_u32(e + 8u);
+                uint32_t cnt = dm_rd_u32(e + 12u);
+                uint32_t stride = dm_rd_u32(e + 16u);
+                if (endian > 4u || cnt == 0u || cnt > 2000000u || stride == 0u || stride > 256u) {
+                    table_ok = 0;
+                    break;
+                }
+                offsets[bi] = sum_async;
+                if ((size_t)cnt > ((size_t)ms.async_size - sum_async) / (size_t)stride) {
+                    table_ok = 0;
+                    break;
+                }
+                sum_async += (size_t)cnt * (size_t)stride;
+                if ((stride == 2u || stride == 4u) && (fmt == 16u || fmt == 17u || usage == 2u || usage == 10u)) {
+                    if (ib_idx < 0 || usage == 2u) ib_idx = (int)bi;
+                } else if (ib_idx >= 0 && vb_pos_idx < 0 && stride >= 8u && fmt == 26u) {
+                    vb_pos_idx = (int)bi;
+                } else if (ib_idx >= 0 && vb_uv_idx < 0 && stride == 4u && fmt == 24u) {
+                    vb_uv_idx = (int)bi;
+                }
+            }
+            if (table_ok && sum_async == (size_t)ms.async_size && ib_idx >= 0 && vb_pos_idx >= 0) {
+                const uint8_t *ie = tbl + (size_t)ib_idx * 20u;
+                uint32_t icnt = dm_rd_u32(ie + 12u);
+                uint32_t istr = dm_rd_u32(ie + 16u);
+                size_t ibytes = (size_t)icnt * (size_t)istr;
+                out->index_data = (uint8_t *)malloc(ibytes);
+                if (!out->index_data) { twd_d3dmesh_free(out); return -1; }
+                memcpy(out->index_data, async_ptr + offsets[ib_idx], ibytes);
+                out->index_count = icnt;
+                out->index_stride = istr;
+                out->index_bytes = ibytes;
+
+                const uint8_t *ve = tbl + (size_t)vb_pos_idx * 20u;
+                uint32_t vcnt = dm_rd_u32(ve + 12u);
+                uint32_t vstr = dm_rd_u32(ve + 16u);
+                const uint8_t *vsrc = async_ptr + offsets[vb_pos_idx];
+                const uint8_t *uvsrc = NULL;
+                if (vb_uv_idx >= 0 && dm_rd_u32(tbl + (size_t)vb_uv_idx * 20u + 12u) == vcnt) {
+                    uvsrc = async_ptr + offsets[vb_uv_idx];
+                }
+                uint32_t out_stride = uvsrc ? 20u : 12u;
+                size_t vbytes = (size_t)vcnt * (size_t)out_stride;
+                out->vertex_data = (uint8_t *)calloc(1u, vbytes);
+                if (!out->vertex_data) { twd_d3dmesh_free(out); return -1; }
+                float ps[3];
+                float po[3];
+                ps[0] = out->pos_scale[0]; ps[1] = out->pos_scale[1]; ps[2] = out->pos_scale[2];
+                po[0] = out->pos_offset[0]; po[1] = out->pos_offset[1]; po[2] = out->pos_offset[2];
+                if (fabsf(ps[0]) < 1e-6f && fabsf(ps[1]) < 1e-6f && fabsf(ps[2]) < 1e-6f) {
+                    ps[0] = 1.0f; ps[1] = 1.0f; ps[2] = 1.0f;
+                }
+                for (uint32_t vi = 0u; vi < vcnt; ++vi) {
+                    const uint8_t *vp = vsrc + (size_t)vi * (size_t)vstr;
+                    uint8_t *dst = out->vertex_data + (size_t)vi * (size_t)out_stride;
+                    for (int k = 0; k < 3; ++k) {
+                        float fv = ((float)dm_rd_u16(vp + (size_t)k * 2u) / 65535.0f) * ps[k] + po[k];
+                        uint32_t bits = 0u;
+                        memcpy(&bits, &fv, sizeof(bits));
+                        dst[k * 4 + 0] = (uint8_t)(bits & 0xffu);
+                        dst[k * 4 + 1] = (uint8_t)((bits >> 8u) & 0xffu);
+                        dst[k * 4 + 2] = (uint8_t)((bits >> 16u) & 0xffu);
+                        dst[k * 4 + 3] = (uint8_t)((bits >> 24u) & 0xffu);
+                    }
+                    if (uvsrc) {
+                        const uint8_t *up = uvsrc + (size_t)vi * 4u;
+                        for (int k = 0; k < 2; ++k) {
+                            float uvf = (float)dm_rd_u16(up + (size_t)k * 2u) / 65535.0f;
+                            uint32_t bits = 0u;
+                            memcpy(&bits, &uvf, sizeof(bits));
+                            dst[12 + k * 4 + 0] = (uint8_t)(bits & 0xffu);
+                            dst[12 + k * 4 + 1] = (uint8_t)((bits >> 8u) & 0xffu);
+                            dst[12 + k * 4 + 2] = (uint8_t)((bits >> 16u) & 0xffu);
+                            dst[12 + k * 4 + 3] = (uint8_t)((bits >> 24u) & 0xffu);
+                        }
+                    }
+                }
+                out->ib_or_vb_verts = vcnt;
+                out->vertex_count = vcnt;
+                out->vertex_stride = out_stride;
+                out->vertex_bytes = vbytes;
+                return 0;
+            }
         }
     }
 

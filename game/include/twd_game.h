@@ -125,6 +125,7 @@ typedef struct twd_boot_config {
     const char *game_dir;
     const char *shader_cache_dir;
     const char *save_dir;
+    const char *archive_key;
     uint32_t width;
     uint32_t height;
     uint32_t max_frames;

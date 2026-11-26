@@ -13,6 +13,8 @@ add_library(twdrt STATIC
     scene.c
     d3dmesh.c
     savegame.c
+    blowfish.c
+    inflate.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>

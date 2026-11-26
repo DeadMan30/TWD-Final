@@ -101,7 +101,7 @@ int twd_scene_parse_memory(const void *data, size_t size, twd_scene_t *out) {
 
     /* mbHidden (bool) */
     if (pos + 1u > limit) return -1;
-    out->hidden = buf[pos++] ? 1 : 0;
+    out->hidden = (buf[pos++] & 1u) ? 1 : 0;
     out->active = 1;
 
     /* mName (blocked String) */

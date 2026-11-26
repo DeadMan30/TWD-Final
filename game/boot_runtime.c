@@ -574,6 +574,15 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     local_stats.audio_caps = twd_audio_init(NULL, NULL);
 
     /* 2. Mount game .ttarch2 archives & check critical boot assets */
+    int installed_key = 0;
+    if (def_cfg.archive_key && def_cfg.archive_key[0] != '\0') {
+        if (twd_crypto_install_archive_key(def_cfg.archive_key, strlen(def_cfg.archive_key)) == 0) {
+            installed_key = 1;
+        }
+    } else if (twd_crypto_install_key_from_env() == 0) {
+        installed_key = 1;
+    }
+
     char dir_buf[512];
     const char *game_dir = def_cfg.game_dir;
     if (!game_dir || game_dir[0] == '\0') {
@@ -615,14 +624,15 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         boot_load_prefs_prop("prefs.prop", &local_stats, &w, &h) ||
         boot_load_prefs_prop("config/prefs.prop", &local_stats, &w, &h);
     {
+        static const char *const k_boot_scripts[] = {
+            "_boot.lua", "scripts/_boot.lua", "Boot.lua", "_resdesc_50_Boot.lua"
+        };
         const char *boot_path = NULL;
         size_t boot_sz = 0u;
-        void *boot_buf = twd_asset_read_alloc("_boot.lua", &boot_sz);
-        if (boot_buf) {
-            boot_path = "_boot.lua";
-        } else {
-            boot_buf = twd_asset_read_alloc("scripts/_boot.lua", &boot_sz);
-            if (boot_buf) boot_path = "scripts/_boot.lua";
+        void *boot_buf = NULL;
+        for (size_t bi = 0u; bi < sizeof(k_boot_scripts) / sizeof(k_boot_scripts[0]) && !boot_buf; ++bi) {
+            boot_buf = twd_asset_read_alloc(k_boot_scripts[bi], &boot_sz);
+            if (boot_buf) boot_path = k_boot_scripts[bi];
         }
         if (boot_buf && boot_sz > 0u) {
             local_stats.found_boot_lua = 1;
@@ -661,6 +671,14 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         if (boot_buf) twd_asset_free(boot_buf);
     }
     if (st.scenes) {
+        if (twd_scene_mgr_scene_count(st.scenes) == 0u) {
+            size_t usz = 0u;
+            void *ubuf = twd_asset_read_alloc("ui_boot.scene", &usz);
+            if (ubuf) {
+                twd_asset_free(ubuf);
+                (void)twd_scene_mgr_open(st.scenes, "ui_boot.scene");
+            }
+        }
         local_stats.boot_scenes_active = twd_scene_mgr_scene_count(st.scenes);
         local_stats.boot_scene_agents = twd_scene_mgr_total_agent_count(st.scenes);
         const char *primary = twd_scene_mgr_primary_name(st.scenes);
@@ -709,7 +727,9 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         local_stats.height = gstats.height ? gstats.height : h;
         (void)twd_gfx_get_shader_cache(st.gfx);
         {
-            static const char *const k_boot_tex[] = {"splash.d3dtx", "ui_boot.d3dtx"};
+            static const char *const k_boot_tex[] = {
+                "splash.d3dtx", "ui_boot.d3dtx", "ui_boot_titleBackground.d3dtx", "ui_boot_title.d3dtx"
+            };
             for (size_t ti = 0u; ti < sizeof(k_boot_tex) / sizeof(k_boot_tex[0]); ++ti) {
                 size_t tsz = 0u;
                 void *tbuf = twd_asset_read_alloc(k_boot_tex[ti], &tsz);
@@ -739,7 +759,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
             }
             if (fbuf) twd_asset_free(fbuf);
 
-            const char *mesh_cand[3] = {NULL, "ui_boot.d3dmesh", NULL};
+            const char *mesh_cand[4] = {NULL, "ui_boot.d3dmesh", "ui_boot_logoTTG.d3dmesh", "ui_boot_logoSkybound.d3dmesh"};
             if (st.scenes) {
                 const char *pri = twd_scene_mgr_primary_name(st.scenes);
                 twd_scene_t *psc = pri ? twd_scene_mgr_find(st.scenes, pri) : NULL;
@@ -752,7 +772,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                     }
                 }
             }
-            for (size_t mi = 0u; mi < 2u && !st.has_boot_mesh; ++mi) {
+            for (size_t mi = 0u; mi < 4u && !st.has_boot_mesh; ++mi) {
                 if (!mesh_cand[mi]) continue;
                 size_t msz = 0u;
                 void *mbuf = twd_asset_read_alloc(mesh_cand[mi], &msz);
@@ -844,6 +864,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     }
     if (st.win) twd_window_destroy(st.win);
     twd_asset_unmount_all_ttarch2();
+    if (installed_key) twd_crypto_clear_archive_key();
     (void)twd_media_shutdown();
     twd_audio_shutdown();
     twd_oodle_shutdown();

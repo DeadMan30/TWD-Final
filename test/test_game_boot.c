@@ -336,6 +336,82 @@ int main(void) {
     if (twd_kv_get("lua.resource_set", "Menu", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 15;
     if (twd_kv_get("lua.render", "texture_quality", kv, sizeof(kv)) <= 0 || strcmp(kv, "2") != 0) return 16;
 
+    /* Second boot pass: synthetic ECTT encrypted archive + LEo Boot.lua + out-of-band cfg.archive_key */
+    {
+        static const char k_boot_key[] = "TWD-BOOT-KEY-SYNTHETIC";
+        twd_blowfish_t bbf;
+        if (twd_blowfish_init(&bbf, k_boot_key, strlen(k_boot_key)) != 0) return 18;
+
+        static const char k_leo_txt[] = "SceneOpen(\"Boot.scene\") ";
+        uint8_t b_leo[4 + 24];
+        memcpy(b_leo, "\x1bLEo", 4u);
+        memcpy(b_leo + 4u, k_leo_txt, 24u);
+        if (twd_blowfish_encrypt_v7(&bbf, b_leo + 4u, 24u) != 0) return 19;
+
+        enum { BE_NAMES = 12, BE_TOC = 12 + 28, BE_RAW = BE_TOC + BE_NAMES + sizeof(b_leo) };
+        uint8_t b_chunk[5 + BE_RAW + 8];
+        memset(b_chunk, 0, sizeof(b_chunk));
+        b_chunk[0] = 0x01u;
+        wr_u16(b_chunk + 1u, (uint16_t)BE_RAW);
+        wr_u16(b_chunk + 3u, (uint16_t)(~(uint16_t)BE_RAW));
+        uint8_t *br = b_chunk + 5u;
+        memcpy(br + 0u, "4ATT", 4u);
+        wr_u32(br + 4u, (uint32_t)BE_NAMES);
+        wr_u32(br + 8u, 1u);
+        wr_u64(br + 12u, twd_crc64(0ULL, "Boot.lua"));
+        wr_u64(br + 20u, 0ULL);
+        wr_u32(br + 28u, (uint32_t)sizeof(b_leo));
+        wr_u16(br + 38u, 0u);
+        memcpy(br + BE_TOC, "Boot.lua", 9u);
+        memcpy(br + BE_TOC + BE_NAMES, b_leo, sizeof(b_leo));
+        size_t b_clen = ((5u + BE_RAW + 7u) / 8u) * 8u;
+        if (twd_blowfish_encrypt_v7(&bbf, b_chunk, b_clen) != 0) return 20;
+
+        uint8_t b_ectt[28 + sizeof(b_chunk)];
+        memset(b_ectt, 0, sizeof(b_ectt));
+        memcpy(b_ectt, "ECTT", 4u);
+        wr_u32(b_ectt + 4u, 0x10000u);
+        wr_u32(b_ectt + 8u, 1u);
+        wr_u64(b_ectt + 12u, 28ULL);
+        wr_u64(b_ectt + 20u, 28ULL + (uint64_t)b_clen);
+        memcpy(b_ectt + 28u, b_chunk, b_clen);
+
+        if (twd_mkdir("twd_boot_ectt_dir") != 0) return 21;
+        if (twd_mkdir("twd_boot_ectt_dir/Archives") != 0) return 21;
+        twd_file_t bf;
+        if (twd_file_open("twd_boot_ectt_dir/Archives/boot_enc.ttarch2",
+                          TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &bf) != 0) {
+            return 22;
+        }
+        if (twd_file_write(&bf, b_ectt, 28u + b_clen) != (int64_t)(28u + b_clen)) return 23;
+        if (twd_file_close(&bf) != 0) return 24;
+
+        twd_boot_config_t ecfg;
+        memset(&ecfg, 0, sizeof(ecfg));
+        ecfg.game_dir = "twd_boot_ectt_dir";
+        ecfg.save_dir = "twd_boot_ectt_save_dir";
+        ecfg.archive_key = k_boot_key;
+        ecfg.width = 640u;
+        ecfg.height = 480u;
+        ecfg.max_frames = 2u;
+        ecfg.preferred_backend = -1;
+
+        twd_boot_stats_t estats;
+        int erc = twd_game_boot_run(&ecfg, &estats);
+        (void)twd_file_delete("twd_boot_ectt_dir/Archives/boot_enc.ttarch2");
+        (void)twd_rmdir("twd_boot_ectt_dir/Archives");
+        (void)twd_rmdir("twd_boot_ectt_dir");
+        (void)twd_rmdir("twd_boot_ectt_save_dir");
+
+        if (erc != 0) return 25;
+        if (estats.mounted_archives != 1 || estats.found_boot_lua != 1 ||
+            estats.boot_script_ran != 1 || estats.boot_scripts_executed != 1u ||
+            strcmp(estats.active_scene, "Boot.scene") != 0 ||
+            estats.frames_rendered != 2ULL || estats.clean_shutdown != 1) {
+            return 26;
+        }
+    }
+
     printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, lua=%u, tex=%u, res=%ux%u, frames=%llu)\n",
            stats.hook_count, stats.mounted_archives, stats.prefs_property_count,
            stats.boot_scripts_executed, stats.boot_textures_loaded, stats.width, stats.height,

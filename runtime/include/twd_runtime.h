@@ -1029,6 +1029,22 @@ int twd_lua_vm_exec_vfs(twd_lua_vm_t *vm, const char *rel_path);
 uint32_t twd_lua_vm_executed_count(const twd_lua_vm_t *vm);
 twd_lua_chunk_kind_t twd_lua_vm_last_chunk_kind(const twd_lua_vm_t *vm);
 
+/* Telltale Modified Blowfish v7 & RFC 1951 raw DEFLATE (out-of-band key only) */
+typedef struct twd_blowfish {
+    uint32_t p[18];
+    uint32_t s[4][256];
+    int initialized;
+} twd_blowfish_t;
+
+int twd_blowfish_init(twd_blowfish_t *ctx, const void *key, size_t key_len);
+int twd_blowfish_encrypt_v7(const twd_blowfish_t *ctx, void *buf, size_t len);
+int twd_blowfish_decrypt_v7(const twd_blowfish_t *ctx, void *buf, size_t len);
+int twd_crypto_install_archive_key(const void *key, size_t key_len);
+int twd_crypto_install_key_from_env(void);
+void twd_crypto_clear_archive_key(void);
+int twd_inflate_raw(
+    const void *src, size_t src_len, void *dst, size_t dst_cap, size_t *out_written);
+
 /* Audio & FMOD Studio / Core PAL (libfmodstudio/libfmod bridge + software PCM16 mixer) */
 #define TWD_AUDIO_CAP_FMOD_STUDIO 1
 #define TWD_AUDIO_CAP_FMOD_CORE   2

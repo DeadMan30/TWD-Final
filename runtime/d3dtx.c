@@ -114,10 +114,16 @@ int twd_d3dtx_parse_memory(const void *data, size_t size, twd_d3dtx_image_t *out
         out->sampler_state = read_u32_le(buf + blk_start);
     }
 
-    /* mPlatform (PlatformType int32, unblocked) */
+    /* mPlatform (PlatformType int32, optionally length-blocked on retail) */
     if (pos + 4u > limit) return -1;
-    out->platform = read_i32_le(buf + pos);
-    pos += 4u;
+    if (pos + 12u <= limit && read_u32_le(buf + pos) == 8u &&
+        read_u32_le(buf + pos + 8u) >= 8u) {
+        out->platform = read_i32_le(buf + pos + 4u);
+        pos += 8u;
+    } else {
+        out->platform = read_i32_le(buf + pos);
+        pos += 4u;
+    }
 
     /* mName (String, blocked -> uint32 len + chars) */
     if (skip_meta_block(buf, limit, &pos, &blk_start, &blk_end) != 0) return -1;

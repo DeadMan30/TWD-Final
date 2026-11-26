@@ -1616,6 +1616,298 @@ int main(void) {
         (void)twd_rmdir("twd_rt_save_test_dir");
     }
 
+    {
+        /* Telltale Blowfish v7, RFC 1951 raw DEFLATE, ECTT encrypted mount, & LEo/LEn Lua */
+        static const char k_test_key[] = "TWD-UNIT-TEST-KEY-2026";
+        twd_blowfish_t bf;
+        TWD_CHECK(twd_blowfish_init(&bf, NULL, 0u) != 0);
+        TWD_CHECK(twd_blowfish_init(&bf, k_test_key, strlen(k_test_key)) == 0);
+
+        uint8_t plain16[16] = {
+            0x01u, 0x23u, 0x45u, 0x67u, 0x89u, 0xABu, 0xCDu, 0xEFu,
+            'T', 'W', 'D', '_', 'V', '7', '_', '!'
+        };
+        uint8_t work16[16];
+        memcpy(work16, plain16, sizeof(work16));
+        TWD_CHECK(twd_blowfish_encrypt_v7(&bf, work16, sizeof(work16)) == 0);
+        TWD_CHECK(memcmp(work16, plain16, sizeof(work16)) != 0);
+        TWD_CHECK(twd_blowfish_decrypt_v7(&bf, work16, sizeof(work16)) == 0);
+        TWD_CHECK(memcmp(work16, plain16, sizeof(work16)) == 0);
+
+        /* twd_inflate_raw: fixed/compressed RFC 1951 stream */
+        static const uint8_t k_deflate_comp[21] = {
+            0x0bu, 0x09u, 0x77u, 0x89u, 0x77u, 0x71u, 0x75u, 0xf3u,
+            0x71u, 0x0cu, 0x71u, 0x8du, 0xf7u, 0xf7u, 0x8eu, 0x0fu,
+            0xc1u, 0xc7u, 0x55u, 0x04u, 0x00u
+        };
+        uint8_t inf_out[64];
+        size_t inf_written = 0u;
+        memset(inf_out, 0, sizeof(inf_out));
+        TWD_CHECK(twd_inflate_raw(k_deflate_comp, sizeof(k_deflate_comp),
+                                  inf_out, sizeof(inf_out), &inf_written) == 0);
+        TWD_CHECK(inf_written == 45u);
+        TWD_CHECK(memcmp(inf_out, "TWD_DEFLATE_OK_TWD_DEFLATE_OK_TWD_DEFLATE_OK!", 45u) == 0);
+
+        /* Encrypted ECTT archive (Blowfish v7 + raw DEFLATE stored block) with installed out-of-band key */
+        TWD_CHECK(twd_crypto_install_archive_key(k_test_key, strlen(k_test_key)) == 0);
+        static const char k_hello_txt[] = "ectt_ok";
+        enum {
+            EC_HDR = 12,
+            EC_TOC = 28,
+            EC_NAMES = 16,
+            EC_DATA = 7,
+            EC_RAW = EC_HDR + EC_TOC + EC_NAMES + EC_DATA
+        };
+        /* Wrap EC_RAW in an uncompressed DEFLATE stored block padded to an 8-byte Blowfish multiple */
+        uint8_t ectt_chunk[5u + EC_RAW + 8u];
+        memset(ectt_chunk, 0, sizeof(ectt_chunk));
+        ectt_chunk[0] = 0x01u; /* BFINAL=1, BTYPE=00 (stored) */
+        ttarch_wr_u16(ectt_chunk + 1u, (uint16_t)EC_RAW);
+        ttarch_wr_u16(ectt_chunk + 3u, (uint16_t)(~(uint16_t)EC_RAW));
+        uint8_t *ec_raw = ectt_chunk + 5u;
+        memcpy(ec_raw + 0u, "4ATT", 4u);
+        ttarch_wr_u32(ec_raw + 4u, EC_NAMES);
+        ttarch_wr_u32(ec_raw + 8u, 1u);
+        ttarch_wr_u64(ec_raw + 12u, twd_crc64(0ULL, "hello.txt"));
+        ttarch_wr_u64(ec_raw + 20u, 0ULL);
+        ttarch_wr_u32(ec_raw + 28u, EC_DATA);
+        ttarch_wr_u16(ec_raw + 38u, 0u);
+        memcpy(ec_raw + EC_HDR + EC_TOC, "hello.txt", 10u);
+        memcpy(ec_raw + EC_HDR + EC_TOC + EC_NAMES, k_hello_txt, EC_DATA);
+        size_t ec_chunk_len = ((5u + EC_RAW + 7u) / 8u) * 8u;
+        TWD_CHECK(twd_blowfish_encrypt_v7(&bf, ectt_chunk, ec_chunk_len) == 0);
+
+        uint8_t ectt_file[28u + sizeof(ectt_chunk)];
+        memset(ectt_file, 0, sizeof(ectt_file));
+        memcpy(ectt_file + 0u, "ECTT", 4u);
+        ttarch_wr_u32(ectt_file + 4u, 0x10000u);
+        ttarch_wr_u32(ectt_file + 8u, 1u);
+        ttarch_wr_u64(ectt_file + 12u, 28ULL);
+        ttarch_wr_u64(ectt_file + 20u, 28ULL + (uint64_t)ec_chunk_len);
+        memcpy(ectt_file + 28u, ectt_chunk, ec_chunk_len);
+
+        twd_file_t ef;
+        TWD_CHECK(twd_file_open("twd_test_ectt.ttarch2",
+                                TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &ef) == 0);
+        TWD_CHECK(twd_file_write(&ef, ectt_file, 28u + ec_chunk_len) == (int64_t)(28u + ec_chunk_len));
+        TWD_CHECK(twd_file_close(&ef) == 0);
+
+        twd_ttarch2_archive_t *ec_arc = twd_ttarch2_open("twd_test_ectt.ttarch2");
+        TWD_CHECK(ec_arc != NULL);
+        TWD_CHECK(twd_ttarch2_container_kind(ec_arc) == TWD_TTARCH2_ECTT);
+        TWD_CHECK(twd_ttarch2_entry_count(ec_arc) == 1u);
+        uint32_t ec_idx = 0u;
+        TWD_CHECK(twd_ttarch2_find(ec_arc, "hello.txt", &ec_idx, NULL) == 0);
+        size_t ec_sz = 0u;
+        void *ec_buf = twd_ttarch2_read_entry_alloc(ec_arc, ec_idx, &ec_sz);
+        TWD_CHECK(ec_buf != NULL && ec_sz == EC_DATA);
+        TWD_CHECK(memcmp(ec_buf, k_hello_txt, EC_DATA) == 0);
+        twd_ttarch2_free(ec_buf);
+        twd_ttarch2_close(ec_arc);
+        (void)twd_file_delete("twd_test_ectt.ttarch2");
+
+        /* \x1bLEo encrypted Lua text & \x1bLEn encrypted Lua 5.2 bytecode */
+        twd_lua_vm_t *ev_bf = twd_lua_vm_create();
+        TWD_CHECK(ev_bf != NULL);
+        uint8_t leo_pkt[4 + 16];
+        memcpy(leo_pkt, "\x1bLEo", 4u);
+        memcpy(leo_pkt + 4u, "k_leo = 77\n     ", 16u);
+        TWD_CHECK(twd_blowfish_encrypt_v7(&bf, leo_pkt + 4u, 16u) == 0);
+        TWD_CHECK(twd_lua_vm_exec_buffer(ev_bf, leo_pkt, sizeof(leo_pkt), "test.leo") == 0);
+        TWD_CHECK(twd_lua_vm_last_chunk_kind(ev_bf) == TWD_LUA_CHUNK_LEO);
+        const twd_lua_val_t *lv = twd_lua_vm_get_global(ev_bf, "k_leo");
+        TWD_CHECK(lv != NULL && lv->kind == TWD_LUA_T_NUM && lv->u.num == 77.0f);
+
+        static const uint8_t k_lua52_hdr_and_ret[] = {
+            0x1Bu, 'L', 'u', 'a', 0x52u, 0x00u, 0x01u, 0x04u, 0x04u, 0x04u, 0x04u, 0x00u,
+            0x19u, 0x93u, 0x0Du, 0x0Au, 0x1Au, 0x0Au,
+            /* Proto: linedefined(4), lastlinedefined(4), numparams(1), is_vararg(1), maxstacksize(1) */
+            0,0,0,0, 0,0,0,0, 0, 0, 2,
+            /* code size=1: OP_RETURN (op=31, a=0, b=1 -> 0x0080001Fu) */
+            1,0,0,0, 0x1Fu, 0x00u, 0x80u, 0x00u,
+            /* constants=0, protos=0, upvals=0, source=0, lineinfo=0, locvars=0, upvalnames=0 */
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0
+        };
+        uint8_t len_pkt[128];
+        memset(len_pkt, 0, sizeof(len_pkt));
+        memcpy(len_pkt, k_lua52_hdr_and_ret, sizeof(k_lua52_hdr_and_ret));
+        len_pkt[2] = 'E'; len_pkt[3] = 'n';
+        size_t len_total = 4u + (((sizeof(k_lua52_hdr_and_ret) - 4u) + 7u) & ~(size_t)7u);
+        TWD_CHECK(twd_blowfish_encrypt_v7(&bf, len_pkt + 4u, len_total - 4u) == 0);
+        TWD_CHECK(twd_lua_vm_exec_buffer(ev_bf, len_pkt, len_total, "test.len") == 0);
+        TWD_CHECK(twd_lua_vm_last_chunk_kind(ev_bf) == TWD_LUA_CHUNK_LEN);
+        twd_lua_vm_destroy(ev_bf);
+
+        /* Synthetic retail-format compatibility: blocked D3DTX mPlatform, Scene 0x30 flag,
+           PropertySet retail body_size + Handle<D3DMesh>, and async UNORM16 D3DMesh */
+        uint8_t rdtx[224];
+        memset(rdtx, 0, sizeof(rdtx));
+        size_t rdo = 0u;
+        memcpy(rdtx + rdo, "6VSM", 4u); rdo += 4u;
+        size_t rd_def_off = rdo; rdo += 4u;
+        rdo += 4u;
+        size_t rd_async_off = rdo; rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 0u); rdo += 4u;
+        size_t rd_start = rdo;
+        ttarch_wr_u32(rdtx + rdo, 9u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 8u;   /* sampler */
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 4u;   /* blocked mPlatform size=8 */
+        ttarch_wr_u32(rdtx + rdo, 2u); rdo += 4u;   /* platform PC = 2 */
+        ttarch_wr_u32(rdtx + rdo, 14u); rdo += 4u;  /* mName block */
+        ttarch_wr_u32(rdtx + rdo, 6u); rdo += 4u;
+        memcpy(rdtx + rdo, "ret_tx", 6u); rdo += 6u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 8u;   /* mImportName */
+        rdo += 5u;
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 4u;   /* mip_levels */
+        ttarch_wr_u32(rdtx + rdo, 4u); rdo += 4u;   /* width */
+        ttarch_wr_u32(rdtx + rdo, 4u); rdo += 4u;   /* height */
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, TWD_T3_FMT_DXT1); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 20u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 8u;   /* swizzle */
+        rdo += 36u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 8u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 8u;
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 0u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 0u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 0u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 1u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rdo, 8u); rdo += 4u;
+        ttarch_wr_u32(rdtx + rd_def_off, (uint32_t)(rdo - rd_start));
+        ttarch_wr_u32(rdtx + rd_async_off, 8u);
+        rdo += 8u;
+        twd_d3dtx_image_t rimg;
+        TWD_CHECK(twd_d3dtx_parse_memory(rdtx, rdo, &rimg) == 0);
+        TWD_CHECK(rimg.platform == 2 && strcmp(rimg.name, "ret_tx") == 0);
+        twd_d3dtx_free(&rimg);
+
+        uint8_t rsc[128];
+        memset(rsc, 0, sizeof(rsc));
+        size_t rso = 0u;
+        memcpy(rsc + rso, "6VSM", 4u); rso += 4u;
+        size_t rs_def = rso; rso += 4u;
+        rso += 8u;
+        ttarch_wr_u32(rsc + rso, 0u); rso += 4u;
+        size_t rs_start = rso;
+        rsc[rso++] = 0x30u; /* retail mbHidden=0 with upper flag bits */
+        ttarch_wr_u32(rsc + rso, 16u); rso += 4u;
+        ttarch_wr_u32(rsc + rso, 8u); rso += 4u;
+        memcpy(rsc + rso, "ui.scene", 8u); rso += 8u;
+        ttarch_wr_u32(rsc + rso, 8u); rso += 4u; /* mReferencedScenes */
+        rso += 4u;
+        ttarch_wr_u32(rsc + rso, 8u); rso += 4u; /* mAgentList block (0 agents) */
+        ttarch_wr_u32(rsc + rso, 0u); rso += 4u;
+        ttarch_wr_u32(rsc + rs_def, (uint32_t)(rso - rs_start));
+        twd_scene_t rscene;
+        TWD_CHECK(twd_scene_parse_memory(rsc, rso, &rscene) == 0);
+        TWD_CHECK(rscene.hidden == 0 && strcmp(rscene.name, "ui.scene") == 0);
+        twd_scene_free(&rscene);
+
+        uint8_t rps[128];
+        memset(rps, 0, sizeof(rps));
+        size_t rpo = 0u;
+        memcpy(rps + rpo, "6VSM", 4u); rpo += 4u;
+        size_t rp_def = rpo; rpo += 4u;
+        rpo += 8u;
+        ttarch_wr_u32(rps + rpo, 0u); rpo += 4u;
+        size_t rp_start = rpo;
+        ttarch_wr_u32(rps + rpo, 2u); rpo += 4u;
+        ttarch_wr_u32(rps + rpo, 0u); rpo += 4u;
+        size_t rp_bsz = rpo; rpo += 4u;
+        ttarch_wr_u32(rps + rpo, 0u); rpo += 4u;
+        ttarch_wr_u32(rps + rpo, 1u); rpo += 4u;
+        ttarch_wr_u64(rps + rpo, 0x73e09e0f84717f0aULL); rpo += 8u; /* Handle<D3DMesh> */
+        ttarch_wr_u32(rps + rpo, 1u); rpo += 4u;
+        ttarch_wr_u64(rps + rpo, twd_crc64(0ULL, "MeshKey")); rpo += 8u;
+        ttarch_wr_u64(rps + rpo, 0x123456789ABCDEF0ULL); rpo += 8u;
+        /* Retail body_size includes its own 4-byte length field */
+        ttarch_wr_u32(rps + rp_bsz, (uint32_t)(rpo - rp_bsz));
+        ttarch_wr_u32(rps + rp_def, (uint32_t)(rpo - rp_start));
+        twd_propset_t ps_ret;
+        TWD_CHECK(twd_propset_parse_memory(rps, rpo, &ps_ret) == 0);
+        TWD_CHECK(ps_ret.entry_count == 1u);
+        TWD_CHECK(ps_ret.entries[0].val.sym == 0x123456789ABCDEF0ULL);
+        twd_propset_free(&ps_ret);
+
+        /* Retail-style async UNORM16 D3DMesh with mMeshData scanned past internal block + tail descriptors */
+        uint8_t adm[768];
+        memset(adm, 0, sizeof(adm));
+        size_t ao = 0u;
+        memcpy(adm + ao, "6VSM", 4u); ao += 4u;
+        size_t a_def = ao; ao += 4u;
+        ao += 4u;
+        size_t a_async = ao; ao += 4u;
+        ttarch_wr_u32(adm + ao, 0u); ao += 4u;
+        size_t a_start = ao;
+        ttarch_wr_u32(adm + ao, 12u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 4u); ao += 4u;
+        memcpy(adm + ao, "quad", 4u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 55u); ao += 4u; /* mVersion */
+        adm[ao++] = 0x30u;                      /* mbHasProps */
+        { float s1 = 1.0f; memcpy(adm + ao, &s1, 4u); } ao += 4u;
+        ao += 4u + 8u;
+        ao += 16u; /* simulated mInternalResources block before mMeshData */
+        size_t md_off = ao; ao += 4u; /* mMeshData blk_sz */
+        size_t lod_off = ao; ao += 4u;
+        ttarch_wr_u32(adm + ao, 1u); ao += 4u; /* 1 LOD */
+        /* b0 (size 4 + 4 + 92 = 100) */
+        ttarch_wr_u32(adm + ao, 100u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 1u); ao += 4u;
+        ao += 52u;
+        ttarch_wr_u32(adm + ao, 0u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 0u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 1u); ao += 4u;
+        ttarch_wr_u32(adm + ao, 3u); ao += 4u;
+        ao += 24u;
+        ttarch_wr_u32(adm + ao, 8u); ao += 8u; /* b1 empty */
+        ao += 92u; /* lod scalars */
+        ttarch_wr_u32(adm + lod_off, (uint32_t)(ao - lod_off));
+        for (int ci = 0; ci < 7; ++ci) { ttarch_wr_u32(adm + ao, 8u); ao += 8u; }
+        /* T3MeshData bbox(24) + bsphere(20) + endian(4) + posScale(12) + posWScale(12) + posOffset(12) */
+        {
+            float psc[3] = {4.0f, 4.0f, 0.0f};
+            float pof[3] = {-2.0f, -2.0f, 0.0f};
+            memcpy(adm + ao + 48u, psc, sizeof(psc));
+            memcpy(adm + ao + 72u, pof, sizeof(pof));
+        }
+        ao += 84u;
+        /* Tail descriptors: IB(3*2=6B) + VB pos(3*8=24B) + VB uv(3*4=12B) = 42B async */
+        ttarch_wr_u32(adm + ao + 4u, 16u); ttarch_wr_u32(adm + ao + 8u, 2u);
+        ttarch_wr_u32(adm + ao + 12u, 3u); ttarch_wr_u32(adm + ao + 16u, 2u); ao += 20u;
+        ttarch_wr_u32(adm + ao + 4u, 26u); ttarch_wr_u32(adm + ao + 8u, 9u);
+        ttarch_wr_u32(adm + ao + 12u, 3u); ttarch_wr_u32(adm + ao + 16u, 8u); ao += 20u;
+        ttarch_wr_u32(adm + ao + 4u, 24u); ttarch_wr_u32(adm + ao + 8u, 9u);
+        ttarch_wr_u32(adm + ao + 12u, 3u); ttarch_wr_u32(adm + ao + 16u, 4u); ao += 20u;
+        ttarch_wr_u32(adm + md_off, (uint32_t)(ao - md_off));
+        ttarch_wr_u32(adm + a_def, (uint32_t)(ao - a_start));
+        ttarch_wr_u32(adm + a_async, 42u);
+        /* Async pool: 3 u16 indices (0,1,2) + 3 UNORM16x4 verts + 3 UNORM16x2 uvs */
+        ttarch_wr_u16(adm + ao + 0u, 0u); ttarch_wr_u16(adm + ao + 2u, 1u); ttarch_wr_u16(adm + ao + 4u, 2u);
+        ao += 6u;
+        ttarch_wr_u16(adm + ao + 0u, 65535u); ttarch_wr_u16(adm + ao + 2u, 65535u);
+        ttarch_wr_u16(adm + ao + 8u, 0u); ttarch_wr_u16(adm + ao + 10u, 0u);
+        ttarch_wr_u16(adm + ao + 16u, 65535u); ttarch_wr_u16(adm + ao + 18u, 0u);
+        ao += 24u;
+        ttarch_wr_u16(adm + ao + 0u, 65535u); ttarch_wr_u16(adm + ao + 2u, 0u);
+        ao += 12u;
+
+        twd_d3dmesh_t amesh;
+        TWD_CHECK(twd_d3dmesh_parse_memory(adm, ao, &amesh) == 0);
+        TWD_CHECK(amesh.vertex_count == 3u && amesh.vertex_stride == 20u);
+        TWD_CHECK(amesh.index_count == 3u && amesh.index_stride == 2u);
+        float vx0 = 0.0f, vy0 = 0.0f;
+        memcpy(&vx0, amesh.vertex_data + 0u, 4u);
+        memcpy(&vy0, amesh.vertex_data + 4u, 4u);
+        TWD_CHECK(vx0 > 1.99f && vx0 < 2.01f && vy0 > 1.99f && vy0 < 2.01f);
+        twd_d3dmesh_free(&amesh);
+        twd_crypto_clear_archive_key();
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 
