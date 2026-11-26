@@ -24,7 +24,9 @@ static void wr_u64(uint8_t *p, uint64_t v) {
 int main(void) {
     /* Build temporary game dir containing one synthetic NCTT+TTA4 archive with boot assets. */
     static const char s_boot_lua[] = "-- synthetic boot";
-    static const char s_prefs[] = "window=1280x720";
+    static const uint8_t s_prefs[20] = {
+        '6','V','S','M', 0x10,0,0,0, 0,0,0,0, 0,0,0,0, 1,0,0,0
+    };
     static const uint8_t s_bank[16] = {'R','I','F','F', 8,0,0,0, 'F','E','V',' ', 1,0,0,0};
     static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0";
 
@@ -33,7 +35,7 @@ int main(void) {
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
-        PREFS_LEN = sizeof(s_prefs) - 1,
+        PREFS_LEN = sizeof(s_prefs),
         BANK_LEN = sizeof(s_bank),
         PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN
     };
@@ -94,7 +96,8 @@ int main(void) {
     if (rc != 0) return 5;
     if (stats.hook_count == 0u) return 6;
     if (stats.mounted_archives != 1) return 7;
-    if (stats.found_prefs_prop != 1 || stats.found_boot_lua != 1) return 8;
+    if (stats.found_prefs_prop != 1 || stats.prefs_meta_version != 6u ||
+        stats.found_boot_lua != 1) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1280u || stats.height != 720u) return 10;
     if (stats.frames_rendered != 4ULL || stats.clean_shutdown != 1) return 11;

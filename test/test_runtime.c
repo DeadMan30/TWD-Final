@@ -781,6 +781,44 @@ int main(void) {
     TWD_CHECK(twd_file_delete("twd_synth_dir/pack0.ttarch2") == 0);
     TWD_CHECK(twd_rmdir("twd_synth_dir") == 0);
 
+    /* 4b. Telltale ECMA-182 CRC64, CRC-only archive lookup, and MetaStream parser */
+    TWD_CHECK(twd_crc64(0ULL, "CommonNV.bank") == 0x55a6565491980cafULL);
+    TWD_CHECK(twd_crc64(0ULL, "commonnv.bank") == 0x55a6565491980cafULL);
+    TWD_CHECK(twd_crc64(0ULL, "COMMONNV.BANK") == 0x55a6565491980cafULL);
+    uint8_t crc_only_arch[12 + 12 + 28 + 4];
+    memset(crc_only_arch, 0, sizeof(crc_only_arch));
+    memcpy(crc_only_arch, "NCTT", 4u);
+    ttarch_wr_u64(crc_only_arch + 4u, 12u + 28u + 4u);
+    ttarch_wr_u32(crc_only_arch + 12u + 0u, TWD_TTARCH2_TOC_TTA4);
+    ttarch_wr_u32(crc_only_arch + 12u + 4u, 0u);
+    ttarch_wr_u32(crc_only_arch + 12u + 8u, 1u);
+    ttarch_wr_u64(crc_only_arch + 24u + 0u, twd_crc64(0ULL, "prefs/menu.prop"));
+    ttarch_wr_u32(crc_only_arch + 24u + 16u, 4u);
+    memcpy(crc_only_arch + 52u, "PROP", 4u);
+    twd_ttarch2_archive_t *carch = twd_ttarch2_open_memory(crc_only_arch, sizeof(crc_only_arch));
+    TWD_CHECK(carch != NULL);
+    TWD_CHECK(twd_ttarch2_find(carch, "PREFS\\MENU.PROP", &found_idx, NULL) == 0 && found_idx == 0u);
+    size_t c_sz = 0u;
+    char *c_buf = (char *)twd_ttarch2_read_entry_alloc(carch, found_idx, &c_sz);
+    TWD_CHECK(c_buf != NULL && c_sz == 4u && strcmp(c_buf, "PROP") == 0);
+    twd_ttarch2_free(c_buf);
+    twd_ttarch2_close(carch);
+
+    static const uint8_t msv6_hdr[20] = {
+        '6','V','S','M', 0x40,0,0,0, 0x10,0,0,0, 0x20,0,0,0x80, 2,0,0,0
+    };
+    twd_metastream_header_t mh;
+    TWD_CHECK(twd_metastream_parse_header(msv6_hdr, sizeof(msv6_hdr), &mh) == 0);
+    TWD_CHECK(mh.kind == TWD_METASTREAM_MSV6 && mh.version == 6u &&
+              mh.default_size == 0x40u && mh.debug_size == 0x10u &&
+              mh.async_size == 0x20u && mh.async_aligned == 1u &&
+              mh.type_count == 2u && mh.payload_offset == 44u);
+    static const uint8_t msv4_hdr[16] = {
+        '4','V','S','M', 0x08,0,0,0, 0x04,0,0,0, 1,0,0,0
+    };
+    TWD_CHECK(twd_metastream_parse_header(msv4_hdr, sizeof(msv4_hdr), &mh) == 0);
+    TWD_CHECK(mh.kind == TWD_METASTREAM_MSV4 && mh.version == 4u && mh.payload_offset == 28u);
+
     /* 5. Audio & FMOD Studio / Core PAL */
     TWD_CHECK((twd_audio_init(NULL, NULL) & TWD_AUDIO_CAP_MIXER) != 0);
     twd_audio_system_t *asys = twd_audio_system_create();

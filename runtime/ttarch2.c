@@ -460,6 +460,15 @@ int twd_ttarch2_find(
             return 0;
         }
     }
+    /* Hash fallback using ECMA-182 CRC64 with normalized slashes */
+    char norm[512];
+    size_t len = strlen(name);
+    if (len < sizeof(norm)) {
+        for (size_t i = 0u; i < len; ++i) norm[i] = ascii_lower(name[i]);
+        norm[len] = '\0';
+        uint64_t h = twd_crc64(0ULL, norm);
+        if (twd_ttarch2_find_crc64(arch, h, out_index, out) == 0) return 0;
+    }
     return -1;
 }
 
@@ -595,4 +604,100 @@ void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size) {
         }
     }
     return NULL;
+}
+
+/* ---------- ECMA-182 CRC64 & MetaStream Header Parser ---------- */
+
+#define TWD_CRC64_POLY 0x42F0E1EBA9EA3693ULL
+
+uint64_t twd_crc64_bytes(uint64_t seed, const void *data, size_t len, int to_lower) {
+    if (!data || len == 0u) return seed;
+    const uint8_t *p = (const uint8_t *)data;
+    uint64_t crc = seed;
+    for (size_t i = 0u; i < len; ++i) {
+        uint8_t ch = p[i];
+        if (to_lower && ch >= (uint8_t)'A' && ch <= (uint8_t)'Z') {
+            ch = (uint8_t)(ch + ('a' - 'A'));
+        }
+        crc ^= ((uint64_t)ch << 56);
+        for (int bit = 0; bit < 8; ++bit) {
+            if ((crc & 0x8000000000000000ULL) != 0ULL) {
+                crc = (crc << 1) ^ TWD_CRC64_POLY;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+uint64_t twd_crc64(uint64_t seed, const char *str) {
+    if (!str) return seed;
+    return twd_crc64_bytes(seed, str, strlen(str), 1);
+}
+
+int twd_metastream_parse_header(const void *data, size_t len, twd_metastream_header_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!data || len < 4u) return -1;
+
+    const uint8_t *b = (const uint8_t *)data;
+    uint32_t magic = rd_u32(b);
+    size_t pos = 4u;
+
+    if (magic == 0x4D42494Eu) { /* "NIBM" -> LE MBIN */
+        out->kind = TWD_METASTREAM_MBIN;
+        out->version = 1u;
+        out->payload_offset = 4u;
+        return 0;
+    }
+    if (magic == 0x4D424553u) { /* "SEBM" -> LE MBES */
+        out->kind = TWD_METASTREAM_MBES;
+        out->version = 1u;
+        out->payload_offset = 4u;
+        return 0;
+    }
+    if (magic == 0x4D545245u || magic == 0x4D434F4Du) { /* "ERTM" / "MOCM" */
+        out->kind = (magic == 0x4D545245u) ? TWD_METASTREAM_MTRE : TWD_METASTREAM_MCOM;
+        out->version = 3u;
+        if (magic == 0x4D434F4Du) {
+            if (len < 8u) return -1;
+            pos += 4u;
+        }
+        if (len < pos + 4u) return -1;
+        out->type_count = rd_u32(b + pos);
+        pos += 4u;
+        if (out->type_count > 1000u) return -1;
+        out->payload_offset = (uint64_t)pos + (uint64_t)out->type_count * 12u;
+        return 0;
+    }
+    if (magic == 0x4D535634u || magic == 0x4D535635u || magic == 0x4D535636u) {
+        /* "4VSM", "5VSM", "6VSM" */
+        uint32_t ver = (magic == 0x4D535634u) ? 4u :
+                       (magic == 0x4D535635u) ? 5u : 6u;
+        out->kind = ver;
+        out->version = ver;
+        if (ver >= 5u) {
+            if (len < 20u) return -1;
+            out->default_size = rd_u32(b + 4u) & 0x7FFFFFFFu;
+            out->debug_size = rd_u32(b + 8u) & 0x7FFFFFFFu;
+            uint32_t raw_async = rd_u32(b + 12u);
+            out->async_size = raw_async & 0x7FFFFFFFu;
+            out->async_aligned = ((raw_async & 0x80000000u) != 0u) ? 1u : 0u;
+            out->type_count = rd_u32(b + 16u);
+            pos = 20u;
+        } else {
+            if (len < 16u) return -1;
+            out->debug_size = rd_u32(b + 4u) & 0x7FFFFFFFu;
+            uint32_t raw_async = rd_u32(b + 8u);
+            out->async_size = raw_async & 0x7FFFFFFFu;
+            out->async_aligned = ((raw_async & 0x80000000u) != 0u) ? 1u : 0u;
+            out->type_count = rd_u32(b + 12u);
+            pos = 16u;
+        }
+        if (out->type_count > 1000u) return -1;
+        out->payload_offset = (uint64_t)pos + (uint64_t)out->type_count * 12u;
+        return 0;
+    }
+    return -1;
 }

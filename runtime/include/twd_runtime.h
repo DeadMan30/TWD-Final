@@ -653,6 +653,31 @@ void twd_asset_unmount_all_ttarch2(void);
 int twd_ttarch2_mount_dir(const char *dir_path);
 void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size);
 
+/* Telltale ECMA-182 CRC64 & MetaStream Header Parser (verified against WalkingDead4.exe) */
+#define TWD_METASTREAM_NONE 0u
+#define TWD_METASTREAM_MBIN 1u
+#define TWD_METASTREAM_MTRE 2u
+#define TWD_METASTREAM_MCOM 3u
+#define TWD_METASTREAM_MSV4 4u
+#define TWD_METASTREAM_MSV5 5u
+#define TWD_METASTREAM_MSV6 6u
+#define TWD_METASTREAM_MBES 7u
+
+typedef struct twd_metastream_header {
+    uint32_t kind;
+    uint32_t version;
+    uint32_t default_size;
+    uint32_t debug_size;
+    uint32_t async_size;
+    uint32_t type_count;
+    uint32_t async_aligned;
+    uint64_t payload_offset;
+} twd_metastream_header_t;
+
+uint64_t twd_crc64_bytes(uint64_t seed, const void *data, size_t len, int to_lower);
+uint64_t twd_crc64(uint64_t seed, const char *str);
+int twd_metastream_parse_header(const void *data, size_t len, twd_metastream_header_t *out);
+
 /* Audio & FMOD Studio / Core PAL (libfmodstudio/libfmod bridge + software PCM16 mixer) */
 #define TWD_AUDIO_CAP_FMOD_STUDIO 1
 #define TWD_AUDIO_CAP_FMOD_CORE   2

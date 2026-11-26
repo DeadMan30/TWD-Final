@@ -134,6 +134,7 @@ typedef struct twd_boot_stats {
     uint32_t hook_count;
     int mounted_archives;
     int found_prefs_prop;
+    uint32_t prefs_meta_version;
     int found_boot_lua;
     int gfx_backend;
     int audio_caps;
