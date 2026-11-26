@@ -271,6 +271,7 @@ void twd_gfx_buffer_destroy(twd_gfx_buffer_t *buf);
 twd_gfx_texture_t *twd_gfx_texture_create(twd_gfx_device_t *dev, uint32_t width, uint32_t height, uint32_t format);
 int twd_gfx_texture_update(twd_gfx_texture_t *tex, const void *pixels, size_t byte_size);
 const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size);
+void twd_gfx_texture_get_size(const twd_gfx_texture_t *tex, uint32_t *out_w, uint32_t *out_h);
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex);
 
 /* Telltale T3Texture (.d3dtx) parser, BC/DXT software decoder, and GPU upload */
@@ -327,12 +328,64 @@ void twd_d3dtx_free(twd_d3dtx_image_t *img);
 twd_gfx_texture_t *twd_d3dtx_upload_gfx_texture(
     twd_gfx_device_t *dev, const void *d3dtx_bytes, size_t d3dtx_size, twd_d3dtx_image_t *out_info);
 
+/* Telltale Font (.font) parser & bitmap glyph blitter */
+#define TWD_FONT_MAX_PAGES 8u
+
+typedef struct twd_font_glyph {
+    uint32_t codepoint;
+    int32_t texture_page;
+    int32_t channel;
+    float u0, u1, v0, v1;
+    float width, height;
+    float x_offset, y_offset;
+    float x_advance;
+} twd_font_glyph_t;
+
+typedef struct twd_font {
+    char name[128];
+    int is_unicode;
+    int is_distance_field;
+    int is_filtered;
+    int has_ttf_data;
+    float height;
+    float base;
+    float base_point_size;
+    uint32_t glyph_count;
+    twd_font_glyph_t *glyphs;
+    uint32_t page_count;
+    uint64_t page_hashes[TWD_FONT_MAX_PAGES];
+    const twd_gfx_texture_t *pages[TWD_FONT_MAX_PAGES];
+} twd_font_t;
+
+int twd_font_parse_memory(const void *data, size_t size, twd_font_t *out);
+void twd_font_free(twd_font_t *font);
+const twd_font_glyph_t *twd_font_find_glyph(const twd_font_t *font, uint32_t codepoint);
+int twd_font_attach_page(twd_font_t *font, uint32_t page_index, const twd_gfx_texture_t *tex);
+float twd_font_draw_text(
+    twd_gfx_device_t *dev,
+    const twd_font_t *font,
+    float x,
+    float y,
+    float scale,
+    const uint8_t rgba[4],
+    const char *utf8_text);
+
 void twd_gfx_begin_frame(twd_gfx_device_t *dev);
 void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint8_t stencil);
 void twd_gfx_set_viewport(twd_gfx_device_t *dev, float x, float y, float w, float h, float min_d, float max_d);
 void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex);
 void twd_gfx_draw_indexed(twd_gfx_device_t *dev, uint32_t index_count, uint32_t start_index, int32_t base_vertex);
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval);
+const uint8_t *twd_gfx_backbuffer_data(
+    const twd_gfx_device_t *dev, uint32_t *out_w, uint32_t *out_h, size_t *out_size);
+int twd_gfx_draw_rect(
+    twd_gfx_device_t *dev, int32_t dx, int32_t dy, int32_t dw, int32_t dh, const uint8_t rgba[4]);
+int twd_gfx_draw_sprite(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex,
+    int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+    int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+    const uint8_t rgba_tint[4]);
 
 /* DXBC -> GLSL ES 3.00 / SPIR-V Shader Translation & Cache */
 #define TWD_SHADER_STAGE_VS 0u

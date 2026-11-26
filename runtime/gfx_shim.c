@@ -34,6 +34,7 @@ struct twd_gfx_device {
     void (*gl_buffer_sub_data)(uint32_t target, ptrdiff_t offset, ptrdiff_t size, const void *data);
     void (*gl_gen_textures)(int32_t n, uint32_t *textures);
     void (*gl_delete_textures)(int32_t n, const uint32_t *textures);
+    void (*gl_active_texture)(uint32_t texture);
     void (*gl_bind_texture)(uint32_t target, uint32_t texture);
     void (*gl_tex_image_2d)(uint32_t target, int32_t level, int32_t internalformat,
                             int32_t width, int32_t height, int32_t border,
@@ -77,8 +78,14 @@ struct twd_gfx_device {
     uint32_t bound_ib_gl;
     void *bound_rtvs[8];
     void *bound_dsv;
+    void *bound_ps_srvs[8];
+    uint32_t bound_ps_srv_gl[8];
+    void *bound_vs_cbs[8];
+    void *bound_ps_cbs[8];
     twd_d3d11_rect_t scissor;
     twd_shader_cache_t *shader_cache;
+    uint8_t *backbuffer;
+    size_t backbuffer_size;
     float last_clear_rgba[4];
     float last_depth;
     uint8_t last_stencil;
@@ -135,6 +142,11 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
     dev->viewport.width = (float)dev->width;
     dev->viewport.height = (float)dev->height;
     dev->viewport.max_depth = 1.0f;
+    if ((size_t)dev->width <= ((size_t)-1) / 4u / (size_t)dev->height) {
+        size_t bb_sz = (size_t)dev->width * (size_t)dev->height * 4u;
+        dev->backbuffer = (uint8_t *)calloc(1u, bb_sz ? bb_sz : 4u);
+        if (dev->backbuffer) dev->backbuffer_size = bb_sz;
+    }
     dev->shader_cache = twd_shader_cache_create();
 
 #ifdef __ANDROID__
@@ -276,6 +288,7 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
             dev->gl_buffer_sub_data = (gl_bsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBufferSubData");
             dev->gl_gen_textures = (gl_gen_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glGenTextures");
             dev->gl_delete_textures = (gl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteTextures");
+            dev->gl_active_texture = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glActiveTexture");
             dev->gl_bind_texture = (gl_bind_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBindTexture");
             dev->gl_tex_image_2d = (gl_tex2d_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexImage2D");
             dev->gl_tex_sub_image_2d = (gl_texsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexSubImage2D");
@@ -372,11 +385,25 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
         twd_dynlib_close(dev->backend_lib);
         dev->backend_lib = NULL;
     }
+    free(dev->backbuffer);
+    dev->backbuffer = NULL;
+    dev->backbuffer_size = 0u;
     free(dev);
 }
 
 int twd_gfx_resize(twd_gfx_device_t *dev, uint32_t width, uint32_t height) {
     if (!dev || width == 0u || height == 0u) return -1;
+    if ((size_t)width <= ((size_t)-1) / 4u / (size_t)height) {
+        size_t new_sz = (size_t)width * (size_t)height * 4u;
+        if (new_sz != dev->backbuffer_size) {
+            uint8_t *nb = (uint8_t *)calloc(1u, new_sz ? new_sz : 4u);
+            if (nb) {
+                free(dev->backbuffer);
+                dev->backbuffer = nb;
+                dev->backbuffer_size = new_sz;
+            }
+        }
+    }
     dev->width = width;
     dev->height = height;
     return 0;
@@ -545,6 +572,11 @@ const void *twd_gfx_texture_data(const twd_gfx_texture_t *tex, size_t *out_size)
     return tex->pixels;
 }
 
+void twd_gfx_texture_get_size(const twd_gfx_texture_t *tex, uint32_t *out_w, uint32_t *out_h) {
+    if (out_w) *out_w = tex ? tex->width : 0u;
+    if (out_h) *out_h = tex ? tex->height : 0u;
+}
+
 void twd_gfx_texture_destroy(twd_gfx_texture_t *tex) {
     if (!tex) return;
     if (tex->gl_handle && tex->dev && tex->dev->gl_delete_textures) {
@@ -562,10 +594,29 @@ void twd_gfx_begin_frame(twd_gfx_device_t *dev) {
     (void)dev;
 }
 
+static uint8_t clamp_f_u8(float v) {
+    if (v <= 0.0f) return 0u;
+    if (v >= 1.0f) return 255u;
+    return (uint8_t)(v * 255.0f + 0.5f);
+}
+
 void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint8_t stencil) {
     if (!dev) return;
     if (rgba) {
         memcpy(dev->last_clear_rgba, rgba, sizeof(dev->last_clear_rgba));
+        if (dev->backbuffer && dev->backbuffer_size >= (size_t)dev->width * (size_t)dev->height * 4u) {
+            uint8_t r = clamp_f_u8(rgba[0]);
+            uint8_t g = clamp_f_u8(rgba[1]);
+            uint8_t b = clamp_f_u8(rgba[2]);
+            uint8_t a = clamp_f_u8(rgba[3]);
+            size_t total = (size_t)dev->width * (size_t)dev->height;
+            for (size_t i = 0u; i < total; ++i) {
+                dev->backbuffer[i * 4u + 0u] = r;
+                dev->backbuffer[i * 4u + 1u] = g;
+                dev->backbuffer[i * 4u + 2u] = b;
+                dev->backbuffer[i * 4u + 3u] = a;
+            }
+        }
         if (dev->gl_clear_color && dev->gl_clear && dev->egl_surface) {
             dev->gl_clear_color(rgba[0], rgba[1], rgba[2], rgba[3]);
             dev->gl_clear(0x00004000u); /* GL_COLOR_BUFFER_BIT */
@@ -576,6 +627,104 @@ void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint
     dev->last_depth = depth;
     dev->last_stencil = stencil;
     dev->clear_calls++;
+}
+
+const uint8_t *twd_gfx_backbuffer_data(
+    const twd_gfx_device_t *dev, uint32_t *out_w, uint32_t *out_h, size_t *out_size) {
+    if (!dev || !dev->backbuffer) {
+        if (out_w) *out_w = 0u;
+        if (out_h) *out_h = 0u;
+        if (out_size) *out_size = 0u;
+        return NULL;
+    }
+    if (out_w) *out_w = dev->width;
+    if (out_h) *out_h = dev->height;
+    if (out_size) *out_size = dev->backbuffer_size;
+    return dev->backbuffer;
+}
+
+static void blend_pixel_rgba8(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    if (a == 0u) return;
+    if (a == 255u) {
+        dst[0] = r;
+        dst[1] = g;
+        dst[2] = b;
+        dst[3] = 255u;
+        return;
+    }
+    uint32_t inv = 255u - (uint32_t)a;
+    dst[0] = (uint8_t)(((uint32_t)r * (uint32_t)a + (uint32_t)dst[0] * inv) / 255u);
+    dst[1] = (uint8_t)(((uint32_t)g * (uint32_t)a + (uint32_t)dst[1] * inv) / 255u);
+    dst[2] = (uint8_t)(((uint32_t)b * (uint32_t)a + (uint32_t)dst[2] * inv) / 255u);
+    uint32_t out_a = (uint32_t)a + ((uint32_t)dst[3] * inv) / 255u;
+    dst[3] = (uint8_t)(out_a > 255u ? 255u : out_a);
+}
+
+int twd_gfx_draw_rect(
+    twd_gfx_device_t *dev, int32_t dx, int32_t dy, int32_t dw, int32_t dh, const uint8_t rgba[4]) {
+    if (!dev || !dev->backbuffer || !rgba || dw <= 0 || dh <= 0) return -1;
+    int32_t x0 = (dx < 0) ? 0 : dx;
+    int32_t y0 = (dy < 0) ? 0 : dy;
+    int32_t x1 = dx + dw;
+    int32_t y1 = dy + dh;
+    if (x1 > (int32_t)dev->width) x1 = (int32_t)dev->width;
+    if (y1 > (int32_t)dev->height) y1 = (int32_t)dev->height;
+    for (int32_t y = y0; y < y1; ++y) {
+        for (int32_t x = x0; x < x1; ++x) {
+            uint8_t *p = dev->backbuffer + ((size_t)y * (size_t)dev->width + (size_t)x) * 4u;
+            blend_pixel_rgba8(p, rgba[0], rgba[1], rgba[2], rgba[3]);
+        }
+    }
+    dev->draw_calls++;
+    return 0;
+}
+
+int twd_gfx_draw_sprite(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex,
+    int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+    int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+    const uint8_t rgba_tint[4]) {
+    if (!dev || !dev->backbuffer || !tex || !tex->pixels ||
+        tex->width == 0u || tex->height == 0u || dw <= 0 || dh <= 0) {
+        return -1;
+    }
+    if (sw <= 0) sw = (int32_t)tex->width - sx;
+    if (sh <= 0) sh = (int32_t)tex->height - sy;
+    if (sw <= 0 || sh <= 0) return -1;
+
+    uint8_t tr = rgba_tint ? rgba_tint[0] : 255u;
+    uint8_t tg = rgba_tint ? rgba_tint[1] : 255u;
+    uint8_t tb = rgba_tint ? rgba_tint[2] : 255u;
+    uint8_t ta = rgba_tint ? rgba_tint[3] : 255u;
+    const uint8_t *src_px = (const uint8_t *)tex->pixels;
+
+    int32_t x0 = (dx < 0) ? 0 : dx;
+    int32_t y0 = (dy < 0) ? 0 : dy;
+    int32_t x1 = dx + dw;
+    int32_t y1 = dy + dh;
+    if (x1 > (int32_t)dev->width) x1 = (int32_t)dev->width;
+    if (y1 > (int32_t)dev->height) y1 = (int32_t)dev->height;
+
+    for (int32_t y = y0; y < y1; ++y) {
+        int32_t src_y = sy + (int32_t)(((int64_t)(y - dy) * (int64_t)sh) / (int64_t)dh);
+        if (src_y < 0) src_y = 0;
+        if (src_y >= (int32_t)tex->height) src_y = (int32_t)tex->height - 1;
+        for (int32_t x = x0; x < x1; ++x) {
+            int32_t src_x = sx + (int32_t)(((int64_t)(x - dx) * (int64_t)sw) / (int64_t)dw);
+            if (src_x < 0) src_x = 0;
+            if (src_x >= (int32_t)tex->width) src_x = (int32_t)tex->width - 1;
+            const uint8_t *sp = src_px + (size_t)src_y * (size_t)tex->row_pitch + (size_t)src_x * 4u;
+            uint8_t sr = (uint8_t)(((uint32_t)sp[0] * (uint32_t)tr) / 255u);
+            uint8_t sg = (uint8_t)(((uint32_t)sp[1] * (uint32_t)tg) / 255u);
+            uint8_t sb = (uint8_t)(((uint32_t)sp[2] * (uint32_t)tb) / 255u);
+            uint8_t sa = (uint8_t)(((uint32_t)sp[3] * (uint32_t)ta) / 255u);
+            uint8_t *dp = dev->backbuffer + ((size_t)y * (size_t)dev->width + (size_t)x) * 4u;
+            blend_pixel_rgba8(dp, sr, sg, sb, sa);
+        }
+    }
+    dev->draw_calls++;
+    return 0;
 }
 
 void twd_gfx_set_viewport(
@@ -636,6 +785,10 @@ static void bind_gl_pipeline(twd_gfx_device_t *dev) {
     if (dev->gl_bind_buffer) {
         if (dev->bound_vb_gl) dev->gl_bind_buffer(0x8892u, dev->bound_vb_gl);
         if (dev->bound_ib_gl) dev->gl_bind_buffer(0x8893u, dev->bound_ib_gl);
+    }
+    if (dev->gl_bind_texture && dev->bound_ps_srv_gl[0]) {
+        if (dev->gl_active_texture) dev->gl_active_texture(0x84C0u); /* GL_TEXTURE0 */
+        dev->gl_bind_texture(0x0DE1u, dev->bound_ps_srv_gl[0]);
     }
 }
 
@@ -756,7 +909,7 @@ static uint32_t shim_release(void *self) {
         twd_gfx_buffer_destroy(o->buf);
     } else if (o->kind == TWD_KIND_TEX2D && o->tex) {
         twd_gfx_texture_destroy(o->tex);
-    } else if (o->kind == TWD_KIND_DEVICE && o->parent) {
+    } else if ((o->kind == TWD_KIND_DEVICE || o->kind == TWD_KIND_VIEW) && o->parent) {
         shim_release(o->parent);
     }
     if (o->gfx) {
@@ -844,6 +997,26 @@ static int32_t shim_dev_create_tex2d(
         *pp_tex = to;
     } else {
         twd_gfx_texture_destroy(gt);
+    }
+    return 0;
+}
+
+static int32_t shim_dev_create_srv(
+    void *self, void *resource, const void *desc, void **pp_out) {
+    (void)desc;
+    shim_com_obj_t *dev = (shim_com_obj_t *)self;
+    if (!dev) return (int32_t)0x80070057u;
+    if (pp_out) {
+        shim_com_obj_t *res = (shim_com_obj_t *)resource;
+        shim_com_obj_t *parent_ref = (res && res->magic == TWD_OBJ_MAGIC) ? res : NULL;
+        shim_com_obj_t *o = alloc_shim_obj(g_child_vtbl, TWD_KIND_VIEW, dev->gfx, parent_ref);
+        if (!o) return (int32_t)0x8007000Eu;
+        if (parent_ref) {
+            shim_add_ref(parent_ref);
+            o->tex = parent_ref->tex;
+            o->buf = parent_ref->buf;
+        }
+        *pp_out = o;
     }
     return 0;
 }
@@ -1015,6 +1188,37 @@ static void shim_ctx_copy_resource(void *self, void *dst_resource, void *src_res
     if (ctx && ctx->gfx) ctx->gfx->update_calls++;
 }
 
+static void shim_ctx_ps_set_shader_resources(
+    void *self, uint32_t start_slot, uint32_t num_views, void *const *srvs) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (!ctx || !ctx->gfx || start_slot >= 8u) return;
+    for (uint32_t i = 0u; i < num_views && (start_slot + i) < 8u; ++i) {
+        void *v = srvs ? srvs[i] : NULL;
+        ctx->gfx->bound_ps_srvs[start_slot + i] = v;
+        shim_com_obj_t *vo = (shim_com_obj_t *)v;
+        ctx->gfx->bound_ps_srv_gl[start_slot + i] =
+            (vo && vo->magic == TWD_OBJ_MAGIC && vo->tex) ? vo->tex->gl_handle : 0u;
+    }
+}
+
+static void shim_ctx_vs_set_constant_buffers(
+    void *self, uint32_t start_slot, uint32_t num_bufs, void *const *bufs) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (!ctx || !ctx->gfx || start_slot >= 8u) return;
+    for (uint32_t i = 0u; i < num_bufs && (start_slot + i) < 8u; ++i) {
+        ctx->gfx->bound_vs_cbs[start_slot + i] = bufs ? bufs[i] : NULL;
+    }
+}
+
+static void shim_ctx_ps_set_constant_buffers(
+    void *self, uint32_t start_slot, uint32_t num_bufs, void *const *bufs) {
+    shim_com_obj_t *ctx = (shim_com_obj_t *)self;
+    if (!ctx || !ctx->gfx || start_slot >= 8u) return;
+    for (uint32_t i = 0u; i < num_bufs && (start_slot + i) < 8u; ++i) {
+        ctx->gfx->bound_ps_cbs[start_slot + i] = bufs ? bufs[i] : NULL;
+    }
+}
+
 static void shim_ctx_ps_set_shader(void *self, void *ps, const void *const *cls, uint32_t num) {
     (void)cls;
     (void)num;
@@ -1165,7 +1369,7 @@ static void init_shim_vtbls(void) {
     g_dev_vtbl[2]  = (twd_vfn_t)&shim_release;
     g_dev_vtbl[3]  = (twd_vfn_t)&shim_dev_create_buffer;
     g_dev_vtbl[5]  = (twd_vfn_t)&shim_dev_create_tex2d;
-    g_dev_vtbl[7]  = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateShaderResourceView */
+    g_dev_vtbl[7]  = (twd_vfn_t)&shim_dev_create_srv;         /* CreateShaderResourceView */
     g_dev_vtbl[9]  = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateRenderTargetView */
     g_dev_vtbl[10] = (twd_vfn_t)&shim_dev_create_generic_obj; /* CreateDepthStencilView */
     g_dev_vtbl[11] = (twd_vfn_t)&shim_dev_create_input_layout;
@@ -1184,12 +1388,15 @@ static void init_shim_vtbls(void) {
     g_ctx_vtbl[0]  = (twd_vfn_t)&shim_query_interface;
     g_ctx_vtbl[1]  = (twd_vfn_t)&shim_add_ref;
     g_ctx_vtbl[2]  = (twd_vfn_t)&shim_release;
+    g_ctx_vtbl[7]  = (twd_vfn_t)&shim_ctx_vs_set_constant_buffers;
+    g_ctx_vtbl[8]  = (twd_vfn_t)&shim_ctx_ps_set_shader_resources;
     g_ctx_vtbl[9]  = (twd_vfn_t)&shim_ctx_ps_set_shader;
     g_ctx_vtbl[11] = (twd_vfn_t)&shim_ctx_vs_set_shader;
     g_ctx_vtbl[12] = (twd_vfn_t)&shim_ctx_draw_indexed;
     g_ctx_vtbl[13] = (twd_vfn_t)&shim_ctx_draw;
     g_ctx_vtbl[14] = (twd_vfn_t)&shim_ctx_map;
     g_ctx_vtbl[15] = (twd_vfn_t)&shim_ctx_unmap;
+    g_ctx_vtbl[16] = (twd_vfn_t)&shim_ctx_ps_set_constant_buffers;
     g_ctx_vtbl[17] = (twd_vfn_t)&shim_ctx_ia_set_input_layout;
     g_ctx_vtbl[18] = (twd_vfn_t)&shim_ctx_ia_set_vertex_buffers;
     g_ctx_vtbl[19] = (twd_vfn_t)&shim_ctx_ia_set_index_buffer;

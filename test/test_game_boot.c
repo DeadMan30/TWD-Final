@@ -29,7 +29,8 @@ int main(void) {
         "RenderSetTextureQuality(2)\n"
         "DoFile(\"scripts/boot_sub.lua\")\n";
     static const char s_sub_lua[] =
-        "ResourceSetEnable(\"Menu\")\n";
+        "ResourceSetEnable(\"Menu\")\n"
+        "SceneOpen(\"Menu.scene\")\n";
     uint8_t s_prefs[128];
     memset(s_prefs, 0, sizeof(s_prefs));
     size_t po = 0u;
@@ -194,10 +195,11 @@ int main(void) {
     if (stats.found_prefs_prop != 1 || stats.prefs_meta_version != 6u ||
         stats.prefs_property_count != 3u || stats.found_boot_lua != 1 ||
         stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u ||
-        stats.boot_textures_loaded != 1u) return 8;
+        stats.boot_textures_loaded != 1u ||
+        strcmp(stats.active_scene, "Menu.scene") != 0) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1600u || stats.height != 900u) return 10;
-    if (stats.frames_rendered != 4ULL || stats.clean_shutdown != 1) return 11;
+    if (stats.frames_rendered != 4ULL || stats.draw_calls < 4ULL || stats.clean_shutdown != 1) return 11;
 
     char kv[32];
     if (twd_kv_get("prefs", "windowed", kv, sizeof(kv)) <= 0 || strcmp(kv, "1") != 0) return 12;

@@ -1178,6 +1178,121 @@ int main(void) {
         free(dec_rgba);
     }
 
+    {
+        /* Test D3D11 SRV binding, software backbuffer sprite blit, and Telltale .font parser/blitter */
+        twd_gfx_device_t *bb_dev = twd_d3d11_get_gfx_device(rd3d);
+        TWD_CHECK(bb_dev != NULL);
+
+        float clr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        twd_gfx_clear(bb_dev, clr, 1.0f, 0u);
+        uint32_t bb_w = 0u, bb_h = 0u;
+        size_t bb_sz = 0u;
+        const uint8_t *bb_px = twd_gfx_backbuffer_data(bb_dev, &bb_w, &bb_h, &bb_sz);
+        TWD_CHECK(bb_px != NULL && bb_w > 0u && bb_h > 0u && bb_sz == (size_t)bb_w * (size_t)bb_h * 4u);
+        TWD_CHECK(bb_px[0] == 0u && bb_px[3] == 255u);
+
+        twd_d3d11_tex2d_desc_t t2d;
+        memset(&t2d, 0, sizeof(t2d));
+        t2d.width = 4u;
+        t2d.height = 4u;
+        t2d.mip_levels = 1u;
+        t2d.array_size = 1u;
+        t2d.format = 28u;
+        uint8_t page_rgba[4 * 4 * 4];
+        memset(page_rgba, 0, sizeof(page_rgba));
+        /* Fill top-left 2x2 texels with red=255 in channel 0 (R) and alpha=255 */
+        for (int py = 0; py < 2; ++py) {
+            for (int px = 0; px < 2; ++px) {
+                size_t idx = ((size_t)py * 4u + (size_t)px) * 4u;
+                page_rgba[idx + 0u] = 255u;
+                page_rgba[idx + 1u] = 128u;
+                page_rgba[idx + 2u] = 64u;
+                page_rgba[idx + 3u] = 255u;
+            }
+        }
+        twd_d3d11_subresource_data_t init_sub;
+        init_sub.sys_mem = page_rgba;
+        init_sub.sys_mem_pitch = 16u;
+        init_sub.sys_mem_slice_pitch = 64u;
+        void *d3d_tex = NULL;
+        typedef int32_t (*create_t2d_fn)(void *, const twd_d3d11_tex2d_desc_t *, const twd_d3d11_subresource_data_t *, void **);
+        typedef int32_t (*create_srv_fn)(void *, void *, const void *, void **);
+        typedef void (*ps_srv_fn)(void *, uint32_t, uint32_t, void *const *);
+        TWD_CHECK(((create_t2d_fn)(*(void *const **)rd3d)[5])(rd3d, &t2d, &init_sub, &d3d_tex) == 0);
+        TWD_CHECK(d3d_tex != NULL);
+        void *d3d_srv = NULL;
+        TWD_CHECK(((create_srv_fn)(*(void *const **)rd3d)[7])(rd3d, d3d_tex, NULL, &d3d_srv) == 0);
+        TWD_CHECK(d3d_srv != NULL);
+        void *bb_ctx = NULL;
+        ((void (*)(void *, void **))(*(void *const **)rd3d)[40])(rd3d, &bb_ctx);
+        TWD_CHECK(bb_ctx != NULL);
+        ((ps_srv_fn)(*(void *const **)bb_ctx)[8])(bb_ctx, 0u, 1u, &d3d_srv);
+        TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)d3d_srv)[2])(d3d_srv) == 0u);
+        TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)d3d_tex)[2])(d3d_tex) == 0u);
+        TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)bb_ctx)[2])(bb_ctx) >= 1u);
+
+        /* Build synthetic MSV6 Font with 1 glyph ('A' = 65) mapped to top-left 2x2 on 4x4 channel 0 */
+        uint8_t fpkt[256];
+        memset(fpkt, 0, sizeof(fpkt));
+        size_t fo = 0u;
+        memcpy(fpkt + fo, "6VSM", 4u); fo += 4u;
+        size_t f_def_off = fo; fo += 4u;
+        fo += 8u; /* debug + async */
+        fo += 4u; /* type_count = 0 */
+        size_t f_start = fo;
+        /* mName ("ui", len=2, block=10) */
+        fpkt[fo++] = 10u; fo += 3u;
+        fpkt[fo++] = 2u; fo += 3u;
+        fpkt[fo++] = 'u'; fpkt[fo++] = 'i';
+        /* mbUnicode (1), mHeight (16.0f), mBase (12.0f) */
+        fpkt[fo++] = 1u;
+        { float fh = 16.0f, fb = 12.0f; memcpy(fpkt + fo, &fh, 4u); fo += 4u; memcpy(fpkt + fo, &fb, 4u); fo += 4u; }
+        /* mGlyphInfo (Map<uint32, GlyphInfo>): 1 entry (4 + 44 = 48B) -> block=4+4+48=56 */
+        fpkt[fo++] = 56u; fo += 3u;
+        fpkt[fo++] = 1u; fo += 3u; /* count = 1 */
+        fpkt[fo++] = 'A'; fo += 3u; /* key = 65 */
+        /* texture_page=0 (4B), channel=0 (4B), u0=0.0, u1=0.5, v0=0.0, v1=0.5, w=2, h=2, xoff=0, yoff=0, xadv=4 */
+        fo += 8u;
+        {
+            float gf[9] = {0.0f, 0.5f, 0.0f, 0.5f, 2.0f, 2.0f, 0.0f, 0.0f, 4.0f};
+            memcpy(fpkt + fo, gf, sizeof(gf));
+            fo += sizeof(gf);
+        }
+        /* mTexturePages (DCArray): block=16, count=1, hash */
+        fpkt[fo++] = 16u; fo += 3u;
+        fpkt[fo++] = 1u; fo += 3u;
+        fo += 8u;
+        /* mIsDistanceField, mIsRuntime, mIsFiltered */
+        fpkt[fo++] = 0u; fpkt[fo++] = 0u; fpkt[fo++] = 1u;
+        /* mTtfData (block=8, size=0), mBasePointSize (16.0f), mPreferredPointSizes (block=8, count=0) */
+        fpkt[fo++] = 8u; fo += 3u; fo += 4u;
+        { float bps = 16.0f; memcpy(fpkt + fo, &bps, 4u); fo += 4u; }
+        fpkt[fo++] = 8u; fo += 3u; fo += 4u;
+        {
+            uint32_t f_dsz = (uint32_t)(fo - f_start);
+            memcpy(fpkt + f_def_off, &f_dsz, 4u);
+        }
+
+        twd_font_t tfnt;
+        TWD_CHECK(twd_font_parse_memory(fpkt, fo, &tfnt) == 0);
+        TWD_CHECK(strcmp(tfnt.name, "ui") == 0 && tfnt.glyph_count == 1u);
+        const twd_font_glyph_t *ag = twd_font_find_glyph(&tfnt, (uint32_t)'A');
+        TWD_CHECK(ag != NULL && ag->channel == 0 && ag->x_advance == 4.0f);
+
+        twd_gfx_texture_t *page_tex = twd_gfx_texture_create(bb_dev, 4u, 4u, 28u);
+        TWD_CHECK(page_tex != NULL);
+        TWD_CHECK(twd_gfx_texture_update(page_tex, page_rgba, sizeof(page_rgba)) == 0);
+        TWD_CHECK(twd_font_attach_page(&tfnt, 0u, page_tex) == 0);
+
+        static const uint8_t cyan[4] = {10u, 200u, 250u, 255u};
+        float adv = twd_font_draw_text(bb_dev, &tfnt, 4.0f, 4.0f, 1.0f, cyan, "A");
+        TWD_CHECK(adv == 4.0f);
+        size_t px_off = ((size_t)4u * (size_t)bb_w + 4u) * 4u;
+        TWD_CHECK(bb_px[px_off + 0u] == 10u && bb_px[px_off + 1u] == 200u && bb_px[px_off + 2u] == 250u);
+        twd_gfx_texture_destroy(page_tex);
+        twd_font_free(&tfnt);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 
