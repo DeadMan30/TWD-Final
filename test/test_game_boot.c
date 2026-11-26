@@ -30,7 +30,9 @@ int main(void) {
         "DoFile(\"scripts/boot_sub.lua\")\n";
     static const char s_sub_lua[] =
         "ResourceSetEnable(\"Menu\")\n"
-        "SceneOpen(\"Menu.scene\")\n";
+        "SceneOpen(\"Menu.scene\")\n"
+        "SceneAddAgent(\"Menu.scene\", \"OverlayCursor\")\n"
+        "AgentSetPos(\"OverlayCursor\", 10, 20, 0)\n";
     uint8_t s_prefs[128];
     memset(s_prefs, 0, sizeof(s_prefs));
     size_t po = 0u;
@@ -109,10 +111,45 @@ int main(void) {
     s_d3dtx[to++] = 0x00u; s_d3dtx[to++] = 0x00u;
     to += 4u;
 
-    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0splash.d3dtx\0";
+    uint8_t s_scene[256];
+    memset(s_scene, 0, sizeof(s_scene));
+    size_t so = 0u;
+    memcpy(s_scene + so, "6VSM", 4u); so += 4u;
+    size_t sc_def_off = so; so += 4u;
+    so += 8u; /* debug + async */
+    wr_u32(s_scene + so, 0u); so += 4u;
+    size_t sc_start = so;
+    s_scene[so++] = 0u; /* mbHidden = 0 */
+    wr_u32(s_scene + so, 18u); so += 4u; /* mName ("Menu.scene") */
+    wr_u32(s_scene + so, 10u); so += 4u;
+    memcpy(s_scene + so, "Menu.scene", 10u); so += 10u;
+    wr_u32(s_scene + so, 8u); so += 4u; /* mReferencedScenes (0) */
+    so += 4u;
+    size_t al_off = so; so += 4u;
+    wr_u32(s_scene + so, 2u); so += 4u; /* 2 agents */
+    /* Agent 0: CamMain */
+    wr_u32(s_scene + so, 15u); so += 4u;
+    wr_u32(s_scene + so, 7u); so += 4u;
+    memcpy(s_scene + so, "CamMain", 7u); so += 7u;
+    wr_u32(s_scene + so, 2u); so += 4u;
+    wr_u32(s_scene + so, 0u); so += 4u;
+    wr_u32(s_scene + so, 8u); so += 4u;
+    so += 8u;
+    /* Agent 1: TitleLogo */
+    wr_u32(s_scene + so, 17u); so += 4u;
+    wr_u32(s_scene + so, 9u); so += 4u;
+    memcpy(s_scene + so, "TitleLogo", 9u); so += 9u;
+    wr_u32(s_scene + so, 2u); so += 4u;
+    wr_u32(s_scene + so, 0u); so += 4u;
+    wr_u32(s_scene + so, 8u); so += 4u;
+    so += 8u;
+    wr_u32(s_scene + al_off, (uint32_t)(so - al_off));
+    wr_u32(s_scene + sc_def_off, (uint32_t)(so - sc_start));
+
+    static const char names[] = "_boot.lua\0prefs.prop\0Master.bank\0scripts/boot_sub.lua\0splash.d3dtx\0Menu.scene\0";
 
     enum {
-        N_ENT = 5,
+        N_ENT = 6,
         NAMES_SZ = sizeof(names) - 1,
         DATA_BASE = 12 + N_ENT * 28 + NAMES_SZ,
         BOOT_LEN = sizeof(s_boot_lua) - 1,
@@ -120,9 +157,10 @@ int main(void) {
         BANK_LEN = sizeof(s_bank),
         SUB_LEN = sizeof(s_sub_lua) - 1,
         TEX_LEN = 211,
-        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN
+        SCENE_LEN = 127,
+        PAYLOAD_SZ = DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN + SCENE_LEN
     };
-    if (po != (size_t)PREFS_LEN || to != (size_t)TEX_LEN) return 99;
+    if (po != (size_t)PREFS_LEN || to != (size_t)TEX_LEN || so != (size_t)SCENE_LEN) return 99;
 
     uint8_t pkg[12 + PAYLOAD_SZ];
     memset(pkg, 0, sizeof(pkg));
@@ -159,12 +197,18 @@ int main(void) {
     wr_u32(toc + 12u + 4u * 28u + 16u, (uint32_t)TEX_LEN);
     wr_u16(toc + 12u + 4u * 28u + 26u, 54u);
 
+    wr_u64(toc + 12u + 5u * 28u + 0u, twd_crc64(0ULL, "Menu.scene"));
+    wr_u64(toc + 12u + 5u * 28u + 8u, (uint64_t)(BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN));
+    wr_u32(toc + 12u + 5u * 28u + 16u, (uint32_t)SCENE_LEN);
+    wr_u16(toc + 12u + 5u * 28u + 26u, 67u);
+
     memcpy(toc + 12u + N_ENT * 28u, names, NAMES_SZ);
     memcpy(toc + DATA_BASE, s_boot_lua, BOOT_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN, s_prefs, PREFS_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN, s_bank, BANK_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN, s_sub_lua, SUB_LEN);
     memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN, s_d3dtx, TEX_LEN);
+    memcpy(toc + DATA_BASE + BOOT_LEN + PREFS_LEN + BANK_LEN + SUB_LEN + TEX_LEN, s_scene, SCENE_LEN);
 
     if (twd_mkdir("twd_boot_smoke_dir") != 0) return 1;
     twd_file_t f;
@@ -196,6 +240,7 @@ int main(void) {
         stats.prefs_property_count != 3u || stats.found_boot_lua != 1 ||
         stats.boot_script_ran != 1 || stats.boot_scripts_executed != 2u ||
         stats.boot_textures_loaded != 1u ||
+        stats.boot_scenes_active != 1u || stats.boot_scene_agents != 3u ||
         strcmp(stats.active_scene, "Menu.scene") != 0) return 8;
     if ((stats.audio_caps & TWD_AUDIO_CAP_MIXER) == 0) return 9;
     if (stats.width != 1600u || stats.height != 900u) return 10;

@@ -832,6 +832,7 @@ typedef struct twd_propset {
     int truncated;
 } twd_propset_t;
 
+int twd_propset_parse_stream(const void *data, size_t len, size_t *out_consumed, twd_propset_t *out);
 int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out);
 void twd_propset_free(twd_propset_t *ps);
 const twd_prop_entry_t *twd_propset_find(const twd_propset_t *ps, const char *key);
@@ -842,6 +843,52 @@ uint32_t twd_propset_get_u32(const twd_propset_t *ps, const char *key, uint32_t 
 float twd_propset_get_f32(const twd_propset_t *ps, const char *key, float default_val);
 const char *twd_propset_get_str(const twd_propset_t *ps, const char *key, const char *default_val);
 int twd_propset_get_vec2(const twd_propset_t *ps, const char *key, float *out_x, float *out_y);
+int twd_propset_get_vec3(const twd_propset_t *ps, const char *key, float out_xyz[3]);
+
+/* Telltale Scene (.scene) Binary Parser & Active Scene/Agent Manager */
+#define TWD_SCENE_MAX_REFS 32u
+
+typedef struct twd_scene_agent {
+    char name[128];
+    float pos[3];
+    int visible;
+    char render_mesh[128];
+    char ui_text[128];
+    twd_propset_t props;
+} twd_scene_agent_t;
+
+typedef struct twd_scene {
+    char name[128];
+    int hidden;
+    int active;
+    uint32_t ref_scene_count;
+    uint64_t ref_scene_hashes[TWD_SCENE_MAX_REFS];
+    uint32_t agent_count;
+    uint32_t agent_cap;
+    twd_scene_agent_t *agents;
+} twd_scene_t;
+
+typedef struct twd_scene_mgr twd_scene_mgr_t;
+
+int twd_scene_parse_memory(const void *data, size_t size, twd_scene_t *out);
+void twd_scene_free(twd_scene_t *sc);
+twd_scene_agent_t *twd_scene_find_agent(twd_scene_t *sc, const char *agent_name);
+
+twd_scene_mgr_t *twd_scene_mgr_create(void);
+void twd_scene_mgr_destroy(twd_scene_mgr_t *mgr);
+int twd_scene_mgr_open(twd_scene_mgr_t *mgr, const char *scene_name);
+int twd_scene_mgr_add(twd_scene_mgr_t *mgr, const char *scene_name);
+int twd_scene_mgr_remove(twd_scene_mgr_t *mgr, const char *scene_name);
+void twd_scene_mgr_remove_all(twd_scene_mgr_t *mgr);
+int twd_scene_mgr_hide(twd_scene_mgr_t *mgr, const char *scene_name, int hidden);
+twd_scene_t *twd_scene_mgr_find(twd_scene_mgr_t *mgr, const char *scene_name);
+int twd_scene_mgr_add_agent(
+    twd_scene_mgr_t *mgr, const char *scene_name, const char *agent_name, const float pos[3]);
+twd_scene_agent_t *twd_scene_mgr_find_agent(
+    twd_scene_mgr_t *mgr, const char *agent_name, const char *opt_scene_name);
+uint32_t twd_scene_mgr_scene_count(const twd_scene_mgr_t *mgr);
+uint32_t twd_scene_mgr_total_agent_count(const twd_scene_mgr_t *mgr);
+const char *twd_scene_mgr_primary_name(const twd_scene_mgr_t *mgr);
 
 /* --- Lua 5.2 script chunk unwrapper & lightweight boot VM --- */
 typedef enum twd_lua_chunk_kind {

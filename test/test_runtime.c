@@ -1293,6 +1293,121 @@ int main(void) {
         twd_font_free(&tfnt);
     }
 
+    {
+        /* Test Telltale Scene (.scene) MSV6 parser & active Scene/Agent registry */
+        uint8_t sc_pkt[512];
+        memset(sc_pkt, 0, sizeof(sc_pkt));
+        size_t so = 0u;
+        memcpy(sc_pkt + so, "6VSM", 4u); so += 4u;
+        size_t sc_def_off = so; so += 4u;
+        so += 8u; /* debug + async */
+        so += 4u; /* type_count = 0 */
+        size_t sc_start = so;
+        /* mbHidden = 0 */
+        sc_pkt[so++] = 0u;
+        /* mName ("Menu.scene", len=10, block=4+4+10=18) */
+        sc_pkt[so++] = 18u; so += 3u;
+        sc_pkt[so++] = 10u; so += 3u;
+        memcpy(sc_pkt + so, "Menu.scene", 10u); so += 10u;
+        /* mReferencedScenes (block=16, count=1, 8-byte hash) */
+        sc_pkt[so++] = 16u; so += 3u;
+        sc_pkt[so++] = 1u; so += 3u;
+        {
+            uint64_t refh = twd_crc64(0ULL, "Backdrop.scene");
+            memcpy(sc_pkt + so, &refh, 8u);
+            so += 8u;
+        }
+        /* mAgentList: blocked AgentList */
+        size_t al_blk_off = so; so += 4u;
+        sc_pkt[so++] = 2u; so += 3u; /* agent_count = 2 */
+
+        /* Agent 0: "MenuCamera" with Vec3 "Agent Position" = {1.0f, 2.5f, -4.0f} */
+        sc_pkt[so++] = 18u; so += 3u; /* name block: 4 + 4 + 10 */
+        sc_pkt[so++] = 10u; so += 3u;
+        memcpy(sc_pkt + so, "MenuCamera", 10u); so += 10u;
+        {
+            uint32_t pv = 2u, pf = 0u;
+            memcpy(sc_pkt + so, &pv, 4u); so += 4u;
+            memcpy(sc_pkt + so, &pf, 4u); so += 4u;
+            size_t pb_off = so; so += 4u;
+            size_t pb_st = so;
+            so += 4u; /* parent_cnt = 0 */
+            sc_pkt[so++] = 1u; so += 3u; /* num_groups = 1 */
+            uint64_t tc = twd_crc64(0ULL, "Vector3");
+            memcpy(sc_pkt + so, &tc, 8u); so += 8u;
+            sc_pkt[so++] = 1u; so += 3u; /* count = 1 */
+            uint64_t kc = twd_crc64(0ULL, "Agent Position");
+            memcpy(sc_pkt + so, &kc, 8u); so += 8u;
+            float v3[3] = {1.0f, 2.5f, -4.0f};
+            memcpy(sc_pkt + so, v3, sizeof(v3)); so += sizeof(v3);
+            uint32_t pb_sz = (uint32_t)(so - pb_st);
+            memcpy(sc_pkt + pb_off, &pb_sz, 4u);
+        }
+
+        /* Agent 1: "UI_Title" with bool "Visible" = 0, String "UI Text" = "PLAY" */
+        sc_pkt[so++] = 16u; so += 3u; /* name block: 4 + 4 + 8 */
+        sc_pkt[so++] = 8u; so += 3u;
+        memcpy(sc_pkt + so, "UI_Title", 8u); so += 8u;
+        {
+            uint32_t pv = 2u, pf = 0u;
+            memcpy(sc_pkt + so, &pv, 4u); so += 4u;
+            memcpy(sc_pkt + so, &pf, 4u); so += 4u;
+            size_t pb_off = so; so += 4u;
+            size_t pb_st = so;
+            so += 4u; /* parent_cnt = 0 */
+            sc_pkt[so++] = 2u; so += 3u; /* num_groups = 2 */
+            uint64_t tc_b = twd_crc64(0ULL, "bool");
+            memcpy(sc_pkt + so, &tc_b, 8u); so += 8u;
+            sc_pkt[so++] = 1u; so += 3u;
+            uint64_t kc_v = twd_crc64(0ULL, "Visible");
+            memcpy(sc_pkt + so, &kc_v, 8u); so += 8u;
+            sc_pkt[so++] = 0u;
+            uint64_t tc_s = twd_crc64(0ULL, "String");
+            memcpy(sc_pkt + so, &tc_s, 8u); so += 8u;
+            sc_pkt[so++] = 1u; so += 3u;
+            uint64_t kc_t = twd_crc64(0ULL, "UI Text");
+            memcpy(sc_pkt + so, &kc_t, 8u); so += 8u;
+            sc_pkt[so++] = 4u; so += 3u;
+            memcpy(sc_pkt + so, "PLAY", 4u); so += 4u;
+            uint32_t pb_sz = (uint32_t)(so - pb_st);
+            memcpy(sc_pkt + pb_off, &pb_sz, 4u);
+        }
+
+        {
+            uint32_t al_blk_sz = (uint32_t)(so - al_blk_off);
+            memcpy(sc_pkt + al_blk_off, &al_blk_sz, 4u);
+            uint32_t sc_def_sz = (uint32_t)(so - sc_start);
+            memcpy(sc_pkt + sc_def_off, &sc_def_sz, 4u);
+        }
+
+        twd_scene_t sc_parsed;
+        TWD_CHECK(twd_scene_parse_memory(sc_pkt, so, &sc_parsed) == 0);
+        TWD_CHECK(strcmp(sc_parsed.name, "Menu.scene") == 0);
+        TWD_CHECK(sc_parsed.hidden == 0 && sc_parsed.ref_scene_count == 1u);
+        TWD_CHECK(sc_parsed.agent_count == 2u);
+        twd_scene_agent_t *cam = twd_scene_find_agent(&sc_parsed, "menucamera");
+        TWD_CHECK(cam != NULL && cam->visible == 1 &&
+                  cam->pos[0] == 1.0f && cam->pos[1] == 2.5f && cam->pos[2] == -4.0f);
+        twd_scene_agent_t *title = twd_scene_find_agent(&sc_parsed, "UI_Title");
+        TWD_CHECK(title != NULL && title->visible == 0 && strcmp(title->ui_text, "PLAY") == 0);
+        twd_scene_free(&sc_parsed);
+
+        twd_scene_mgr_t *smgr = twd_scene_mgr_create();
+        TWD_CHECK(smgr != NULL);
+        TWD_CHECK(twd_scene_mgr_open(smgr, "Menu.scene") == 0);
+        float apos[3] = {3.0f, 4.0f, 5.0f};
+        TWD_CHECK(twd_scene_mgr_add_agent(smgr, "Menu.scene", "Cursor", apos) == 0);
+        TWD_CHECK(twd_scene_mgr_add(smgr, "Overlay.scene") == 0);
+        TWD_CHECK(twd_scene_mgr_scene_count(smgr) == 2u);
+        TWD_CHECK(twd_scene_mgr_total_agent_count(smgr) == 1u);
+        TWD_CHECK(twd_scene_mgr_hide(smgr, "Overlay.scene", 1) == 0);
+        TWD_CHECK(twd_scene_mgr_find(smgr, "Overlay.scene")->hidden == 1);
+        TWD_CHECK(twd_scene_mgr_find_agent(smgr, "Cursor", NULL)->pos[1] == 4.0f);
+        TWD_CHECK(twd_scene_mgr_remove(smgr, "Overlay.scene") == 0);
+        TWD_CHECK(twd_scene_mgr_scene_count(smgr) == 1u);
+        twd_scene_mgr_destroy(smgr);
+    }
+
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
 

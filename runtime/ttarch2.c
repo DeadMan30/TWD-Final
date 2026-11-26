@@ -934,23 +934,13 @@ void twd_propset_free(twd_propset_t *ps) {
     memset(ps, 0, sizeof(*ps));
 }
 
-int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out) {
-    if (!data || !out) return -1;
+int twd_propset_parse_stream(const void *data, size_t len, size_t *out_consumed, twd_propset_t *out) {
+    if (!data || !out || len < 12u) return -1;
     memset(out, 0, sizeof(*out));
     const uint8_t *b = (const uint8_t *)data;
     size_t pos = 0u;
     size_t end_off = len;
 
-    twd_metastream_header_t mh;
-    if (twd_metastream_parse_header(data, len, &mh) == 0) {
-        if (mh.payload_offset > (uint64_t)len) return -1;
-        pos = (size_t)mh.payload_offset;
-        if (mh.default_size > 0u && (size_t)mh.default_size <= len - pos) {
-            end_off = pos + (size_t)mh.default_size;
-        }
-    }
-
-    if (pos + 12u > end_off) return -1;
     int32_t prop_ver = (int32_t)rd_u32(b + pos);
     uint32_t prop_flags = rd_u32(b + pos + 4u);
     uint32_t body_size = rd_u32(b + pos + 8u);
@@ -1060,7 +1050,27 @@ int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out) {
             out->entries[out->entry_count++] = ent;
         }
     }
+    if (out_consumed) *out_consumed = block_end;
     return 0;
+}
+
+int twd_propset_parse_memory(const void *data, size_t len, twd_propset_t *out) {
+    if (!data || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    const uint8_t *b = (const uint8_t *)data;
+    size_t pos = 0u;
+    size_t end_off = len;
+
+    twd_metastream_header_t mh;
+    if (twd_metastream_parse_header(data, len, &mh) == 0) {
+        if (mh.payload_offset > (uint64_t)len) return -1;
+        pos = (size_t)mh.payload_offset;
+        if (mh.default_size > 0u && (size_t)mh.default_size <= len - pos) {
+            end_off = pos + (size_t)mh.default_size;
+        }
+    }
+    if (pos > end_off) return -1;
+    return twd_propset_parse_stream(b + pos, end_off - pos, NULL, out);
 }
 
 const twd_prop_entry_t *twd_propset_find_crc(const twd_propset_t *ps, uint64_t key_crc) {
@@ -1115,5 +1125,12 @@ int twd_propset_get_vec2(const twd_propset_t *ps, const char *key, float *out_x,
     if (!e || e->kind != TWD_PROP_VEC2) return -1;
     if (out_x) *out_x = e->val.vec[0];
     if (out_y) *out_y = e->val.vec[1];
+    return 0;
+}
+
+int twd_propset_get_vec3(const twd_propset_t *ps, const char *key, float out_xyz[3]) {
+    const twd_prop_entry_t *e = twd_propset_find(ps, key);
+    if (!e || e->kind != TWD_PROP_VEC3) return -1;
+    if (out_xyz) memcpy(out_xyz, e->val.vec, sizeof(float) * 3u);
     return 0;
 }

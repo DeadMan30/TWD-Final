@@ -18,6 +18,7 @@ typedef struct twd_boot_loop_state {
     twd_gfx_device_t *gfx;
     twd_audio_system_t *audio;
     twd_video_player_t *video;
+    twd_scene_mgr_t *scenes;
     twd_gfx_texture_t *splash_tex;
     twd_font_t boot_font;
     int has_boot_font;
@@ -32,25 +33,135 @@ typedef struct twd_boot_loop_state {
 } twd_boot_loop_state_t;
 
 static int lua_scene_open(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
-    (void)vm; (void)user;
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
     if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        if (mgr && twd_scene_mgr_open(mgr, argv[0].u.str) == 0) ok = 1;
         (void)twd_kv_set("lua.scene", "active", argv[0].u.str);
         (void)twd_kv_set("lua.scene.state", argv[0].u.str, "1");
     }
-    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = 1; }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_scene_add(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        if (mgr && twd_scene_mgr_add(mgr, argv[0].u.str) == 0) ok = 1;
+        (void)twd_kv_set("lua.scene.state", argv[0].u.str, "1");
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
     return 0;
 }
 
 static int lua_scene_is_active(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
-    (void)vm; (void)user;
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
     int active = 0;
     if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
-        char buf[8];
-        if (twd_kv_get("lua.scene.state", argv[0].u.str, buf, sizeof(buf)) > 0 && strcmp(buf, "1") == 0) {
-            active = 1;
+        twd_scene_t *sc = mgr ? twd_scene_mgr_find(mgr, argv[0].u.str) : NULL;
+        if (sc) {
+            active = sc->active ? 1 : 0;
+        } else {
+            char buf[8];
+            if (twd_kv_get("lua.scene.state", argv[0].u.str, buf, sizeof(buf)) > 0 && strcmp(buf, "1") == 0) {
+                active = 1;
+            }
         }
     }
     if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = active; }
+    return 0;
+}
+
+static int lua_scene_hide(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
+    if (mgr && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        int h = (argc >= 2 && argv[1].kind == TWD_LUA_T_BOOL) ? argv[1].u.b : 1;
+        if (twd_scene_mgr_hide(mgr, argv[0].u.str, h) == 0) ok = 1;
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_scene_remove(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
+    if (mgr && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        if (twd_scene_mgr_remove(mgr, argv[0].u.str) == 0) ok = 1;
+        (void)twd_kv_set("lua.scene.state", argv[0].u.str, "0");
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_scene_find(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int found = (mgr && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str &&
+                 twd_scene_mgr_find(mgr, argv[0].u.str) != NULL) ? 1 : 0;
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = found; }
+    return 0;
+}
+
+static int lua_scene_get_agents(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    uint32_t cnt = 0u;
+    if (mgr && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        twd_scene_t *sc = twd_scene_mgr_find(mgr, argv[0].u.str);
+        if (sc) cnt = sc->agent_count;
+    } else if (mgr) {
+        cnt = twd_scene_mgr_total_agent_count(mgr);
+    }
+    if (ret) { ret->kind = TWD_LUA_T_NUM; ret->u.num = (float)cnt; }
+    return 0;
+}
+
+static int lua_scene_add_agent(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
+    if (mgr && argc >= 2 && argv[0].kind == TWD_LUA_T_STR && argv[1].kind == TWD_LUA_T_STR) {
+        float pos[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < 3 && (2 + i) < argc; ++i) {
+            if (argv[2 + i].kind == TWD_LUA_T_NUM) pos[i] = argv[2 + i].u.num;
+        }
+        if (twd_scene_mgr_add_agent(mgr, argv[0].u.str, argv[1].u.str, pos) == 0) ok = 1;
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
+    return 0;
+}
+
+static int lua_agent_find(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    const char *sc = (argc >= 2 && argv[1].kind == TWD_LUA_T_STR) ? argv[1].u.str : NULL;
+    int found = (mgr && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str &&
+                 twd_scene_mgr_find_agent(mgr, argv[0].u.str, sc) != NULL) ? 1 : 0;
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = found; }
+    return 0;
+}
+
+static int lua_agent_set_pos(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_scene_mgr_t *mgr = (twd_scene_mgr_t *)user;
+    int ok = 0;
+    if (mgr && argc >= 4 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        twd_scene_agent_t *ag = twd_scene_mgr_find_agent(mgr, argv[0].u.str, NULL);
+        if (ag && argv[1].kind == TWD_LUA_T_NUM && argv[2].kind == TWD_LUA_T_NUM && argv[3].kind == TWD_LUA_T_NUM) {
+            ag->pos[0] = argv[1].u.num;
+            ag->pos[1] = argv[2].u.num;
+            ag->pos[2] = argv[3].u.num;
+            ok = 1;
+        }
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = ok; }
     return 0;
 }
 
@@ -266,6 +377,10 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
             }
         }
     }
+    twd_boot_loop_state_t st;
+    memset(&st, 0, sizeof(st));
+    st.scenes = twd_scene_mgr_create();
+
     local_stats.found_prefs_prop =
         boot_load_prefs_prop("prefs.prop", &local_stats, &w, &h) ||
         boot_load_prefs_prop("config/prefs.prop", &local_stats, &w, &h);
@@ -283,9 +398,16 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
             local_stats.found_boot_lua = 1;
             twd_lua_vm_t *lvm = twd_lua_vm_create();
             if (lvm) {
-                (void)twd_lua_vm_register(lvm, "SceneOpen", lua_scene_open, NULL);
-                (void)twd_lua_vm_register(lvm, "SceneAdd", lua_scene_open, NULL);
-                (void)twd_lua_vm_register(lvm, "SceneIsActive", lua_scene_is_active, NULL);
+                (void)twd_lua_vm_register(lvm, "SceneOpen", lua_scene_open, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneAdd", lua_scene_add, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneIsActive", lua_scene_is_active, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneHide", lua_scene_hide, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneRemove", lua_scene_remove, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneFind", lua_scene_find, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneGetAgents", lua_scene_get_agents, st.scenes);
+                (void)twd_lua_vm_register(lvm, "SceneAddAgent", lua_scene_add_agent, st.scenes);
+                (void)twd_lua_vm_register(lvm, "AgentFind", lua_agent_find, st.scenes);
+                (void)twd_lua_vm_register(lvm, "AgentSetPos", lua_agent_set_pos, st.scenes);
                 (void)twd_lua_vm_register(lvm, "Input_IsKeyDown", lua_input_is_key_down, NULL);
                 (void)twd_lua_vm_register(lvm, "CursorGetPos", lua_cursor_get_pos, NULL);
                 (void)twd_lua_vm_register(lvm, "GameEngine_Quit", lua_engine_quit, NULL);
@@ -298,11 +420,22 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         }
         if (boot_buf) twd_asset_free(boot_buf);
     }
-    (void)twd_kv_get("lua.scene", "active", local_stats.active_scene, sizeof(local_stats.active_scene));
+    if (st.scenes) {
+        local_stats.boot_scenes_active = twd_scene_mgr_scene_count(st.scenes);
+        local_stats.boot_scene_agents = twd_scene_mgr_total_agent_count(st.scenes);
+        const char *primary = twd_scene_mgr_primary_name(st.scenes);
+        if (primary) {
+            size_t plen = strlen(primary);
+            if (plen >= sizeof(local_stats.active_scene)) plen = sizeof(local_stats.active_scene) - 1u;
+            memcpy(local_stats.active_scene, primary, plen);
+            local_stats.active_scene[plen] = '\0';
+        }
+    }
+    if (local_stats.active_scene[0] == '\0') {
+        (void)twd_kv_get("lua.scene", "active", local_stats.active_scene, sizeof(local_stats.active_scene));
+    }
 
     /* 3. Create window + graphics device / DXBC shader cache */
-    twd_boot_loop_state_t st;
-    memset(&st, 0, sizeof(st));
     st.cfg = def_cfg;
     st.cfg.width = w;
     st.cfg.height = h;
@@ -404,6 +537,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     /* 6. Ordered shutdown */
     if (st.has_boot_font) twd_font_free(&st.boot_font);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);
+    if (st.scenes) twd_scene_mgr_destroy(st.scenes);
     if (st.video) twd_video_destroy(st.video);
     if (st.audio) twd_audio_system_release(st.audio);
     if (st.owns_gfx_direct) {

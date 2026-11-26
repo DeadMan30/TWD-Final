@@ -10,6 +10,7 @@ add_library(twdrt STATIC
     lua_vm.c
     d3dtx.c
     font.c
+    scene.c
     android_entry.c
     $<$<BOOL:${ANDROID}>:platform_android.c>
     $<$<NOT:$<BOOL:${ANDROID}>>:platform_host.c>
