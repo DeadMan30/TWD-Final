@@ -616,6 +616,32 @@ void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size) {
     return NULL;
 }
 
+void *twd_ttarch2_lookup_mounted_crc64_alloc(uint64_t crc64, size_t *out_size) {
+    if (out_size) *out_size = 0u;
+    if (crc64 == 0ULL) return NULL;
+    for (size_t i = g_mounted_count; i > 0u; --i) {
+        twd_ttarch2_archive_t *a = g_mounted[i - 1u];
+        uint32_t idx = 0u;
+        if (twd_ttarch2_find_crc64(a, crc64, &idx, NULL) == 0) {
+            void *p = twd_ttarch2_read_entry_alloc(a, idx, out_size);
+            if (p) return p;
+        }
+    }
+    return NULL;
+}
+
+int twd_ttarch2_exists_mounted(const char *rel_path) {
+    if (!rel_path || rel_path[0] == '\0') return 0;
+    for (size_t i = g_mounted_count; i > 0u; --i) {
+        twd_ttarch2_archive_t *a = g_mounted[i - 1u];
+        uint32_t idx = 0u;
+        if (twd_ttarch2_find(a, rel_path, &idx, NULL) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---------- ECMA-182 CRC64 & MetaStream Header Parser ---------- */
 
 #define TWD_CRC64_POLY 0x42F0E1EBA9EA3693ULL
@@ -758,7 +784,8 @@ typedef enum propset_wire {
     PW_VEC2,
     PW_VEC3,
     PW_VEC4,
-    PW_IRECT
+    PW_IRECT,
+    PW_ATTACH
 } propset_wire_t;
 
 static propset_wire_t propset_classify_wire(uint64_t type_crc) {
@@ -774,6 +801,7 @@ static propset_wire_t propset_classify_wire(uint64_t type_crc) {
         return PW_I32;
     case 0x4b26a2ca30de3f32ULL: /* uint32 */
     case 0xbcbae3735c6dc8d8ULL: /* U32 */
+    case 0x9352ba2255605a10ULL: /* ToolProps / Flags */
         return PW_U32;
     case 0x268e0b3fc19a48aeULL: /* int64 */
     case 0x2efe37b2d168d5b8ULL: /* S64 */
@@ -784,6 +812,7 @@ static propset_wire_t propset_classify_wire(uint64_t type_crc) {
     case 0xbae4cbd77f139a91ULL: return PW_F32;    /* float */
     case 0x5dc78f79fc4b8df7ULL: return PW_F64;    /* double */
     case 0xcd9c6e605f5af4b4ULL: return PW_STR;    /* String */
+    case 0x383aeb196c60831bULL: return PW_ATTACH; /* AgentAttachInfo */
     case 0x004f023463d89fb0ULL: /* Symbol */
     case 0x387e6b9ca558ac8dULL: /* Handle<PropertySet> */
     case 0x73e09e0f84717f0aULL: /* Handle<D3DMesh> */
@@ -810,7 +839,10 @@ static int propset_read_value(const uint8_t *b, size_t *pos, size_t limit,
     case PW_BOOL:
         if (*pos + 1u > limit) return -1;
         ent->kind = TWD_PROP_BOOL;
-        ent->val.b = (b[*pos] != 0u) ? 1 : 0;
+        {
+            uint8_t bv = b[*pos];
+            ent->val.b = (bv == 0u || bv == 0x30u) ? 0 : 1;
+        }
         *pos += 1u;
         return 0;
     case PW_I8:
@@ -883,6 +915,32 @@ static int propset_read_value(const uint8_t *b, size_t *pos, size_t limit,
         if (slen > 0u) memcpy(s, b + *pos, (size_t)slen);
         s[slen] = '\0';
         *pos += (size_t)slen;
+        ent->kind = TWD_PROP_STR;
+        ent->val.str = s;
+        return 0;
+    }
+    case PW_ATTACH: {
+        if (*pos + 8u > limit) return -1;
+        uint32_t str_blk = rd_u32(b + *pos);
+        if (str_blk < 8u || (size_t)str_blk > limit - *pos) return -1;
+        uint32_t slen = rd_u32(b + *pos + 4u);
+        size_t avail = (size_t)str_blk - 8u;
+        size_t cp = ((size_t)slen <= avail) ? (size_t)slen : avail;
+        char *s = (char *)malloc(cp + 1u);
+        if (!s) return -1;
+        if (cp > 0u) memcpy(s, b + *pos + 8u, cp);
+        s[cp] = '\0';
+        *pos += (size_t)str_blk;
+        if (*pos + 8u + 4u > limit) { free(s); return -1; }
+        *pos += 8u; /* parent node symbol */
+        uint32_t tfm_blk = rd_u32(b + *pos);
+        if (tfm_blk < 4u || (size_t)tfm_blk > limit - *pos) { free(s); return -1; }
+        if (tfm_blk >= 32u) {
+            ent->aux_vec[0] = rd_f32_le(b + *pos + 20u);
+            ent->aux_vec[1] = rd_f32_le(b + *pos + 24u);
+            ent->aux_vec[2] = rd_f32_le(b + *pos + 28u);
+        }
+        *pos += (size_t)tfm_blk;
         ent->kind = TWD_PROP_STR;
         ent->val.str = s;
         return 0;

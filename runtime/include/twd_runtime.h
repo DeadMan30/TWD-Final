@@ -774,6 +774,8 @@ void twd_asset_unmount_ttarch2(const twd_ttarch2_archive_t *arch);
 void twd_asset_unmount_all_ttarch2(void);
 int twd_ttarch2_mount_dir(const char *dir_path);
 void *twd_ttarch2_lookup_mounted_alloc(const char *rel_path, size_t *out_size);
+void *twd_ttarch2_lookup_mounted_crc64_alloc(uint64_t crc64, size_t *out_size);
+int twd_ttarch2_exists_mounted(const char *rel_path);
 
 /* Telltale ECMA-182 CRC64 & MetaStream Header Parser (verified against WalkingDead4.exe) */
 #define TWD_METASTREAM_NONE 0u
@@ -834,6 +836,7 @@ typedef struct twd_prop_entry {
         float vec[4];
         int32_t irect[4];
     } val;
+    float aux_vec[3];
 } twd_prop_entry_t;
 
 typedef struct twd_propset {
@@ -869,6 +872,8 @@ typedef struct twd_scene_agent {
     char render_mesh[128];
     char ui_text[128];
     twd_propset_t props;
+    char parent_name[128];
+    float scale[3];
 } twd_scene_agent_t;
 
 typedef struct twd_scene {

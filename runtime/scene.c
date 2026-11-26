@@ -63,10 +63,59 @@ static void sc_read_meta_string(const uint8_t *bs_ptr, size_t bs_len, char *dst,
 }
 
 static void sc_populate_agent_fields(twd_scene_agent_t *ag) {
+    ag->scale[0] = 1.0f;
+    ag->scale[1] = 1.0f;
+    ag->scale[2] = 1.0f;
     ag->visible = twd_propset_get_bool(&ag->props, "Visible", 1);
+    const twd_prop_entry_t *rv = twd_propset_find(&ag->props, "Runtime: Visible");
+    if (rv && rv->kind == TWD_PROP_BOOL) {
+        ag->visible = rv->val.b ? 1 : 0;
+    }
+    /* Retail scene hidden flag (0x2aa2de83fb51649c): 0x31=1 means hidden */
+    const twd_prop_entry_t *rh = twd_propset_find_crc(&ag->props, 0x2aa2de83fb51649cULL);
+    if (rh && rh->kind == TWD_PROP_BOOL && rh->val.b != 0) {
+        ag->visible = 0;
+    }
+
     (void)twd_propset_get_vec3(&ag->props, "Agent Position", ag->pos);
+    const twd_prop_entry_t *att = twd_propset_find_crc(&ag->props, 0xcdab21b527f20135ULL);
+    if (att) {
+        if (att->kind == TWD_PROP_STR && att->val.str && att->val.str[0] != '\0') {
+            sc_copy_str(ag->parent_name, sizeof(ag->parent_name), att->val.str);
+        }
+        ag->pos[0] = att->aux_vec[0];
+        ag->pos[1] = att->aux_vec[1];
+        ag->pos[2] = att->aux_vec[2];
+    }
+
+    const twd_prop_entry_t *asc = twd_propset_find(&ag->props, "Render Axis Scale");
+    if (asc && asc->kind == TWD_PROP_VEC3) {
+        ag->scale[0] = asc->val.vec[0];
+        ag->scale[1] = asc->val.vec[1];
+        ag->scale[2] = asc->val.vec[2];
+    }
+    float gscale = twd_propset_get_f32(&ag->props, "Render Global Scale", 1.0f);
+    if (gscale > 0.0f) {
+        ag->scale[0] *= gscale;
+        ag->scale[1] *= gscale;
+        ag->scale[2] *= gscale;
+    }
+
     const char *mesh = twd_propset_get_str(&ag->props, "Render Mesh", NULL);
-    if (mesh) sc_copy_str(ag->render_mesh, sizeof(ag->render_mesh), mesh);
+    if (mesh) {
+        sc_copy_str(ag->render_mesh, sizeof(ag->render_mesh), mesh);
+    } else if (ag->name[0] != '\0') {
+        char mname[160];
+        size_t nl = strlen(ag->name);
+        if (nl + 9u <= sizeof(mname)) {
+            memcpy(mname, ag->name, nl);
+            memcpy(mname + nl, ".d3dmesh", 9u);
+            if (twd_ttarch2_exists_mounted(mname)) {
+                sc_copy_str(ag->render_mesh, sizeof(ag->render_mesh), mname);
+            }
+        }
+    }
+
     const char *ui_txt = twd_propset_get_str(&ag->props, "UI Text", NULL);
     if (ui_txt) sc_copy_str(ag->ui_text, sizeof(ag->ui_text), ui_txt);
 }

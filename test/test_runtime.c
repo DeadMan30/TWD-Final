@@ -1905,6 +1905,101 @@ int main(void) {
         memcpy(&vy0, amesh.vertex_data + 4u, 4u);
         TWD_CHECK(vx0 > 1.99f && vx0 < 2.01f && vy0 > 1.99f && vy0 < 2.01f);
         twd_d3dmesh_free(&amesh);
+
+        /* Synthetic retail Scene AgentAttachInfo (PW_ATTACH) + 0x30/0x31 bool + Render Axis Scale + mounted CRC64 */
+        uint8_t ascene[320];
+        memset(ascene, 0, sizeof(ascene));
+        size_t aso = 0u;
+        memcpy(ascene + aso, "6VSM", 4u); aso += 4u;
+        size_t as_def = aso; aso += 4u;
+        aso += 8u;
+        ttarch_wr_u32(ascene + aso, 0u); aso += 4u;
+        size_t as_start = aso;
+        ascene[aso++] = 0x30u; /* scene visible */
+        ttarch_wr_u32(ascene + aso, 15u); aso += 4u;
+        ttarch_wr_u32(ascene + aso, 7u); aso += 4u;
+        memcpy(ascene + aso, "a.scene", 7u); aso += 7u;
+        ttarch_wr_u32(ascene + aso, 8u); aso += 8u; /* empty refs */
+        size_t al_blk = aso; aso += 4u;
+        ttarch_wr_u32(ascene + aso, 1u); aso += 4u; /* 1 agent */
+        ttarch_wr_u32(ascene + aso, 12u); aso += 4u;
+        ttarch_wr_u32(ascene + aso, 4u); aso += 4u;
+        memcpy(ascene + aso, "logo", 4u); aso += 4u;
+        size_t ap_start = aso;
+        ttarch_wr_u32(ascene + aso, 2u); aso += 4u;
+        ttarch_wr_u32(ascene + aso, 0u); aso += 4u;
+        size_t ap_bsz = aso; aso += 4u;
+        ttarch_wr_u32(ascene + aso, 0u); aso += 4u; /* 0 parents */
+        ttarch_wr_u32(ascene + aso, 3u); aso += 4u; /* bool + vec3 + attach */
+        /* Group 1: retail bool 0x30 (not hidden -> visible = 1) */
+        ttarch_wr_u64(ascene + aso, 0x9004c5587575d6c0ULL); aso += 8u;
+        ttarch_wr_u32(ascene + aso, 1u); aso += 4u;
+        ttarch_wr_u64(ascene + aso, 0x2aa2de83fb51649cULL); aso += 8u;
+        ascene[aso++] = 0x30u;
+        /* Group 2: Render Axis Scale */
+        ttarch_wr_u64(ascene + aso, 0x394c43af4ff52c94ULL); aso += 8u;
+        ttarch_wr_u32(ascene + aso, 1u); aso += 4u;
+        ttarch_wr_u64(ascene + aso, twd_crc64(0ULL, "Render Axis Scale")); aso += 8u;
+        { float sc3[3] = {1.5f, 1.5f, 1.0f}; memcpy(ascene + aso, sc3, 12u); } aso += 12u;
+        /* Group 3: PW_ATTACH (parent="par_grp", pos=(-4.5f, 0.75f, 0.0f)) */
+        ttarch_wr_u64(ascene + aso, 0x383aeb196c60831bULL); aso += 8u;
+        ttarch_wr_u32(ascene + aso, 1u); aso += 4u;
+        ttarch_wr_u64(ascene + aso, 0xcdab21b527f20135ULL); aso += 8u;
+        ttarch_wr_u32(ascene + aso, 15u); aso += 4u;
+        ttarch_wr_u32(ascene + aso, 7u); aso += 4u;
+        memcpy(ascene + aso, "par_grp", 7u); aso += 7u;
+        ttarch_wr_u64(ascene + aso, 0ULL); aso += 8u;
+        ttarch_wr_u32(ascene + aso, 32u); aso += 4u;
+        {
+            float qt[7] = {0.0f, 0.0f, 0.0f, 1.0f, -4.5f, 0.75f, 0.0f};
+            memcpy(ascene + aso, qt, sizeof(qt));
+        }
+        aso += 28u;
+        ttarch_wr_u32(ascene + ap_bsz, (uint32_t)(aso - ap_bsz));
+        ttarch_wr_u32(ascene + al_blk, (uint32_t)(aso - al_blk));
+        ttarch_wr_u32(ascene + as_def, (uint32_t)(aso - as_start));
+        (void)ap_start;
+
+        twd_scene_t ps_sc;
+        TWD_CHECK(twd_scene_parse_memory(ascene, aso, &ps_sc) == 0);
+        TWD_CHECK(ps_sc.agent_count == 1u);
+        TWD_CHECK(ps_sc.agents[0].visible == 1);
+        TWD_CHECK(strcmp(ps_sc.agents[0].parent_name, "par_grp") == 0);
+        TWD_CHECK(ps_sc.agents[0].pos[0] < -4.49f && ps_sc.agents[0].pos[0] > -4.51f);
+        TWD_CHECK(ps_sc.agents[0].pos[1] > 0.74f && ps_sc.agents[0].pos[1] < 0.76f);
+        TWD_CHECK(ps_sc.agents[0].scale[0] > 1.49f && ps_sc.agents[0].scale[0] < 1.51f);
+        twd_scene_free(&ps_sc);
+
+        /* Re-verify twd_ttarch2_exists_mounted & twd_ttarch2_lookup_mounted_crc64_alloc on mounted archive */
+        static const char k_mtxt[] = "crc_ok";
+        uint64_t mc_crc = twd_crc64(0ULL, "crc_probe.txt");
+        twd_ttarch2_archive_t *mem_arc = NULL;
+        {
+            uint8_t nbuf[128];
+            memset(nbuf, 0, sizeof(nbuf));
+            memcpy(nbuf, "NCTT", 4u);
+            ttarch_wr_u64(nbuf + 4u, 12u + 28u + 16u + 6u);
+            uint8_t *t = nbuf + 12u;
+            memcpy(t, "4ATT", 4u);
+            ttarch_wr_u32(t + 4u, 16u);
+            ttarch_wr_u32(t + 8u, 1u);
+            ttarch_wr_u64(t + 12u, mc_crc);
+            ttarch_wr_u32(t + 28u, 6u);
+            memcpy(t + 40u, "crc_probe.txt", 14u);
+            memcpy(t + 56u, k_mtxt, 6u);
+            mem_arc = twd_ttarch2_open_memory(nbuf, 12u + 12u + 28u + 16u + 6u);
+        }
+        TWD_CHECK(mem_arc != NULL);
+        TWD_CHECK(twd_asset_mount_ttarch2(mem_arc) == 0);
+        TWD_CHECK(twd_ttarch2_exists_mounted("crc_probe.txt") == 1);
+        TWD_CHECK(twd_ttarch2_exists_mounted("nonexistent_xyz.txt") == 0);
+        size_t lcsz = 0u;
+        void *lcbuf = twd_ttarch2_lookup_mounted_crc64_alloc(mc_crc, &lcsz);
+        TWD_CHECK(lcbuf != NULL && lcsz == 6u && memcmp(lcbuf, k_mtxt, 6u) == 0);
+        twd_ttarch2_free(lcbuf);
+        twd_asset_unmount_ttarch2(mem_arc);
+        twd_ttarch2_close(mem_arc);
+
         twd_crypto_clear_archive_key();
     }
 

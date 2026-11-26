@@ -26,6 +26,9 @@ add_subdirectory(runtime)
 add_subdirectory(game)
 
 if(NOT ANDROID)
+    add_executable(twd_boot game/twd_boot_main.c)
+    target_link_libraries(twd_boot PRIVATE twdgame twdrt)
+
     add_executable(test_runtime test/test_runtime.c)
     target_link_libraries(test_runtime PRIVATE twdrt)
     add_test(NAME runtime_abi COMMAND test_runtime)
