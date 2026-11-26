@@ -6,10 +6,18 @@
 #include <time.h>
 
 int twd_platform_init(void) {
+    char buf[512];
+    if (twd_android_get_data_dir(1, buf, sizeof(buf)) > 0 ||
+        twd_android_get_data_dir(0, buf, sizeof(buf)) > 0) {
+        twd_setenv("TWD_SAVE_DIR", buf);
+    }
+    twd_log("TWD-Final", "Android runtime initialized (window=%p, assets=%p)",
+            twd_android_get_native_window(), twd_android_get_asset_manager());
     return 0;
 }
 
 void twd_platform_shutdown(void) {
+    twd_log("TWD-Final", "Android runtime shutdown");
 }
 
 uint64_t twd_time_now_ns(void) {

@@ -407,6 +407,49 @@ int main(void) {
     TWD_CHECK(twd_window_needs_paint(pwin) == 0);
     twd_window_destroy(pwin);
 
+    /* Android GameActivity lifecycle, surface, dirs & touch bridge */
+    int dummy_anw = 0x1234, dummy_mgr = 0x5678;
+    twd_android_set_native_window(&dummy_anw);
+    twd_android_set_asset_manager(&dummy_mgr);
+    TWD_CHECK(twd_android_get_native_window() == &dummy_anw);
+    TWD_CHECK(twd_android_get_asset_manager() == &dummy_mgr);
+
+    twd_android_set_data_dirs("/data/user/0/twd/files", "/sdcard/Android/data/twd/files");
+    char adir[256];
+    TWD_CHECK(twd_android_get_data_dir(0, adir, sizeof(adir)) > 0 &&
+              strcmp(adir, "/data/user/0/twd/files") == 0);
+    TWD_CHECK(twd_app_data_dir(TWD_DIR_SAVES, adir, sizeof(adir)) > 0 &&
+              strcmp(adir, "/sdcard/Android/data/twd/files") == 0);
+
+    twd_android_on_touch(TWD_TOUCH_DOWN, 0, 320.0f, 180.0f);
+    twd_input_get_pointer(&pstate);
+    TWD_CHECK(pstate.x == 320.0f && pstate.y == 180.0f && pstate.buttons == 1u);
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_POINTER);
+    twd_android_on_touch(TWD_TOUCH_UP, 0, 320.0f, 180.0f);
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_POINTER);
+
+    twd_android_on_key(0x57, 1);
+    TWD_CHECK(twd_input_key_down(0x57u) == 1);
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_KEY);
+
+    twd_android_on_focus(0);
+    TWD_CHECK(twd_android_has_focus() == 0 && twd_audio_has_focus() == 0);
+    twd_android_on_focus(1);
+    TWD_CHECK(twd_android_has_focus() == 1 && twd_audio_has_focus() == 1);
+
+    twd_window_t *rwin = twd_window_create("Resize", 0, 0, 800, 600, 0u);
+    void *rd3d = NULL;
+    TWD_CHECK(twd_d3d11_create_device_shim(rwin, 800u, 600u, NULL, &rd3d, NULL, NULL) == 0);
+    twd_gfx_device_t *rgfx = twd_d3d11_get_gfx_device(rd3d);
+    TWD_CHECK(twd_gfx_has_driver_symbols(rgfx) == 0);
+    twd_android_on_resize(rwin, rgfx, 2400u, 1080u);
+    twd_gfx_stats_t rstats;
+    twd_gfx_get_stats(rgfx, &rstats);
+    TWD_CHECK(rstats.width == 2400u && rstats.height == 1080u && twd_window_needs_paint(rwin) == 1);
+    TWD_CHECK(twd_window_poll_event(&ev_out) == 1 && ev_out.kind == TWD_EVT_RESIZE);
+    TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
+    twd_window_destroy(rwin);
+
     twd_platform_shutdown();
     printf("test_runtime: ok\n");
     return 0;

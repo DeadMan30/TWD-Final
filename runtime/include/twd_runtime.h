@@ -448,6 +448,27 @@ void twd_window_invalidate(twd_window_t *win);
 int twd_window_needs_paint(const twd_window_t *win);
 void twd_window_clear_paint(twd_window_t *win);
 
+/* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL) */
+int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev);
+
+/* Android GameActivity Lifecycle, Surface, Assets & Touch Bridge */
+#define TWD_TOUCH_DOWN   0
+#define TWD_TOUCH_UP     1
+#define TWD_TOUCH_MOVE   2
+#define TWD_TOUCH_CANCEL 3
+
+void twd_android_set_native_window(void *native_window);
+void *twd_android_get_native_window(void);
+void twd_android_set_asset_manager(void *asset_manager);
+void *twd_android_get_asset_manager(void);
+void twd_android_set_data_dirs(const char *internal_dir, const char *external_dir);
+int twd_android_get_data_dir(int external, char *buf, size_t cap);
+void twd_android_on_touch(int action, int pointer_id, float x, float y);
+void twd_android_on_key(int keycode, int down);
+void twd_android_on_focus(int has_focus);
+int twd_android_has_focus(void);
+void twd_android_on_resize(twd_window_t *win, twd_gfx_device_t *dev, uint32_t width, uint32_t height);
+
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);
 const twd_hook_entry_t *twd_hook_at(uint32_t index);

@@ -655,3 +655,95 @@ void twd_window_clear_paint(twd_window_t *win) {
     }
 }
 
+/* ---------- Android GameActivity Lifecycle, Surface & Touch Bridge ---------- */
+
+static void *g_android_win = NULL;
+static void *g_android_assets = NULL;
+static char g_android_internal_dir[512];
+static char g_android_external_dir[512];
+static int g_android_focus = 1;
+
+void twd_android_set_native_window(void *native_window) {
+    g_android_win = native_window;
+}
+
+void *twd_android_get_native_window(void) {
+    return g_android_win;
+}
+
+void twd_android_set_asset_manager(void *asset_manager) {
+    g_android_assets = asset_manager;
+}
+
+void *twd_android_get_asset_manager(void) {
+    return g_android_assets;
+}
+
+void twd_android_set_data_dirs(const char *internal_dir, const char *external_dir) {
+    if (internal_dir) {
+        bounded_copy(g_android_internal_dir, sizeof(g_android_internal_dir), internal_dir);
+    }
+    if (external_dir) {
+        bounded_copy(g_android_external_dir, sizeof(g_android_external_dir), external_dir);
+    }
+    const char *save = (g_android_external_dir[0] != '\0') ? g_android_external_dir : g_android_internal_dir;
+    if (save[0] != '\0') {
+        twd_setenv("TWD_SAVE_DIR", save);
+    }
+}
+
+int twd_android_get_data_dir(int external, char *buf, size_t cap) {
+    const char *src = external ? g_android_external_dir : g_android_internal_dir;
+    if (!src || src[0] == '\0') return -1;
+    return copy_path_str(src, buf, cap);
+}
+
+void twd_android_on_touch(int action, int pointer_id, float x, float y) {
+    uint32_t btn = (action == TWD_TOUCH_DOWN || action == TWD_TOUCH_MOVE) ? 1u : 0u;
+    twd_input_set_pointer(x, y, btn);
+    twd_win_event_t ev;
+    ev.kind = TWD_EVT_POINTER;
+    ev.window_id = (uintptr_t)g_android_win;
+    ev.param1 = ((uint64_t)(uint32_t)pointer_id << 32) | ((uint64_t)(uint32_t)action & 0xffffffffu);
+    int32_t ix = (int32_t)x;
+    int32_t iy = (int32_t)y;
+    ev.param2 = ((int64_t)ix << 32) | (int64_t)(uint32_t)iy;
+    twd_window_push_event(&ev);
+}
+
+void twd_android_on_key(int keycode, int down) {
+    uint32_t vk = (uint32_t)keycode;
+    twd_input_set_key(vk, down);
+    twd_win_event_t ev;
+    ev.kind = TWD_EVT_KEY;
+    ev.window_id = (uintptr_t)g_android_win;
+    ev.param1 = (uint64_t)vk;
+    ev.param2 = down ? 1 : 0;
+    twd_window_push_event(&ev);
+}
+
+void twd_android_on_focus(int has_focus) {
+    g_android_focus = has_focus ? 1 : 0;
+    twd_audio_set_focus(g_android_focus);
+}
+
+int twd_android_has_focus(void) {
+    return g_android_focus;
+}
+
+void twd_android_on_resize(twd_window_t *win, twd_gfx_device_t *dev, uint32_t width, uint32_t height) {
+    if (win && width > 0u && height > 0u) {
+        twd_window_set_rect(win, win->x, win->y, (int)width, (int)height);
+        twd_window_invalidate(win);
+    }
+    if (dev && width > 0u && height > 0u) {
+        twd_gfx_resize(dev, width, height);
+    }
+    twd_win_event_t ev;
+    ev.kind = TWD_EVT_RESIZE;
+    ev.window_id = (uintptr_t)win;
+    ev.param1 = width;
+    ev.param2 = (int64_t)height;
+    twd_window_push_event(&ev);
+}
+

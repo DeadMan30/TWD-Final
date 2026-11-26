@@ -9,6 +9,7 @@ struct twd_gfx_device {
     int backend;
     void *native_window;
     void *backend_lib;
+    int driver_caps;
     uint32_t width;
     uint32_t height;
     int vsync;
@@ -72,13 +73,34 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
 #ifdef __ANDROID__
     if (dev->backend == TWD_GFX_BACKEND_VULKAN) {
         dev->backend_lib = twd_dynlib_open("libvulkan.so");
-        if (!dev->backend_lib) dev->backend = TWD_GFX_BACKEND_GLES3;
+        if (dev->backend_lib &&
+            twd_dynlib_sym(dev->backend_lib, "vkCreateInstance") &&
+            twd_dynlib_sym(dev->backend_lib, "vkEnumeratePhysicalDevices") &&
+            twd_dynlib_sym(dev->backend_lib, "vkCreateDevice")) {
+            dev->driver_caps |= 1;
+        } else {
+            if (dev->backend_lib) {
+                twd_dynlib_close(dev->backend_lib);
+                dev->backend_lib = NULL;
+            }
+            dev->backend = TWD_GFX_BACKEND_GLES3;
+        }
     }
     if (dev->backend == TWD_GFX_BACKEND_GLES3 && !dev->backend_lib) {
         dev->backend_lib = twd_dynlib_open("libEGL.so");
+        if (dev->backend_lib &&
+            twd_dynlib_sym(dev->backend_lib, "eglGetDisplay") &&
+            twd_dynlib_sym(dev->backend_lib, "eglInitialize") &&
+            twd_dynlib_sym(dev->backend_lib, "eglSwapBuffers")) {
+            dev->driver_caps |= 2;
+        }
     }
 #endif
     return dev;
+}
+
+int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
+    return dev ? dev->driver_caps : 0;
 }
 
 void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
