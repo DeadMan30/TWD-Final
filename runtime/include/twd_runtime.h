@@ -527,10 +527,11 @@ void twd_window_invalidate(twd_window_t *win);
 int twd_window_needs_paint(const twd_window_t *win);
 void twd_window_clear_paint(twd_window_t *win);
 
-/* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL) */
+/* Vulkan / EGL dynamic driver availability probe (returns bitmask: 1=Vulkan, 2=EGL, 4=GLES3) */
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev);
 int twd_gfx_probe_driver(const twd_gfx_device_t *dev, char *out_name, size_t cap);
 uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev);
+int twd_gfx_has_gl_dispatch(const twd_gfx_device_t *dev);
 
 typedef struct twd_dxgi_adapter_desc1 {
     uint16_t description[128];
@@ -589,6 +590,38 @@ void twd_oodle_shutdown(void);
 int twd_oodle_is_available(void);
 int64_t twd_oodle_decompress(
     const void *comp_buf, size_t comp_len, void *raw_buf, size_t raw_len);
+
+/* TTArchive2 (.ttarch2) Container Header Parser */
+#define TWD_TTARCH2_NONE      0u
+#define TWD_TTARCH2_NCTT      1u
+#define TWD_TTARCH2_ZCTT      2u
+#define TWD_TTARCH2_ECTT      3u
+
+typedef struct twd_ttarch2_header {
+    uint32_t container_kind;
+    int encrypted;
+    int compressed;
+    uint64_t payload_size;
+    uint32_t version;
+} twd_ttarch2_header_t;
+
+int twd_ttarch2_parse_header(const void *data, size_t len, twd_ttarch2_header_t *out);
+
+/* Video Playback PAL (TTMediaEngine64 / TTIMFMediaEngine replacement) */
+typedef struct twd_video_player twd_video_player_t;
+
+twd_video_player_t *twd_video_create(void *gfx_device_or_null);
+void twd_video_destroy(twd_video_player_t *vp);
+int twd_video_set_source(twd_video_player_t *vp, const char *path);
+int twd_video_play(twd_video_player_t *vp);
+int twd_video_pause(twd_video_player_t *vp);
+int twd_video_set_volume(twd_video_player_t *vp, double volume);
+int twd_video_set_time(twd_video_player_t *vp, double seconds);
+double twd_video_get_time(const twd_video_player_t *vp);
+double twd_video_get_duration(const twd_video_player_t *vp);
+void twd_video_get_size(const twd_video_player_t *vp, uint32_t *out_w, uint32_t *out_h);
+int twd_video_tick(twd_video_player_t *vp, int64_t *out_pts_ns);
+int twd_video_transfer_frame(twd_video_player_t *vp, void *dst_surface_or_tex);
 
 void twd_register_hook(uint64_t address, const char *name, void *replacement);
 const twd_hook_entry_t *twd_find_hook(uint64_t address);

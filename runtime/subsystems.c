@@ -922,3 +922,137 @@ int64_t twd_oodle_decompress(
     return -1;
 }
 
+/* ---------- TTArchive2 (.ttarch2) Container Header Parser ---------- */
+
+static uint32_t rd_tt_u32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t rd_tt_u64(const uint8_t *p) {
+    return (uint64_t)rd_tt_u32(p) | ((uint64_t)rd_tt_u32(p + 4u) << 32);
+}
+
+int twd_ttarch2_parse_header(const void *data, size_t len, twd_ttarch2_header_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!data || len < 16u) return -1;
+    const uint8_t *b = (const uint8_t *)data;
+    uint32_t magic = rd_tt_u32(b);
+    if (magic == 0x5454434Eu) { /* 'NCTT' little-endian */
+        out->container_kind = TWD_TTARCH2_NCTT;
+        out->encrypted = 0;
+        out->compressed = 0;
+        out->payload_size = rd_tt_u64(b + 4u);
+        out->version = rd_tt_u32(b + 12u);
+        return 0;
+    }
+    if (magic == 0x5454435Au) { /* 'ZCTT' little-endian */
+        out->container_kind = TWD_TTARCH2_ZCTT;
+        out->encrypted = 0;
+        out->compressed = 1;
+        out->payload_size = rd_tt_u64(b + 4u);
+        out->version = rd_tt_u32(b + 12u);
+        return 0;
+    }
+    if (magic == 0x54544345u) { /* 'ECTT' little-endian */
+        out->container_kind = TWD_TTARCH2_ECTT;
+        out->encrypted = 1;
+        out->compressed = 1;
+        out->payload_size = rd_tt_u64(b + 4u);
+        out->version = rd_tt_u32(b + 12u);
+        return 0;
+    }
+    return -1;
+}
+
+/* ---------- Video Playback PAL (TTMediaEngine64 replacement) ---------- */
+
+struct twd_video_player {
+    void *gfx_device;
+    int playing;
+    double current_time;
+    double duration;
+    double volume;
+    uint32_t width;
+    uint32_t height;
+    char source_path[260];
+};
+
+twd_video_player_t *twd_video_create(void *gfx_device_or_null) {
+    twd_video_player_t *vp = (twd_video_player_t *)calloc(1, sizeof(*vp));
+    if (!vp) return NULL;
+    vp->gfx_device = gfx_device_or_null;
+    vp->volume = 1.0;
+    vp->width = 1920u;
+    vp->height = 1080u;
+    return vp;
+}
+
+void twd_video_destroy(twd_video_player_t *vp) {
+    free(vp);
+}
+
+int twd_video_set_source(twd_video_player_t *vp, const char *path) {
+    if (!vp || !path) return -1;
+    bounded_copy(vp->source_path, sizeof(vp->source_path), path);
+    vp->current_time = 0.0;
+    vp->duration = 0.0;
+    vp->playing = 0;
+    return 0;
+}
+
+int twd_video_play(twd_video_player_t *vp) {
+    if (!vp) return -1;
+    vp->playing = 1;
+    return 0;
+}
+
+int twd_video_pause(twd_video_player_t *vp) {
+    if (!vp) return -1;
+    vp->playing = 0;
+    return 0;
+}
+
+int twd_video_set_volume(twd_video_player_t *vp, double volume) {
+    if (!vp) return -1;
+    if (volume < 0.0) volume = 0.0;
+    if (volume > 1.0) volume = 1.0;
+    vp->volume = volume;
+    return 0;
+}
+
+int twd_video_set_time(twd_video_player_t *vp, double seconds) {
+    if (!vp || seconds < 0.0) return -1;
+    vp->current_time = seconds;
+    return 0;
+}
+
+double twd_video_get_time(const twd_video_player_t *vp) {
+    return vp ? vp->current_time : 0.0;
+}
+
+double twd_video_get_duration(const twd_video_player_t *vp) {
+    return vp ? vp->duration : 0.0;
+}
+
+void twd_video_get_size(const twd_video_player_t *vp, uint32_t *out_w, uint32_t *out_h) {
+    if (out_w) *out_w = vp ? vp->width : 0u;
+    if (out_h) *out_h = vp ? vp->height : 0u;
+}
+
+int twd_video_tick(twd_video_player_t *vp, int64_t *out_pts_ns) {
+    if (!vp) return 0;
+    if (out_pts_ns) *out_pts_ns = (int64_t)(vp->current_time * 1000000000.0);
+    if (vp->playing && vp->current_time >= vp->duration) {
+        vp->playing = 0;
+        return 0; /* Ready/completed immediately so menu skips unsupported codecs cleanly */
+    }
+    return vp->playing ? 1 : 0;
+}
+
+int twd_video_transfer_frame(twd_video_player_t *vp, void *dst_surface_or_tex) {
+    (void)dst_surface_or_tex;
+    return vp ? 0 : -1;
+}
+

@@ -20,6 +20,13 @@ struct twd_gfx_device {
     unsigned int (*egl_destroy_surface)(void *dpy, void *surf);
     unsigned int (*egl_destroy_context)(void *dpy, void *ctx);
     unsigned int (*egl_terminate)(void *dpy);
+    void *gl_lib;
+    void (*gl_viewport)(int32_t x, int32_t y, int32_t w, int32_t h);
+    void (*gl_scissor)(int32_t x, int32_t y, int32_t w, int32_t h);
+    void (*gl_clear_color)(float r, float g, float b, float a);
+    void (*gl_clear)(uint32_t mask);
+    void (*gl_draw_arrays)(uint32_t mode, int32_t first, int32_t count);
+    void (*gl_draw_elements)(uint32_t mode, int32_t count, uint32_t type, const void *indices);
     uint32_t width;
     uint32_t height;
     int vsync;
@@ -198,6 +205,24 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
                 }
             }
         }
+        dev->gl_lib = twd_dynlib_open("libGLESv3.so");
+        if (!dev->gl_lib) dev->gl_lib = twd_dynlib_open("libGLESv2.so");
+        if (dev->gl_lib) {
+            typedef void (*gl_vp_fn)(int32_t, int32_t, int32_t, int32_t);
+            typedef void (*gl_cc_fn)(float, float, float, float);
+            typedef void (*gl_clr_fn)(uint32_t);
+            typedef void (*gl_da_fn)(uint32_t, int32_t, int32_t);
+            typedef void (*gl_de_fn)(uint32_t, int32_t, uint32_t, const void *);
+            dev->gl_viewport = (gl_vp_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glViewport");
+            dev->gl_scissor = (gl_vp_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glScissor");
+            dev->gl_clear_color = (gl_cc_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glClearColor");
+            dev->gl_clear = (gl_clr_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glClear");
+            dev->gl_draw_arrays = (gl_da_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDrawArrays");
+            dev->gl_draw_elements = (gl_de_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDrawElements");
+            if (dev->gl_clear_color && dev->gl_clear && dev->gl_draw_arrays) {
+                dev->driver_caps |= 4;
+            }
+        }
     }
 #endif
     return dev;
@@ -205,6 +230,10 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
 
 uint32_t twd_gfx_gpu_count(const twd_gfx_device_t *dev) {
     return dev ? dev->gpu_count : 0u;
+}
+
+int twd_gfx_has_gl_dispatch(const twd_gfx_device_t *dev) {
+    return (dev && (dev->driver_caps & 4)) ? 1 : 0;
 }
 
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
@@ -245,6 +274,10 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (dev->vk_instance && dev->vk_destroy_instance) {
         dev->vk_destroy_instance(dev->vk_instance, NULL);
         dev->vk_instance = NULL;
+    }
+    if (dev->gl_lib) {
+        twd_dynlib_close(dev->gl_lib);
+        dev->gl_lib = NULL;
     }
     if (dev->backend_lib) {
         twd_dynlib_close(dev->backend_lib);
@@ -380,6 +413,12 @@ void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint
     if (!dev) return;
     if (rgba) {
         memcpy(dev->last_clear_rgba, rgba, sizeof(dev->last_clear_rgba));
+        if (dev->gl_clear_color && dev->gl_clear && dev->egl_surface) {
+            dev->gl_clear_color(rgba[0], rgba[1], rgba[2], rgba[3]);
+            dev->gl_clear(0x00004000u); /* GL_COLOR_BUFFER_BIT */
+        }
+    } else if (dev->gl_clear && dev->egl_surface) {
+        dev->gl_clear(0x00000100u | 0x00000400u); /* GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT */
     }
     dev->last_depth = depth;
     dev->last_stencil = stencil;
@@ -395,20 +434,36 @@ void twd_gfx_set_viewport(
     dev->viewport.height = h;
     dev->viewport.min_depth = min_d;
     dev->viewport.max_depth = max_d;
+    if (dev->gl_viewport && dev->egl_surface) {
+        dev->gl_viewport((int32_t)x, (int32_t)y, (int32_t)w, (int32_t)h);
+    }
+}
+
+static uint32_t d3d_topo_to_gl_mode(uint32_t topo) {
+    if (topo == 1u) return 0x0000u; /* POINTLIST -> GL_POINTS */
+    if (topo == 2u) return 0x0001u; /* LINELIST -> GL_LINES */
+    if (topo == 3u) return 0x0003u; /* LINESTRIP -> GL_LINE_STRIP */
+    if (topo == 5u) return 0x0005u; /* TRIANGLESTRIP -> GL_TRIANGLE_STRIP */
+    return 0x0004u;                 /* TRIANGLELIST -> GL_TRIANGLES */
 }
 
 void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex) {
-    (void)vertex_count;
-    (void)start_vertex;
-    if (dev) dev->draw_calls++;
+    if (!dev) return;
+    if (dev->gl_draw_arrays && dev->egl_surface) {
+        dev->gl_draw_arrays(d3d_topo_to_gl_mode(dev->topology), (int32_t)start_vertex, (int32_t)vertex_count);
+    }
+    dev->draw_calls++;
 }
 
 void twd_gfx_draw_indexed(
     twd_gfx_device_t *dev, uint32_t index_count, uint32_t start_index, int32_t base_vertex) {
-    (void)index_count;
-    (void)start_index;
     (void)base_vertex;
-    if (dev) dev->draw_calls++;
+    if (!dev) return;
+    if (dev->gl_draw_elements && dev->egl_surface) {
+        const void *off_ptr = (const void *)(uintptr_t)((size_t)start_index * sizeof(uint16_t));
+        dev->gl_draw_elements(d3d_topo_to_gl_mode(dev->topology), (int32_t)index_count, 0x1403u, off_ptr);
+    }
+    dev->draw_calls++;
 }
 
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {

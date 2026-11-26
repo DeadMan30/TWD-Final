@@ -606,6 +606,35 @@ int main(void) {
     TWD_CHECK(twd_oodle_decompress("TWD!", 4u, raw_oodle, 4u) == 4 && strcmp(raw_oodle, "TWD!") == 0);
     twd_oodle_shutdown();
 
+    /* TTArchive2 container header & Video playback PAL */
+    static const uint8_t nctt_hdr[16] = {
+        'N','C','T','T', 0x00,0x10,0x00,0x00, 0,0,0,0, 2,0,0,0
+    };
+    twd_ttarch2_header_t tah;
+    TWD_CHECK(twd_ttarch2_parse_header(nctt_hdr, sizeof(nctt_hdr), &tah) == 0);
+    TWD_CHECK(tah.container_kind == TWD_TTARCH2_NCTT && tah.encrypted == 0 &&
+              tah.compressed == 0 && tah.payload_size == 0x1000ULL);
+    static const uint8_t ectt_hdr[16] = {
+        'E','C','T','T', 0x20,0x00,0x00,0x00, 0,0,0,0, 2,0,0,0
+    };
+    TWD_CHECK(twd_ttarch2_parse_header(ectt_hdr, sizeof(ectt_hdr), &tah) == 0);
+    TWD_CHECK(tah.container_kind == TWD_TTARCH2_ECTT && tah.encrypted == 1 && tah.compressed == 1);
+
+    TWD_CHECK(twd_gfx_has_gl_dispatch(rgfx) == 0);
+    twd_video_player_t *vp_pl = twd_video_create(rgfx);
+    TWD_CHECK(vp_pl != NULL);
+    TWD_CHECK(twd_video_set_source(vp_pl, "intro.mp4") == 0);
+    TWD_CHECK(twd_video_play(vp_pl) == 0);
+    TWD_CHECK(twd_video_set_volume(vp_pl, 0.5) == 0);
+    int64_t pts_ns = 0;
+    TWD_CHECK(twd_video_tick(vp_pl, &pts_ns) == 0);
+    uint32_t vw = 0u, vh = 0u;
+    twd_video_get_size(vp_pl, &vw, &vh);
+    TWD_CHECK(vw == 1920u && vh == 1080u && twd_video_get_duration(vp_pl) == 0.0);
+    TWD_CHECK(twd_video_transfer_frame(vp_pl, NULL) == 0);
+    TWD_CHECK(twd_video_pause(vp_pl) == 0);
+    twd_video_destroy(vp_pl);
+
     TWD_CHECK(twd_android_run_frame_loop(rwin, rgfx, &lcb) == 3ULL);
     TWD_CHECK(lctx.inited == 1 && lctx.ticks == 3 && lctx.renders == 3 && lctx.shutdown == 1);
 
