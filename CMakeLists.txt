@@ -115,6 +115,61 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_lua_pushlightuserdata PRIVATE twdgame)
     add_test(NAME engine_lua_pushlightuserdata COMMAND test_engine_lua_pushlightuserdata)
 
+    add_executable(test_engine_meta_member_find_str
+                   game/engine/tests/test_engine_meta_member_find_str.c)
+    target_link_libraries(test_engine_meta_member_find_str PRIVATE twdgame)
+    add_test(NAME engine_meta_member_find_str COMMAND test_engine_meta_member_find_str)
+
+    add_executable(test_engine_meta_member_find
+                   game/engine/tests/test_engine_meta_member_find.c)
+    target_link_libraries(test_engine_meta_member_find PRIVATE twdgame)
+    add_test(NAME engine_meta_member_find COMMAND test_engine_meta_member_find)
+
+    add_executable(test_engine_meta_vtable_move_construct
+                   game/engine/tests/test_engine_meta_vtable_move_construct.c)
+    target_link_libraries(test_engine_meta_vtable_move_construct PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_move_construct COMMAND test_engine_meta_vtable_move_construct)
+
+    add_executable(test_engine_meta_vtable_alloc
+                   game/engine/tests/test_engine_meta_vtable_alloc.c)
+    target_link_libraries(test_engine_meta_vtable_alloc PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_alloc COMMAND test_engine_meta_vtable_alloc)
+
+    add_executable(test_engine_meta_vtable_construct
+                   game/engine/tests/test_engine_meta_vtable_construct.c)
+    target_link_libraries(test_engine_meta_vtable_construct PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_construct COMMAND test_engine_meta_vtable_construct)
+
+    add_executable(test_engine_meta_vtable_copy_construct
+                   game/engine/tests/test_engine_meta_vtable_copy_construct.c)
+    target_link_libraries(test_engine_meta_vtable_copy_construct PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_copy_construct COMMAND test_engine_meta_vtable_copy_construct)
+
+    add_executable(test_engine_meta_vtable_destruct
+                   game/engine/tests/test_engine_meta_vtable_destruct.c)
+    target_link_libraries(test_engine_meta_vtable_destruct PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_destruct COMMAND test_engine_meta_vtable_destruct)
+
+    add_executable(test_engine_meta_vtable_delete
+                   game/engine/tests/test_engine_meta_vtable_delete.c)
+    target_link_libraries(test_engine_meta_vtable_delete PRIVATE twdgame)
+    add_test(NAME engine_meta_vtable_delete COMMAND test_engine_meta_vtable_delete)
+
+    add_executable(test_engine_lua_atpanic
+                   game/engine/tests/test_engine_lua_atpanic.c)
+    target_link_libraries(test_engine_lua_atpanic PRIVATE twdgame)
+    add_test(NAME engine_lua_atpanic COMMAND test_engine_lua_atpanic)
+
+    add_executable(test_engine_lua_pushthread
+                   game/engine/tests/test_engine_lua_pushthread.c)
+    target_link_libraries(test_engine_lua_pushthread PRIVATE twdgame)
+    add_test(NAME engine_lua_pushthread COMMAND test_engine_lua_pushthread)
+
+    add_executable(test_engine_lua_getctx
+                   game/engine/tests/test_engine_lua_getctx.c)
+    target_link_libraries(test_engine_lua_getctx PRIVATE twdgame)
+    add_test(NAME engine_lua_getctx COMMAND test_engine_lua_getctx)
+
     add_test(NAME validate_functions
              COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
     add_test(NAME source_files

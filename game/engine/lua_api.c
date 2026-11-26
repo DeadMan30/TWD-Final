@@ -6,7 +6,26 @@
 _Static_assert(sizeof(twd_lua_tvalue_t) == 0x10, "lua TValue size");
 _Static_assert(offsetof(twd_lua_tvalue_t, tt) == 0x08, "lua TValue tt offset");
 _Static_assert(offsetof(twd_lua_state_t, top) == 0x10, "lua_State top offset");
+_Static_assert(offsetof(twd_lua_state_t, l_G) == 0x18, "lua_State l_G offset");
 _Static_assert(offsetof(twd_lua_state_t, base_ptr) == 0x20, "lua_State base_ptr offset");
+_Static_assert(offsetof(twd_lua_global_t, panic) == 0x100, "global_State panic offset");
+_Static_assert(offsetof(twd_lua_global_t, mainthread) == 0x108, "global_State mainthread offset");
+_Static_assert(offsetof(twd_lua_callinfo_t, callstatus) == 0x22, "CallInfo callstatus offset");
+_Static_assert(offsetof(twd_lua_callinfo_t, ctx) == 0x30, "CallInfo ctx offset");
+_Static_assert(offsetof(twd_lua_callinfo_t, status) == 0x49, "CallInfo status offset");
+
+/*
+ * Original: WalkingDead4.exe @ 0x140951910 (19 bytes, 2 callers)
+ *
+ * Sets L->l_G->panic to panicf and returns the previous panic handler.
+ */
+TWD_EXPORT
+void *twd_engine_lua_atpanic(twd_lua_state_t *L, void *panicf) {
+    twd_lua_global_t *g = L->l_G;
+    void *old = g->panic;
+    g->panic = panicf;
+    return old;
+}
 
 /*
  * Original: WalkingDead4.exe @ 0x140951950 (35 bytes, 13 callers)
@@ -147,4 +166,36 @@ void twd_engine_lua_pushlightuserdata(twd_lua_state_t *L, void *p) {
     top->v.u64 = (uint64_t)(uintptr_t)p;
     top->tt = 2;
     L->top++;
+}
+
+/*
+ * Original: WalkingDead4.exe @ 0x1409526f0 (36 bytes, 5 callers)
+ *
+ * Pushes Lua thread L (LUA_TTHREAD | BIT_ISCOLLECTABLE == 0x48) onto its stack
+ * and returns 1 if L is the main thread, 0 otherwise.
+ */
+TWD_EXPORT
+int32_t twd_engine_lua_pushthread(twd_lua_state_t *L) {
+    twd_lua_tvalue_t *top = L->top;
+    top->v.u64 = (uint64_t)(uintptr_t)L;
+    top->tt = 0x48;
+    L->top++;
+    return L->l_G->mainthread == L;
+}
+
+/*
+ * Original: WalkingDead4.exe @ 0x140952fa0 (32 bytes, 1 caller)
+ *
+ * Retrieves yielded continuation context and status for a yielded Lua call frame.
+ */
+TWD_EXPORT
+int32_t twd_engine_lua_getctx(const twd_lua_state_t *L, int32_t *ctx) {
+    const twd_lua_callinfo_t *ci = (const twd_lua_callinfo_t *)L->base_ptr;
+    if (ci->callstatus & 0x8u) {
+        if (ctx != NULL) {
+            *ctx = ci->ctx;
+        }
+        return ((const twd_lua_callinfo_t *)L->base_ptr)->status;
+    }
+    return 0;
 }

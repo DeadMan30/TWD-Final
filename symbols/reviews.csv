@@ -1,11 +1,20 @@
 address,name,date,reviewer,verdict,notes
+0x140032360,engine_meta_member_find_str,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x1400323c0,engine_meta_member_find,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140032410,engine_meta_op_register,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and 100.00% byte-exact under MSVC 14.44.35207
+0x140032510,engine_meta_vtable_move_construct,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140032540,engine_meta_vtable_alloc,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140032570,engine_meta_vtable_construct,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140032590,engine_meta_vtable_copy_construct,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x1400325c0,engine_meta_vtable_destruct,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x1400325f0,engine_meta_vtable_delete,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140032620,engine_meta_op_find,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and 100.00% byte-exact under MSVC 14.44.35207
 0x1400359f0,engine_mat4_identity,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and live-recorded replay verified (32/32) against WalkingDead4.exe
 0x140057650,engine_rbtree_rotate_right,2026-11-25,DeadMan30,approved,Edge-verified (4/4); live-recorded (32/32); 100.00% byte-exact under MSVC 14.44.35207
 0x140074930,engine_handle_equals,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (32/32) against WalkingDead4.exe
 0x1400b1970,engine_dlist_remove,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (4/4) against WalkingDead4.exe
 0x14034e1e0,engine_xorshift128_next,2026-11-25,DeadMan30,approved,Edge-verified (16/16) and live-recorded replay verified (32/32) against WalkingDead4.exe
+0x140951910,engine_lua_atpanic,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140951950,engine_lua_absindex,2026-11-25,DeadMan30,approved,Edge-verified (10/10); live-recorded (32/32); 100.00% byte-exact under MSVC 14.44.35207
 0x140951980,engine_lua_gettop,2026-11-25,DeadMan30,approved,Edge-verified (6/6) and live-recorded replay verified (32/32) against WalkingDead4.exe
 0x1409519a0,engine_lua_settop,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and live-recorded replay verified (32/32) against WalkingDead4.exe
@@ -16,3 +25,5 @@ address,name,date,reviewer,verdict,notes
 0x1409523f0,engine_lua_pushunsigned,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and 100.00% byte-exact (48B == 48B) under MSVC 14.44.35207
 0x1409526a0,engine_lua_pushboolean,2026-11-25,DeadMan30,approved,Edge-verified (8/8) and live-recorded replay verified (32/32) against WalkingDead4.exe
 0x1409526d0,engine_lua_pushlightuserdata,2026-11-25,DeadMan30,approved,Edge-verified (4/4) and live-recorded replay verified (32/32) against WalkingDead4.exe
+0x1409526f0,engine_lua_pushthread,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140952fa0,engine_lua_getctx,2026-11-25,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023

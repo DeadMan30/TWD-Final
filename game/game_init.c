@@ -2,8 +2,24 @@
 #include "twd_game.h"
 
 void twd_game_register_hooks(void) {
+    twd_register_hook(0x140032360ULL, "engine_meta_member_find_str",
+                      (void *)twd_engine_meta_member_find_str);
+    twd_register_hook(0x1400323c0ULL, "engine_meta_member_find",
+                      (void *)twd_engine_meta_member_find);
     twd_register_hook(0x140032410ULL, "engine_meta_op_register",
                       (void *)twd_engine_meta_op_register);
+    twd_register_hook(0x140032510ULL, "engine_meta_vtable_move_construct",
+                      (void *)twd_engine_meta_vtable_move_construct);
+    twd_register_hook(0x140032540ULL, "engine_meta_vtable_alloc",
+                      (void *)twd_engine_meta_vtable_alloc);
+    twd_register_hook(0x140032570ULL, "engine_meta_vtable_construct",
+                      (void *)twd_engine_meta_vtable_construct);
+    twd_register_hook(0x140032590ULL, "engine_meta_vtable_copy_construct",
+                      (void *)twd_engine_meta_vtable_copy_construct);
+    twd_register_hook(0x1400325c0ULL, "engine_meta_vtable_destruct",
+                      (void *)twd_engine_meta_vtable_destruct);
+    twd_register_hook(0x1400325f0ULL, "engine_meta_vtable_delete",
+                      (void *)twd_engine_meta_vtable_delete);
     twd_register_hook(0x140032620ULL, "engine_meta_op_find",
                       (void *)twd_engine_meta_op_find);
     twd_register_hook(0x1400359f0ULL, "engine_mat4_identity",
@@ -16,6 +32,8 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_dlist_remove);
     twd_register_hook(0x14034e1e0ULL, "engine_xorshift128_next",
                       (void *)twd_engine_xorshift128_next);
+    twd_register_hook(0x140951910ULL, "engine_lua_atpanic",
+                      (void *)twd_engine_lua_atpanic);
     twd_register_hook(0x140951950ULL, "engine_lua_absindex",
                       (void *)twd_engine_lua_absindex);
     twd_register_hook(0x140951980ULL, "engine_lua_gettop",
@@ -36,6 +54,10 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_lua_pushboolean);
     twd_register_hook(0x1409526d0ULL, "engine_lua_pushlightuserdata",
                       (void *)twd_engine_lua_pushlightuserdata);
+    twd_register_hook(0x1409526f0ULL, "engine_lua_pushthread",
+                      (void *)twd_engine_lua_pushthread);
+    twd_register_hook(0x140952fa0ULL, "engine_lua_getctx",
+                      (void *)twd_engine_lua_getctx);
 }
 
 TWD_EXPORT

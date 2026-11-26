@@ -5,6 +5,8 @@ engine_handle_equals,edge,,10,10,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_handle_equals,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_lua_absindex,edge,,10,10,0,0,bd4bf26b9ce62608,2026-11-25
 engine_lua_absindex,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
+engine_lua_atpanic,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_lua_getctx,edge,,6,6,0,0,10f389d9c9f313d2,2026-11-25
 engine_lua_gettop,edge,,6,6,0,0,8b7ac2cff81f12fd,2026-11-25
 engine_lua_gettop,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_lua_pushboolean,edge,,8,8,0,0,bd4bf26b9ce62608,2026-11-25
@@ -17,6 +19,7 @@ engine_lua_pushnil,edge,,4,4,0,0,bd4bf26b9ce62608,2026-11-25
 engine_lua_pushnil,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_lua_pushnumber,edge,,7,7,0,0,bd4bf26b9ce62608,2026-11-25
 engine_lua_pushnumber,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
+engine_lua_pushthread,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
 engine_lua_pushunsigned,edge,,8,8,0,0,bd4bf26b9ce62608,2026-11-25
 engine_lua_settop,edge,,8,8,0,0,8b7ac2cff81f12fd,2026-11-25
 engine_lua_settop,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
@@ -24,10 +27,18 @@ engine_lua_xmove,edge,,5,5,0,0,8b7ac2cff81f12fd,2026-11-25
 engine_lua_xmove,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_mat4_identity,edge,,8,8,0,0,8b7ac2cff81f12fd,2026-11-25
 engine_mat4_identity,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
+engine_meta_member_find,edge,,6,6,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_member_find_str,edge,,6,6,0,0,10f389d9c9f313d2,2026-11-25
 engine_meta_op_find,edge,,10,10,0,0,bd4bf26b9ce62608,2026-11-25
 engine_meta_op_find,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_meta_op_register,edge,,8,8,0,0,bd4bf26b9ce62608,2026-11-25
 engine_meta_op_register,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
+engine_meta_vtable_alloc,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_vtable_construct,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_vtable_copy_construct,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_vtable_delete,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_vtable_destruct,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
+engine_meta_vtable_move_construct,edge,,4,4,0,0,10f389d9c9f313d2,2026-11-25
 engine_rbtree_rotate_right,edge,,4,4,0,0,bd4bf26b9ce62608,2026-11-25
 engine_rbtree_rotate_right,recorded,,32,32,0,0,94b8bebdf1f0a4fc,2026-11-25
 engine_xorshift128_next,edge,,16,16,0,0,8b7ac2cff81f12fd,2026-11-25

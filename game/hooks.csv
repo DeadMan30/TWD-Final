@@ -1,11 +1,20 @@
 address,replacement,system,returns
+0x140032360,twd_engine_meta_member_find_str,engine,i64
+0x1400323c0,twd_engine_meta_member_find,engine,i64
 0x140032410,twd_engine_meta_op_register,engine,void
+0x140032510,twd_engine_meta_vtable_move_construct,engine,void
+0x140032540,twd_engine_meta_vtable_alloc,engine,i64
+0x140032570,twd_engine_meta_vtable_construct,engine,void
+0x140032590,twd_engine_meta_vtable_copy_construct,engine,void
+0x1400325c0,twd_engine_meta_vtable_destruct,engine,void
+0x1400325f0,twd_engine_meta_vtable_delete,engine,void
 0x140032620,twd_engine_meta_op_find,engine,i64
 0x1400359f0,twd_engine_mat4_identity,engine,void
 0x140057650,twd_engine_rbtree_rotate_right,engine,void
 0x140074930,twd_engine_handle_equals,engine,i8
 0x1400b1970,twd_engine_dlist_remove,engine,i8
 0x14034e1e0,twd_engine_xorshift128_next,engine,i32
+0x140951910,twd_engine_lua_atpanic,engine,i64
 0x140951950,twd_engine_lua_absindex,engine,i32
 0x140951980,twd_engine_lua_gettop,engine,i64
 0x1409519a0,twd_engine_lua_settop,engine,void
@@ -16,3 +25,5 @@ address,replacement,system,returns
 0x1409523f0,twd_engine_lua_pushunsigned,engine,void
 0x1409526a0,twd_engine_lua_pushboolean,engine,void
 0x1409526d0,twd_engine_lua_pushlightuserdata,engine,void
+0x1409526f0,twd_engine_lua_pushthread,engine,i32
+0x140952fa0,twd_engine_lua_getctx,engine,i32
