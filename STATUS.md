@@ -16,8 +16,8 @@ Excludes 10,366 third-party middleware & CRT functions (2,531,642 bytes: breakpa
 
 | Runtime (Android target) | |
 |---|---|
-| System imports implemented | 439 of 556 (78.96%): 138 by bundled libraries, 301 by the runtime |
-| Other imports | 0 registered fail-loud diagnostics, 117 unbound |
+| System imports implemented | 556 of 556 (100.00%): 138 by bundled libraries, 418 by the runtime |
+| Other imports | 0 registered fail-loud diagnostics, 0 unbound |
 | Furthest boot milestone | Audio & GameLoop (5 of 5) |
 | Boot stops at | reached_loop |
 
