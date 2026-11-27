@@ -86,6 +86,8 @@ struct twd_gfx_device {
     twd_shader_cache_t *shader_cache;
     uint8_t *backbuffer;
     size_t backbuffer_size;
+    float *depthbuffer;
+    size_t depthbuffer_elems;
     float last_clear_rgba[4];
     float last_depth;
     uint8_t last_stencil;
@@ -388,6 +390,9 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     free(dev->backbuffer);
     dev->backbuffer = NULL;
     dev->backbuffer_size = 0u;
+    free(dev->depthbuffer);
+    dev->depthbuffer = NULL;
+    dev->depthbuffer_elems = 0u;
     free(dev);
 }
 
@@ -401,6 +406,16 @@ int twd_gfx_resize(twd_gfx_device_t *dev, uint32_t width, uint32_t height) {
                 free(dev->backbuffer);
                 dev->backbuffer = nb;
                 dev->backbuffer_size = new_sz;
+            }
+        }
+        size_t total = (size_t)width * (size_t)height;
+        if (dev->depthbuffer && total != dev->depthbuffer_elems) {
+            float *nd = (float *)malloc(total * sizeof(float));
+            if (nd) {
+                for (size_t i = 0u; i < total; ++i) nd[i] = 1e30f;
+                free(dev->depthbuffer);
+                dev->depthbuffer = nd;
+                dev->depthbuffer_elems = total;
             }
         }
     }
@@ -624,6 +639,12 @@ void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint
     } else if (dev->gl_clear && dev->egl_surface) {
         dev->gl_clear(0x00000100u | 0x00000400u); /* GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT */
     }
+    if (dev->depthbuffer) {
+        size_t total = (size_t)dev->width * (size_t)dev->height;
+        if (total <= dev->depthbuffer_elems) {
+            for (size_t i = 0u; i < total; ++i) dev->depthbuffer[i] = 1e30f;
+        }
+    }
     dev->last_depth = depth;
     dev->last_stencil = stencil;
     dev->clear_calls++;
@@ -814,13 +835,26 @@ static float wrap_uv_unit(float v) {
     return frac;
 }
 
-int twd_gfx_draw_triangle(
+static int gfx_draw_triangle_impl(
     twd_gfx_device_t *dev,
     const twd_gfx_texture_t *tex_or_null,
-    const twd_gfx_vertex2d_t v[3]) {
+    const twd_gfx_vertex2d_t v[3],
+    int use_z) {
     if (!dev || !dev->backbuffer || !v) return -1;
     float area = tri_edge(v[0].x, v[0].y, v[1].x, v[1].y, v[2].x, v[2].y);
     if (area > -1e-5f && area < 1e-5f) return 0;
+
+    if (use_z) {
+        size_t need = (size_t)dev->width * (size_t)dev->height;
+        if (!dev->depthbuffer || dev->depthbuffer_elems < need) {
+            float *zb = (float *)malloc(need * sizeof(float));
+            if (!zb) return -1;
+            for (size_t zi = 0u; zi < need; ++zi) zb[zi] = 1e30f;
+            free(dev->depthbuffer);
+            dev->depthbuffer = zb;
+            dev->depthbuffer_elems = need;
+        }
+    }
 
     float minx = v[0].x, maxx = v[0].x;
     float miny = v[0].y, maxy = v[0].y;
@@ -855,6 +889,13 @@ int twd_gfx_draw_triangle(
             float w2 = 1.0f - w0 - w1;
             if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
 
+            size_t pidx = (size_t)y * (size_t)dev->width + (size_t)x;
+            float pz = 0.0f;
+            if (use_z) {
+                pz = w0 * v[0].z + w1 * v[1].z + w2 * v[2].z;
+                if (pz <= 0.0f || pz >= dev->depthbuffer[pidx]) continue;
+            }
+
             uint8_t cr = clamp_u8_f(w0 * (float)v[0].rgba[0] + w1 * (float)v[1].rgba[0] + w2 * (float)v[2].rgba[0]);
             uint8_t cg = clamp_u8_f(w0 * (float)v[0].rgba[1] + w1 * (float)v[1].rgba[1] + w2 * (float)v[2].rgba[1]);
             uint8_t cb = clamp_u8_f(w0 * (float)v[0].rgba[2] + w1 * (float)v[1].rgba[2] + w2 * (float)v[2].rgba[2]);
@@ -873,12 +914,28 @@ int twd_gfx_draw_triangle(
                 cb = (uint8_t)(((uint32_t)cb * (uint32_t)sp[2]) / 255u);
                 ca = (uint8_t)(((uint32_t)ca * (uint32_t)sp[3]) / 255u);
             }
-            uint8_t *dp = dev->backbuffer + ((size_t)y * (size_t)dev->width + (size_t)x) * 4u;
-            blend_pixel_rgba8(dp, cr, cg, cb, ca);
+            if (use_z && ca > 0u) {
+                dev->depthbuffer[pidx] = pz;
+            }
+            blend_pixel_rgba8(dev->backbuffer + pidx * 4u, cr, cg, cb, ca);
         }
     }
     dev->draw_calls++;
     return 0;
+}
+
+int twd_gfx_draw_triangle(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3]) {
+    return gfx_draw_triangle_impl(dev, tex_or_null, v, 0);
+}
+
+int twd_gfx_draw_triangle_z(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3]) {
+    return gfx_draw_triangle_impl(dev, tex_or_null, v, 1);
 }
 
 void twd_gfx_set_viewport(

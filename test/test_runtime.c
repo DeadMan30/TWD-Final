@@ -2211,6 +2211,114 @@ int main(void) {
             twd_font_free(&ttf_f);
         }
 
+        /* Z-buffer triangle occlusion (twd_gfx_draw_triangle_z) + twd_d3dmesh_draw_camera + fmt=41 UNorm10_10_10_2 */
+        {
+            twd_gfx_desc_t zgd;
+            memset(&zgd, 0, sizeof(zgd));
+            zgd.width = 64u;
+            zgd.height = 64u;
+            zgd.preferred_backend = TWD_GFX_BACKEND_NONE;
+            twd_gfx_device_t *zgdev = twd_gfx_device_create(&zgd);
+            TWD_CHECK(zgdev != NULL);
+            static const float k_zblk[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            twd_gfx_clear(zgdev, k_zblk, 1.0f, 0u);
+            twd_gfx_vertex2d_t t_near[3] = {
+                {10.0f, 10.0f, 2.0f, 0.0f, 0.0f, {220u, 20u, 20u, 255u}},
+                {54.0f, 10.0f, 2.0f, 0.0f, 0.0f, {220u, 20u, 20u, 255u}},
+                {32.0f, 54.0f, 2.0f, 0.0f, 0.0f, {220u, 20u, 20u, 255u}}
+            };
+            twd_gfx_vertex2d_t t_far[3] = {
+                {10.0f, 10.0f, 8.0f, 0.0f, 0.0f, {20u, 20u, 240u, 255u}},
+                {54.0f, 10.0f, 8.0f, 0.0f, 0.0f, {20u, 20u, 240u, 255u}},
+                {32.0f, 54.0f, 8.0f, 0.0f, 0.0f, {20u, 20u, 240u, 255u}}
+            };
+            TWD_CHECK(twd_gfx_draw_triangle_z(zgdev, NULL, t_near) == 0);
+            TWD_CHECK(twd_gfx_draw_triangle_z(zgdev, NULL, t_far) == 0);
+            uint32_t zw = 0u;
+            const uint8_t *zbb = twd_gfx_backbuffer_data(zgdev, &zw, NULL, NULL);
+            const uint8_t *mid = zbb + (32u * zw + 32u) * 4u;
+            /* Near red triangle (z=2) must occlude far blue triangle (z=8) */
+            TWD_CHECK(mid[0] > 180u && mid[2] < 40u);
+
+            /* Build synthetic MSV6 D3DMesh with fmt=41 packed pos + posWScale */
+            uint8_t m41b[512];
+            memset(m41b, 0, sizeof(m41b));
+            size_t mo = 0u;
+            memcpy(m41b + mo, "6VSM", 4u); mo += 4u;
+            size_t m_def_off = mo; mo += 4u;
+            mo += 4u; /* debug = 0 */
+            size_t m_async_off = mo; mo += 4u;
+            mo += 4u; /* type_count = 0 */
+            size_t m_start = mo;
+            ttarch_wr_u32(m41b + mo, 11u); mo += 4u;
+            ttarch_wr_u32(m41b + mo, 3u); mo += 4u;
+            memcpy(m41b + mo, "f41", 3u); mo += 3u;
+            ttarch_wr_u32(m41b + mo, 55u); mo += 4u;
+            mo += 1u; /* mbHasProps */
+            { float one = 1.0f; memcpy(m41b + mo, &one, 4u); } mo += 4u;
+            mo += 4u + 8u; /* uv_ver + lod_crc */
+            mo += 4u + 1u; /* dep_cnt=0, has_cp=0 */
+            size_t m41_md_off = mo; mo += 4u;
+            size_t m41_md_st = mo;
+            size_t m41_lod_off = mo; mo += 4u;
+            size_t m41_lod_st = mo;
+            ttarch_wr_u32(m41b + mo, 1u); mo += 4u;
+            ttarch_wr_u32(m41b + mo, 8u); mo += 8u; /* b0 empty */
+            ttarch_wr_u32(m41b + mo, 8u); mo += 8u; /* b1 empty */
+            mo += 4u + 24u + 16u + 4u;
+            { float f1 = 1.0f, f2 = 2.0f;
+              memcpy(m41b + mo + 0u, &f1, 4u); memcpy(m41b + mo + 4u, &f1, 4u); memcpy(m41b + mo + 8u, &f1, 4u);
+              memcpy(m41b + mo + 16u, &f2, 4u); /* pos_w_scale.y = 2.0 */
+            }
+            mo += 12u + 12u + 12u + 8u;
+            ttarch_wr_u32(m41b + mo, 3u); mo += 8u;
+            ttarch_wr_u32(m41b + m41_lod_off, (uint32_t)(mo - m41_lod_st) + 4u);
+            for (int ci = 0; ci < 6; ++ci) { ttarch_wr_u32(m41b + mo, 8u); mo += 8u; }
+            mo += 4u; /* mVertexStreams */
+            { float f1 = 1.0f, f2 = 2.0f;
+              memcpy(m41b + mo + 48u, &f1, 4u); memcpy(m41b + mo + 52u, &f1, 4u); memcpy(m41b + mo + 56u, &f1, 4u);
+              memcpy(m41b + mo + 64u, &f2, 4u);
+            }
+            mo += 84u;
+            /* 2 async buffer records (ib fmt=16 len=6, vb fmt=41 len=12) */
+            ttarch_wr_u32(m41b + mo + 4u, 16u); ttarch_wr_u32(m41b + mo + 8u, 2u);
+            ttarch_wr_u32(m41b + mo + 12u, 3u); ttarch_wr_u32(m41b + mo + 16u, 2u);
+            mo += 20u;
+            ttarch_wr_u32(m41b + mo + 4u, 41u); ttarch_wr_u32(m41b + mo + 8u, 9u);
+            ttarch_wr_u32(m41b + mo + 12u, 3u); ttarch_wr_u32(m41b + mo + 16u, 4u);
+            mo += 20u;
+            ttarch_wr_u32(m41b + m41_md_off, (uint32_t)(mo - m41_md_st) + 4u);
+            ttarch_wr_u32(m41b + m_def_off, (uint32_t)(mo - m_start));
+            ttarch_wr_u32(m41b + m_async_off, 18u);
+            /* Async payload: ib (0,1,2) + vb (w=2 -> y=4.0f..5.0f) */
+            m41b[mo + 2] = 1u; m41b[mo + 4] = 2u; mo += 6u;
+            ttarch_wr_u32(m41b + mo + 0u, (2u << 30u));
+            ttarch_wr_u32(m41b + mo + 4u, 1023u | (2u << 30u));
+            ttarch_wr_u32(m41b + mo + 8u, 512u | (1023u << 10u) | (2u << 30u));
+            mo += 12u;
+
+            twd_d3dmesh_t m41;
+            TWD_CHECK(twd_d3dmesh_parse_memory(m41b, mo, &m41) == 0);
+            TWD_CHECK(m41.vertex_count == 3u && m41.index_count == 3u && m41.vertex_stride == 12u);
+            float v0y = 0.0f;
+            memcpy(&v0y, m41.vertex_data + 4u, 4u);
+            TWD_CHECK(v0y > 3.9f && v0y < 4.1f);
+
+            static const float k_cam_p[3] = {0.5f, 4.5f, 4.0f};
+            static const float k_obj_p[3] = {0.0f, 0.0f, 0.0f};
+            static const uint8_t k_cam_tint[4] = {100u, 240u, 120u, 255u};
+            twd_gfx_clear(zgdev, k_zblk, 1.0f, 0u);
+            TWD_CHECK(twd_d3dmesh_draw_camera(zgdev, &m41, NULL, k_cam_p, 0.0f, 0.0f, 55.0f,
+                                              k_obj_p, NULL, k_cam_tint) == 0);
+            int cam_lit = 0;
+            for (size_t pi = 0u; pi < 64u * 64u; ++pi) {
+                if (zbb[pi * 4u + 1u] > 80u) cam_lit++;
+            }
+            TWD_CHECK(cam_lit > 10);
+            twd_d3dmesh_free(&m41);
+            twd_gfx_device_destroy(zgdev);
+        }
+
         twd_crypto_clear_archive_key();
     }
 

@@ -649,9 +649,13 @@ int main(void) {
         evs[4].param2 = ((uint64_t)120u << 32) | 210u;
         /* 5: Enter (Episode 1 selected) -> adv_trainStation.scene */
         evs[5].kind = TWD_EVT_KEY; evs[5].param1 = 13u; evs[5].param2 = 1;
-        /* 6: 'D' (68) camera pan in gameplay scene */
+        /* 6: 'D' (68) camera pan in gameplay scene + 'Q' (81) yaw orbit */
         evs[6].kind = TWD_EVT_KEY; evs[6].param1 = 68u; evs[6].param2 = 1;
+        twd_win_event_t orb_ev;
+        memset(&orb_ev, 0, sizeof(orb_ev));
+        orb_ev.kind = TWD_EVT_KEY; orb_ev.param1 = 81u; orb_ev.param2 = 1;
         for (int ei = 0; ei < 7; ++ei) twd_window_push_event(&evs[ei]);
+        twd_window_push_event(&orb_ev);
 
         twd_boot_config_t e4cfg;
         memset(&e4cfg, 0, sizeof(e4cfg));

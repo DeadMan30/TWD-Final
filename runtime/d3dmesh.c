@@ -302,6 +302,7 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
                 lp += 4u; /* endianType */
                 for (int k = 0; k < 3; ++k) out->pos_scale[k] = dm_rd_f32(buf + lp + (size_t)k * 4u);
                 lp += 12u;
+                for (int k = 0; k < 3; ++k) out->pos_w_scale[k] = dm_rd_f32(buf + lp + (size_t)k * 4u);
                 lp += 12u; /* posWScale */
                 for (int k = 0; k < 3; ++k) out->pos_offset[k] = dm_rd_f32(buf + lp + (size_t)k * 4u);
                 lp += 12u;
@@ -346,6 +347,7 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
             if (fabsf(sx) > 1e-6f || fabsf(sy) > 1e-6f || fabsf(ox) > 1e-6f || fabsf(oy) > 1e-6f) {
                 for (int k = 0; k < 6; ++k) out->bbox_minmax[k] = dm_rd_f32(buf + mp + (size_t)k * 4u);
                 for (int k = 0; k < 3; ++k) out->pos_scale[k] = dm_rd_f32(buf + mp + 48u + (size_t)k * 4u);
+                for (int k = 0; k < 3; ++k) out->pos_w_scale[k] = dm_rd_f32(buf + mp + 60u + (size_t)k * 4u);
                 for (int k = 0; k < 3; ++k) out->pos_offset[k] = dm_rd_f32(buf + mp + 72u + (size_t)k * 4u);
             }
         }
@@ -357,6 +359,7 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
             size_t sum_async = 0u;
             int table_ok = 1;
             int ib_idx = -1, vb_pos_idx = -1, vb_uv_idx = -1;
+            uint32_t vb_pos_fmt = 0u;
             size_t offsets[16];
             for (uint32_t bi = 0u; bi < nb; ++bi) {
                 const uint8_t *e = tbl + (size_t)bi * 20u;
@@ -377,8 +380,10 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
                 sum_async += (size_t)cnt * (size_t)stride;
                 if ((stride == 2u || stride == 4u) && (fmt == 16u || fmt == 17u || usage == 2u || usage == 10u)) {
                     if (ib_idx < 0 || usage == 2u) ib_idx = (int)bi;
-                } else if (ib_idx >= 0 && vb_pos_idx < 0 && stride >= 8u && fmt == 26u) {
+                } else if (ib_idx >= 0 && vb_pos_idx < 0 &&
+                           ((stride >= 8u && fmt == 26u) || (stride == 4u && fmt == 41u))) {
                     vb_pos_idx = (int)bi;
+                    vb_pos_fmt = fmt;
                 } else if (ib_idx >= 0 && vb_uv_idx < 0 && stride == 4u && fmt == 24u) {
                     vb_uv_idx = (int)bi;
                 }
@@ -408,8 +413,10 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
                 out->vertex_data = (uint8_t *)calloc(1u, vbytes);
                 if (!out->vertex_data) { twd_d3dmesh_free(out); return -1; }
                 float ps[3];
+                float pws[3];
                 float po[3];
                 ps[0] = out->pos_scale[0]; ps[1] = out->pos_scale[1]; ps[2] = out->pos_scale[2];
+                pws[0] = out->pos_w_scale[0]; pws[1] = out->pos_w_scale[1]; pws[2] = out->pos_w_scale[2];
                 po[0] = out->pos_offset[0]; po[1] = out->pos_offset[1]; po[2] = out->pos_offset[2];
                 if (fabsf(ps[0]) < 1e-6f && fabsf(ps[1]) < 1e-6f && fabsf(ps[2]) < 1e-6f) {
                     ps[0] = 1.0f; ps[1] = 1.0f; ps[2] = 1.0f;
@@ -417,14 +424,32 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
                 for (uint32_t vi = 0u; vi < vcnt; ++vi) {
                     const uint8_t *vp = vsrc + (size_t)vi * (size_t)vstr;
                     uint8_t *dst = out->vertex_data + (size_t)vi * (size_t)out_stride;
-                    for (int k = 0; k < 3; ++k) {
-                        float fv = ((float)dm_rd_u16(vp + (size_t)k * 2u) / 65535.0f) * ps[k] + po[k];
-                        uint32_t bits = 0u;
-                        memcpy(&bits, &fv, sizeof(bits));
-                        dst[k * 4 + 0] = (uint8_t)(bits & 0xffu);
-                        dst[k * 4 + 1] = (uint8_t)((bits >> 8u) & 0xffu);
-                        dst[k * 4 + 2] = (uint8_t)((bits >> 16u) & 0xffu);
-                        dst[k * 4 + 3] = (uint8_t)((bits >> 24u) & 0xffu);
+                    if (vb_pos_fmt == 41u) {
+                        uint32_t p32 = dm_rd_u32(vp);
+                        float q[3];
+                        q[0] = (float)(p32 & 0x3ffu) / 1023.0f;
+                        q[1] = (float)((p32 >> 10u) & 0x3ffu) / 1023.0f;
+                        q[2] = (float)((p32 >> 20u) & 0x3ffu) / 1023.0f;
+                        float w = (float)((p32 >> 30u) & 0x3u);
+                        for (int k = 0; k < 3; ++k) {
+                            float fv = q[k] * ps[k] + w * pws[k] + po[k];
+                            uint32_t bits = 0u;
+                            memcpy(&bits, &fv, sizeof(bits));
+                            dst[k * 4 + 0] = (uint8_t)(bits & 0xffu);
+                            dst[k * 4 + 1] = (uint8_t)((bits >> 8u) & 0xffu);
+                            dst[k * 4 + 2] = (uint8_t)((bits >> 16u) & 0xffu);
+                            dst[k * 4 + 3] = (uint8_t)((bits >> 24u) & 0xffu);
+                        }
+                    } else {
+                        for (int k = 0; k < 3; ++k) {
+                            float fv = ((float)dm_rd_u16(vp + (size_t)k * 2u) / 65535.0f) * ps[k] + po[k];
+                            uint32_t bits = 0u;
+                            memcpy(&bits, &fv, sizeof(bits));
+                            dst[k * 4 + 0] = (uint8_t)(bits & 0xffu);
+                            dst[k * 4 + 1] = (uint8_t)((bits >> 8u) & 0xffu);
+                            dst[k * 4 + 2] = (uint8_t)((bits >> 16u) & 0xffu);
+                            dst[k * 4 + 3] = (uint8_t)((bits >> 24u) & 0xffu);
+                        }
                     }
                     if (uvsrc) {
                         const uint8_t *up = uvsrc + (size_t)vi * 4u;
@@ -584,6 +609,28 @@ typedef struct dm_tri_sort {
     float avg_z;
 } dm_tri_sort_t;
 
+static void dm_shade_triangle(const float vx[3], const float vy[3], const float vz[3],
+                              const uint8_t base_rgba[4], twd_gfx_vertex2d_t tv[3]) {
+    float ax = vx[1] - vx[0], ay = vy[1] - vy[0], az = vz[1] - vz[0];
+    float bx = vx[2] - vx[0], by = vy[2] - vy[0], bz = vz[2] - vz[0];
+    float nx = ay * bz - az * by;
+    float ny = az * bx - ax * bz;
+    float nz = ax * by - ay * bx;
+    float nlen = sqrtf(nx * nx + ny * ny + nz * nz);
+    float shade = 1.0f;
+    if (nlen > 1e-6f) {
+        float dot_l = (nx * 0.35f + ny * 0.55f - nz * 0.75f) / nlen;
+        if (dot_l < 0.0f) dot_l = -dot_l;
+        shade = 0.55f + 0.45f * dot_l;
+    }
+    for (int k = 0; k < 3; ++k) {
+        tv[k].rgba[0] = (uint8_t)((float)base_rgba[0] * shade + 0.5f);
+        tv[k].rgba[1] = (uint8_t)((float)base_rgba[1] * shade + 0.5f);
+        tv[k].rgba[2] = (uint8_t)((float)base_rgba[2] * shade + 0.5f);
+        tv[k].rgba[3] = base_rgba[3];
+    }
+}
+
 int twd_d3dmesh_draw_shaded(
     twd_gfx_device_t *dev,
     const twd_d3dmesh_t *mesh,
@@ -637,25 +684,94 @@ int twd_d3dmesh_draw_shaded(
                               &vx[k], &vy[k], &vz[k], &tv[k].x, &tv[k].y, &tv[k].u, &tv[k].v);
             tv[k].z = vz[k];
         }
-        float ax = vx[1] - vx[0], ay = vy[1] - vy[0], az = vz[1] - vz[0];
-        float bx = vx[2] - vx[0], by = vy[2] - vy[0], bz = vz[2] - vz[0];
-        float nx = ay * bz - az * by;
-        float ny = az * bx - ax * bz;
-        float nz = ax * by - ay * bx;
-        float nlen = sqrtf(nx * nx + ny * ny + nz * nz);
-        float shade = 1.0f;
-        if (nlen > 1e-6f) {
-            float dot_l = (nx * 0.35f + ny * 0.55f - nz * 0.75f) / nlen;
-            if (dot_l < 0.0f) dot_l = -dot_l;
-            shade = 0.55f + 0.45f * dot_l;
-        }
-        for (int k = 0; k < 3; ++k) {
-            tv[k].rgba[0] = (uint8_t)((float)base_rgba[0] * shade + 0.5f);
-            tv[k].rgba[1] = (uint8_t)((float)base_rgba[1] * shade + 0.5f);
-            tv[k].rgba[2] = (uint8_t)((float)base_rgba[2] * shade + 0.5f);
-            tv[k].rgba[3] = base_rgba[3];
-        }
+        dm_shade_triangle(vx, vy, vz, base_rgba, tv);
         (void)twd_gfx_draw_triangle(dev, tex_or_null, tv);
+    }
+    return 0;
+}
+
+int twd_d3dmesh_draw_camera(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *tex_or_null,
+    const float cam_pos[3],
+    float cam_yaw,
+    float cam_pitch,
+    float fov_deg,
+    const float obj_pos[3],
+    const float obj_scale[3],
+    const uint8_t rgba[4]) {
+    if (!dev || !mesh || !mesh->vertex_data || mesh->vertex_stride < 12u ||
+        !mesh->index_data || (mesh->index_stride != 2u && mesh->index_stride != 4u)) {
+        return -1;
+    }
+    uint32_t bb_w = 0u, bb_h = 0u;
+    if (!twd_gfx_backbuffer_data(dev, &bb_w, &bb_h, NULL) || bb_w == 0u || bb_h == 0u) return -1;
+    uint32_t vcnt = (uint32_t)(mesh->vertex_bytes / mesh->vertex_stride);
+    uint32_t icnt = mesh->index_count;
+    if (vcnt == 0u || icnt < 3u) return -1;
+
+    static const float k_def_cam[3] = {0.0f, 0.0f, 5.0f};
+    static const float k_def_pos[3] = {0.0f, 0.0f, 0.0f};
+    static const float k_def_sc[3] = {1.0f, 1.0f, 1.0f};
+    static const uint8_t k_def_rgba[4] = {255u, 255u, 255u, 255u};
+    const float *cp = cam_pos ? cam_pos : k_def_cam;
+    const float *op = obj_pos ? obj_pos : k_def_pos;
+    const float *os = obj_scale ? obj_scale : k_def_sc;
+    const uint8_t *base_rgba = rgba ? rgba : k_def_rgba;
+
+    float cy = cosf(cam_yaw), sy = sinf(cam_yaw);
+    float cpitch = cosf(cam_pitch), spitch = sinf(cam_pitch);
+    float rx = cy, ry = 0.0f, rz = sy;
+    float fx = sy * cpitch, fy = spitch, fz = -cy * cpitch;
+    float ux = -sy * spitch, uy = cpitch, uz = cy * spitch;
+
+    float fov = (fov_deg >= 10.0f && fov_deg <= 150.0f) ? fov_deg : 55.0f;
+    float half_rad = fov * 0.5f * (3.14159265f / 180.0f);
+    float focal = ((float)bb_h * 0.5f) / tanf(half_rad);
+    float hbw = (float)bb_w * 0.5f;
+    float hbh = (float)bb_h * 0.5f;
+
+    uint32_t tri_cnt = icnt / 3u;
+    for (uint32_t t = 0u; t < tri_cnt; ++t) {
+        float vx[3], vy[3], vz[3];
+        twd_gfx_vertex2d_t tv[3];
+        int visible = 1;
+        for (int k = 0; k < 3; ++k) {
+            uint32_t idx = dm_read_index(mesh, t * 3u + (uint32_t)k, vcnt);
+            const uint8_t *vp = mesh->vertex_data + (size_t)idx * (size_t)mesh->vertex_stride;
+            float wx = dm_rd_f32(vp + 0u) * os[0] + op[0];
+            float wy = dm_rd_f32(vp + 4u) * os[1] + op[1];
+            float wz = dm_rd_f32(vp + 8u) * os[2] + op[2];
+            float dx = wx - cp[0], dy = wy - cp[1], dz = wz - cp[2];
+            float cam_x = dx * rx + dy * ry + dz * rz;
+            float cam_y = dx * ux + dy * uy + dz * uz;
+            float cam_z = dx * fx + dy * fy + dz * fz;
+            if (cam_z < 0.08f) { visible = 0; break; }
+            vx[k] = wx; vy[k] = wy; vz[k] = wz;
+            tv[k].x = hbw + (cam_x / cam_z) * focal;
+            tv[k].y = hbh - (cam_y / cam_z) * focal;
+            tv[k].z = cam_z;
+            if (mesh->vertex_stride >= 32u) {
+                tv[k].u = dm_rd_f32(vp + 24u);
+                tv[k].v = dm_rd_f32(vp + 28u);
+            } else if (mesh->vertex_stride >= 20u) {
+                tv[k].u = dm_rd_f32(vp + 12u);
+                tv[k].v = dm_rd_f32(vp + 16u);
+            } else {
+                tv[k].u = 0.0f;
+                tv[k].v = 0.0f;
+            }
+        }
+        if (!visible) continue;
+        if ((tv[0].x < -64.0f && tv[1].x < -64.0f && tv[2].x < -64.0f) ||
+            (tv[0].x > (float)bb_w + 64.0f && tv[1].x > (float)bb_w + 64.0f && tv[2].x > (float)bb_w + 64.0f) ||
+            (tv[0].y < -64.0f && tv[1].y < -64.0f && tv[2].y < -64.0f) ||
+            (tv[0].y > (float)bb_h + 64.0f && tv[1].y > (float)bb_h + 64.0f && tv[2].y > (float)bb_h + 64.0f)) {
+            continue;
+        }
+        dm_shade_triangle(vx, vy, vz, base_rgba, tv);
+        (void)twd_gfx_draw_triangle_z(dev, tex_or_null, tv);
     }
     return 0;
 }

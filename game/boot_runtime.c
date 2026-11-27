@@ -8,6 +8,7 @@
 #include "twd_game.h"
 #include "twd_runtime.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +28,7 @@ typedef struct twd_boot_scene_item {
     twd_d3dmesh_t mesh;
     twd_d3dmesh_gpu_t gpu;
     twd_gfx_texture_t *tex;
+    char agent_name[64];
     float world_pos[3];
     float scale[3];
     int is_bg;
@@ -72,6 +74,10 @@ typedef struct twd_boot_loop_state {
     int opt_fx_quality;
     float cam_pan_x;
     float cam_pan_y;
+    float cam_pan_z;
+    float cam_yaw;
+    float cam_pitch;
+    char selected_agent[64];
     char menu_status[96];
     void *d3d_dev;
     void *d3d_ctx;
@@ -549,6 +555,57 @@ static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_na
 static void boot_layout_menu_buttons(twd_boot_loop_state_t *st);
 static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *scene_name);
 
+static int boot_is_gameplay_3d(const twd_boot_loop_state_t *st, const char *scene_name) {
+    if (!st || !scene_name || scene_name[0] == '\0') return 0;
+    if (st->menu_btn_count > 0u) return 0;
+    if (strncmp(scene_name, "ui_", 3u) == 0) return 0;
+    if (strcmp(scene_name, "Menu.scene") == 0 || strcmp(scene_name, "Boot.scene") == 0) return 0;
+    return 1;
+}
+
+static void boot_get_scene_camera(const twd_boot_loop_state_t *st, float out_pos[3],
+                                  float *out_yaw, float *out_pitch) {
+    float cx = 0.0f, cy = 1.5f, cz = 6.0f;
+    int found = 0;
+    if (st && st->scenes) {
+        const char *pri = twd_scene_mgr_primary_name(st->scenes);
+        twd_scene_t *psc = pri ? twd_scene_mgr_find(st->scenes, pri) : NULL;
+        if (psc) {
+            for (uint32_t ai = 0u; ai < psc->agent_count; ++ai) {
+                const char *aname = psc->agents[ai].name;
+                if ((strncmp(aname, "cam_", 4u) == 0 || strncmp(aname, "Cam", 3u) == 0 ||
+                     strstr(aname, "Camera") != NULL) &&
+                    (fabsf(psc->agents[ai].pos[0]) > 1e-4f ||
+                     fabsf(psc->agents[ai].pos[1]) > 1e-4f ||
+                     fabsf(psc->agents[ai].pos[2]) > 1e-4f)) {
+                    cx = psc->agents[ai].pos[0];
+                    cy = psc->agents[ai].pos[1];
+                    cz = psc->agents[ai].pos[2];
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                for (uint32_t ai = 0u; ai < psc->agent_count; ++ai) {
+                    const char *aname = psc->agents[ai].name;
+                    if (strncmp(aname, "cam_", 4u) == 0 || strncmp(aname, "Cam", 3u) == 0 ||
+                        strstr(aname, "Camera") != NULL) {
+                        cx = psc->agents[ai].pos[0];
+                        cy = psc->agents[ai].pos[1];
+                        cz = psc->agents[ai].pos[2];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out_pos[0] = cx + (st ? st->cam_pan_x : 0.0f);
+    out_pos[1] = cy + (st ? st->cam_pan_y : 0.0f);
+    out_pos[2] = cz + (st ? st->cam_pan_z : 0.0f);
+    if (out_yaw) *out_yaw = st ? st->cam_yaw : 0.0f;
+    if (out_pitch) *out_pitch = st ? st->cam_pitch : 0.0f;
+}
+
 static void boot_launch_episode(twd_boot_loop_state_t *st, int ep_idx) {
     static const char *const k_ep_cands[4][3] = {
         {"adv_trainStation.scene", "adv_boardingSchoolExterior.scene", "adv_roadTile.scene"},
@@ -562,6 +619,10 @@ static void boot_launch_episode(twd_boot_loop_state_t *st, int ep_idx) {
         if (sc && twd_ttarch2_exists_mounted(sc)) {
             st->cam_pan_x = 0.0f;
             st->cam_pan_y = 0.0f;
+            st->cam_pan_z = 0.0f;
+            st->cam_yaw = 0.0f;
+            st->cam_pitch = 0.0f;
+            st->selected_agent[0] = '\0';
             st->menu_status[0] = '\0';
             boot_switch_to_scene(st, sc);
             return;
@@ -680,7 +741,7 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                     }
                 }
             } else if (st->scenes && st->stats && strcmp(st->stats->active_scene, "ui_boot.scene") != 0) {
-                /* Gameplay scene camera pan & back navigation */
+                /* Gameplay 3D camera controls & back navigation */
                 if (ev->param1 == 65ULL || ev->param1 == 37ULL) {
                     st->cam_pan_x -= 0.5f;
                     (void)twd_kv_set("scene", "cam_panned", "1");
@@ -688,11 +749,25 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                     st->cam_pan_x += 0.5f;
                     (void)twd_kv_set("scene", "cam_panned", "1");
                 } else if (ev->param1 == 87ULL || ev->param1 == 38ULL) {
-                    st->cam_pan_y += 0.5f;
+                    st->cam_pan_z -= 0.5f;
+                    st->cam_pan_y += 0.25f;
                     (void)twd_kv_set("scene", "cam_panned", "1");
                 } else if (ev->param1 == 83ULL || ev->param1 == 40ULL) {
-                    st->cam_pan_y -= 0.5f;
+                    st->cam_pan_z += 0.5f;
+                    st->cam_pan_y -= 0.25f;
                     (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 81ULL) {
+                    st->cam_yaw -= 0.12f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 69ULL) {
+                    st->cam_yaw += 0.12f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 82ULL) {
+                    st->cam_pan_x = 0.0f;
+                    st->cam_pan_y = 0.0f;
+                    st->cam_pan_z = 0.0f;
+                    st->cam_yaw = 0.0f;
+                    st->cam_pitch = 0.0f;
                 } else if (ev->param1 == 8ULL) {
                     if (twd_ttarch2_exists_mounted("ui_episodes.scene")) {
                         st->menu_page = TWD_MENU_PAGE_EPISODES;
@@ -729,6 +804,47 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                 st->menu_focus = 0;
                 boot_switch_to_scene(st, "ui_menuMain.scene");
                 return;
+            }
+            if (st->stats && boot_is_gameplay_3d(st, st->stats->active_scene) &&
+                st->scene_item_count > 0u) {
+                float cp[3], cyaw = 0.0f, cpitch = 0.0f;
+                boot_get_scene_camera(st, cp, &cyaw, &cpitch);
+                uint32_t dw = st->cfg.width ? st->cfg.width : 1280u;
+                uint32_t dh = st->cfg.height ? st->cfg.height : 720u;
+                float cy = cosf(cyaw), sy = sinf(cyaw);
+                float cpi = cosf(cpitch), spi = sinf(cpitch);
+                float rx = cy, rz = sy;
+                float fx = sy * cpi, fy = spi, fz = -cy * cpi;
+                float ux = -sy * spi, uy = cpi, uz = cy * spi;
+                float focal = ((float)dh * 0.5f) / tanf(55.0f * 0.5f * (3.14159265f / 180.0f));
+                float best_d2 = 1e30f;
+                int best_idx = -1;
+                for (uint32_t ii = 0u; ii < st->scene_item_count; ++ii) {
+                    const twd_boot_scene_item_t *it = &st->scene_items[ii];
+                    if (!it->active || it->agent_name[0] == '\0') continue;
+                    float dx = it->world_pos[0] - cp[0];
+                    float dy = it->world_pos[1] - cp[1];
+                    float dz = it->world_pos[2] - cp[2];
+                    float vz = dx * fx + dy * fy + dz * fz;
+                    if (vz < 0.08f) continue;
+                    float vx = dx * rx + dz * rz;
+                    float vy = dx * ux + dy * uy + dz * uz;
+                    float sx = (float)dw * 0.5f + (vx / vz) * focal;
+                    float sy_s = (float)dh * 0.5f - (vy / vz) * focal;
+                    float d2 = (sx - (float)px) * (sx - (float)px) + (sy_s - (float)py) * (sy_s - (float)py);
+                    if (d2 < best_d2) {
+                        best_d2 = d2;
+                        best_idx = (int)ii;
+                    }
+                }
+                if (best_idx >= 0) {
+                    size_t nl = strlen(st->scene_items[best_idx].agent_name);
+                    if (nl >= sizeof(st->selected_agent)) nl = sizeof(st->selected_agent) - 1u;
+                    memcpy(st->selected_agent, st->scene_items[best_idx].agent_name, nl);
+                    st->selected_agent[nl] = '\0';
+                    (void)twd_kv_set("ui", "last_hit", st->selected_agent);
+                    return;
+                }
             }
             const char *pri = twd_scene_mgr_primary_name(st->scenes);
             twd_scene_t *psc = pri ? twd_scene_mgr_find(st->scenes, pri) : NULL;
@@ -890,6 +1006,12 @@ static void boot_populate_scene_items(twd_boot_loop_state_t *st) {
                 twd_d3dmesh_upload_gfx(st->gfx, &it->mesh, &it->gpu) == 0) {
                 it->tex = boot_load_mesh_texture(st->gfx, &it->mesh, ag->name);
                 if (it->tex && st->stats) st->stats->boot_textures_loaded++;
+                {
+                    size_t anl = strlen(ag->name);
+                    if (anl >= sizeof(it->agent_name)) anl = sizeof(it->agent_name) - 1u;
+                    memcpy(it->agent_name, ag->name, anl);
+                    it->agent_name[anl] = '\0';
+                }
                 it->world_pos[0] = wpos[0];
                 it->world_pos[1] = wpos[1];
                 it->world_pos[2] = wpos[2];
@@ -1178,6 +1300,12 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
 
     if (st->scene_item_count > 0u) {
         static const uint8_t k_ui_tint[4] = {255u, 255u, 255u, 255u};
+        static const uint8_t k_sel_tint[4] = {255u, 215u, 90u, 255u};
+        const char *pri_sc = st->scenes ? twd_scene_mgr_primary_name(st->scenes) : NULL;
+        int is_3d = boot_is_gameplay_3d(st, pri_sc);
+        float cpos[3] = {0.0f, 0.0f, 5.0f};
+        float cyaw = 0.0f, cpitch = 0.0f;
+        if (is_3d) boot_get_scene_camera(st, cpos, &cyaw, &cpitch);
         float ppu = (float)dh / 11.5f;
         for (uint32_t ii = 0u; ii < st->scene_item_count; ++ii) {
             const twd_boot_scene_item_t *it = &st->scene_items[ii];
@@ -1192,11 +1320,20 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
                     continue;
                 }
             }
-            float sx = (float)dw * 0.5f + (it->world_pos[0] - cam_x) * ppu;
-            float sy = (float)dh * 0.5f - (it->world_pos[1] - cam_y) * ppu;
-            float sc = it->scale[0] > 0.0f ? it->scale[0] : 1.0f;
-            (void)twd_d3dmesh_draw_shaded(
-                gfx, &it->mesh, it->tex, sx, sy, ppu * 3.0f * sc, k_ui_tint);
+            const uint8_t *tint = (st->selected_agent[0] != '\0' &&
+                                   strcmp(st->selected_agent, it->agent_name) == 0)
+                ? k_sel_tint : k_ui_tint;
+            if (is_3d) {
+                (void)twd_d3dmesh_draw_camera(
+                    gfx, &it->mesh, it->tex, cpos, cyaw, cpitch, 55.0f,
+                    it->world_pos, it->scale, tint);
+            } else {
+                float sx = (float)dw * 0.5f + (it->world_pos[0] - cam_x) * ppu;
+                float sy = (float)dh * 0.5f - (it->world_pos[1] - cam_y) * ppu;
+                float sc = it->scale[0] > 0.0f ? it->scale[0] : 1.0f;
+                (void)twd_d3dmesh_draw_shaded(
+                    gfx, &it->mesh, it->tex, sx, sy, ppu * 3.0f * sc, tint);
+            }
         }
     } else if (st->has_boot_mesh) {
         static const uint8_t k_mesh_tint[4] = {245u, 225u, 190u, 255u};
@@ -1220,7 +1357,15 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         if (st->menu_btn_count == 0u && strcmp(label, "ui_boot.scene") != 0 &&
             strncmp(label, "ui_", 3u) != 0) {
             (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 40.0f, 0.85f, k_muted,
-                                     "WASD/Arrows: Pan  |  Backspace: Menu");
+                                     "WASD: Move  Q/E: Orbit  Click: Inspect  Backspace: Menu");
+            if (st->selected_agent[0] != '\0') {
+                char sel_buf[96];
+                static const char k_spfx[] = "Selected: ";
+                size_t sp = sizeof(k_spfx) - 1u;
+                memcpy(sel_buf, k_spfx, sp);
+                boot_copy_trunc(sel_buf + sp, sizeof(sel_buf) - sp, st->selected_agent);
+                (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 64.0f, 0.9f, k_accent, sel_buf);
+            }
         }
         if (st->menu_btn_count > 0u) {
             float txt_scale = (dh >= 480u) ? 0.85f : 0.68f;

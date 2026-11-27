@@ -406,6 +406,10 @@ int twd_gfx_draw_triangle(
     twd_gfx_device_t *dev,
     const twd_gfx_texture_t *tex_or_null,
     const twd_gfx_vertex2d_t v[3]);
+int twd_gfx_draw_triangle_z(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3]);
 
 /* DXBC -> GLSL ES 3.00 / SPIR-V Shader Translation & Cache */
 #define TWD_SHADER_STAGE_VS 0u
@@ -959,6 +963,7 @@ typedef struct twd_d3dmesh {
     float bbox_minmax[6];
     float bsphere_xyzr[4];
     float pos_scale[3];
+    float pos_w_scale[3];
     float pos_offset[3];
     uint32_t batch_count;
     twd_d3dmesh_batch_t *batches;
@@ -999,6 +1004,17 @@ int twd_d3dmesh_draw_shaded(
     const twd_d3dmesh_t *mesh,
     const twd_gfx_texture_t *tex_or_null,
     float cx, float cy, float scale,
+    const uint8_t rgba[4]);
+int twd_d3dmesh_draw_camera(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *tex_or_null,
+    const float cam_pos[3],
+    float cam_yaw,
+    float cam_pitch,
+    float fov_deg,
+    const float obj_pos[3],
+    const float obj_scale[3],
     const uint8_t rgba[4]);
 
 /* --- Lua 5.2 script chunk unwrapper & lightweight boot VM --- */
