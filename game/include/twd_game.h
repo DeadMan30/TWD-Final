@@ -88,6 +88,29 @@ typedef struct twd_rbtree_node {
     uint8_t _pad[6];
 } twd_rbtree_node_t;
 
+typedef struct twd_ref_obj {
+    void (**vtable)(struct twd_ref_obj *self, int32_t flags);
+    volatile int32_t refcount;
+    int32_t _pad;
+} twd_ref_obj_t;
+
+typedef struct twd_ref50_obj {
+    uint8_t opaque[0x50];
+    volatile int32_t refcount;
+    int32_t _pad;
+} twd_ref50_obj_t;
+
+typedef struct twd_vtable_obj {
+    void (**vtable)(void *self, int32_t flags);
+} twd_vtable_obj_t;
+
+typedef struct twd_ptr_array {
+    uint8_t opaque[0x18];
+    int32_t count;
+    int32_t _pad;
+    void **items;
+} twd_ptr_array_t;
+
 typedef struct twd_lua_tvalue {
     union {
         uint64_t u64;
@@ -208,6 +231,15 @@ TWD_EXPORT void twd_engine_telemetry_cohort_init(void *ctx);
 TWD_EXPORT void twd_engine_rail_sdk_init(void);
 TWD_EXPORT uint8_t twd_engine_pc_shortcut_init(void *ctx);
 TWD_EXPORT uint8_t twd_engine_breakpad_http_upload(void);
+TWD_EXPORT float *twd_engine_mat4_mul_scalar(const float src[16], float out[16], float s);
+TWD_EXPORT void twd_engine_mat4_from_diag_translation(float mat[16], float tx, float ty, float tz,
+                                                      float sx, float sy, float sz);
+TWD_EXPORT void twd_engine_refptr_release_vtable(twd_ref_obj_t **slot);
+TWD_EXPORT void twd_engine_refptr_detach_dec(twd_ref50_obj_t **slot);
+TWD_EXPORT void twd_engine_vtable_destroy_slot2(twd_vtable_obj_t *obj);
+TWD_EXPORT void twd_engine_rbtree_rotate_left(twd_rbtree_node_t **head_ptr,
+                                              twd_rbtree_node_t *where);
+TWD_EXPORT void twd_engine_ptr_array_remove_at(twd_ptr_array_t *arr, int32_t idx);
 
 #ifdef __cplusplus
 }

@@ -5,7 +5,7 @@
 
 int main(void) {
     twd_game_register_hooks();
-    if (twd_game_hook_count() != 37u) {
+    if (twd_game_hook_count() != 44u) {
         fprintf(stderr, "test_engine_pc_stubs: unexpected hook count %u\n", twd_game_hook_count());
         return 1;
     }

@@ -188,3 +188,15 @@ void *twd_engine_meta_op_find(const twd_meta_class_desc_t *desc, int32_t op_id) 
     }
     return NULL;
 }
+
+/*
+ * Original: WalkingDead4.exe @ 0x140056bd0 (18 bytes)
+ *
+ * Invokes virtual scalar destructor slot +0x10 with flags=1 if obj is non-NULL.
+ */
+TWD_EXPORT
+void twd_engine_vtable_destroy_slot2(twd_vtable_obj_t *obj) {
+    if (obj != NULL) {
+        obj->vtable[2](obj, 1);
+    }
+}

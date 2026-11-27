@@ -202,6 +202,41 @@ if(NOT ANDROID)
     target_link_libraries(test_engine_mat4_from_scale_translation_vec PRIVATE twdgame)
     add_test(NAME engine_mat4_from_scale_translation_vec COMMAND test_engine_mat4_from_scale_translation_vec)
 
+    add_executable(test_engine_mat4_mul_scalar
+                   game/engine/tests/test_engine_mat4_mul_scalar.c)
+    target_link_libraries(test_engine_mat4_mul_scalar PRIVATE twdgame)
+    add_test(NAME engine_mat4_mul_scalar COMMAND test_engine_mat4_mul_scalar)
+
+    add_executable(test_engine_mat4_from_diag_translation
+                   game/engine/tests/test_engine_mat4_from_diag_translation.c)
+    target_link_libraries(test_engine_mat4_from_diag_translation PRIVATE twdgame)
+    add_test(NAME engine_mat4_from_diag_translation COMMAND test_engine_mat4_from_diag_translation)
+
+    add_executable(test_engine_refptr_release_vtable
+                   game/engine/tests/test_engine_refptr_release_vtable.c)
+    target_link_libraries(test_engine_refptr_release_vtable PRIVATE twdgame)
+    add_test(NAME engine_refptr_release_vtable COMMAND test_engine_refptr_release_vtable)
+
+    add_executable(test_engine_refptr_detach_dec
+                   game/engine/tests/test_engine_refptr_detach_dec.c)
+    target_link_libraries(test_engine_refptr_detach_dec PRIVATE twdgame)
+    add_test(NAME engine_refptr_detach_dec COMMAND test_engine_refptr_detach_dec)
+
+    add_executable(test_engine_vtable_destroy_slot2
+                   game/engine/tests/test_engine_vtable_destroy_slot2.c)
+    target_link_libraries(test_engine_vtable_destroy_slot2 PRIVATE twdgame)
+    add_test(NAME engine_vtable_destroy_slot2 COMMAND test_engine_vtable_destroy_slot2)
+
+    add_executable(test_engine_rbtree_rotate_left
+                   game/engine/tests/test_engine_rbtree_rotate_left.c)
+    target_link_libraries(test_engine_rbtree_rotate_left PRIVATE twdgame)
+    add_test(NAME engine_rbtree_rotate_left COMMAND test_engine_rbtree_rotate_left)
+
+    add_executable(test_engine_ptr_array_remove_at
+                   game/engine/tests/test_engine_ptr_array_remove_at.c)
+    target_link_libraries(test_engine_ptr_array_remove_at PRIVATE twdgame)
+    add_test(NAME engine_ptr_array_remove_at COMMAND test_engine_ptr_array_remove_at)
+
     add_executable(test_engine_pc_stubs
                    game/engine/tests/test_engine_pc_stubs.c)
     target_link_libraries(test_engine_pc_stubs PRIVATE twdgame)

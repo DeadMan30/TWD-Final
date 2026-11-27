@@ -15,7 +15,12 @@ address,name,date,reviewer,verdict,notes
 0x140037670,engine_mat4_diagonal_scale,2026-11-26,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140037960,engine_mat4_from_translation,2026-11-26,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x1400379b0,engine_mat4_from_scale_translation_vec,2026-11-26,DeadMan30,approved,Edge-verified against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140043300,engine_refptr_release_vtable,2026-11-27,DeadMan30,approved,Edge-verified (4/4) against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140043360,engine_refptr_detach_dec,2026-11-27,DeadMan30,approved,Edge-verified (4/4) against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x140056bd0,engine_vtable_destroy_slot2,2026-11-27,DeadMan30,approved,Edge-verified (4/4) against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
+0x1400575f0,engine_rbtree_rotate_left,2026-11-27,DeadMan30,approved,Edge-verified (4/4) against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140057650,engine_rbtree_rotate_right,2026-11-25,DeadMan30,approved,Edge-verified (4/4); live-recorded (32/32); 100.00% byte-exact under MSVC 14.44.35207
+0x140060410,engine_ptr_array_remove_at,2026-11-27,DeadMan30,approved,Edge-verified (5/5) against WalkingDead4.exe and 100.00% byte-exact under MSVC 14.16.27023
 0x140074930,engine_handle_equals,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (32/32) against WalkingDead4.exe
 0x1400b1970,engine_dlist_remove,2026-11-25,DeadMan30,approved,Edge-verified (10/10) and live-recorded replay verified (4/4) against WalkingDead4.exe
 0x14034e1e0,engine_xorshift128_next,2026-11-25,DeadMan30,approved,Edge-verified (16/16) and live-recorded replay verified (32/32) against WalkingDead4.exe

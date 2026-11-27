@@ -11,11 +11,18 @@ address,size,name,system,status,notes
 0x1400325f0,30,engine_meta_vtable_delete,engine,verified,MetaClassDescription vtable delete slot dispatch (28 callers)
 0x140032620,37,engine_meta_op_find,engine,verified,MetaClassDescription operation lookup by key (2114 callers)
 0x1400359f0,54,engine_mat4_identity,engine,verified,Initialize 4x4 float matrix to identity (71 callers)
+0x140037350,88,engine_mat4_mul_scalar,engine,edge-verified,Scale 4x4 float matrix src by scalar s into out and return out
+0x1400375d0,76,engine_mat4_from_diag_translation,engine,edge-verified,"Initialize 4x4 matrix from diagonal scale (sx,sy,sz) and translation (tx,ty,tz)"
 0x140037630,48,engine_mat4_uniform_scale,engine,verified,Initialize 4x4 matrix to uniform scale (5 callers)
 0x140037670,48,engine_mat4_diagonal_scale,engine,verified,Initialize 4x4 matrix to diagonal scale (11 callers)
 0x140037960,64,engine_mat4_from_translation,engine,verified,Initialize 4x4 translation matrix from vec3 (15 callers)
 0x1400379b0,78,engine_mat4_from_scale_translation_vec,engine,verified,Initialize 4x4 scale and translation matrix from vec3 pair (9 callers)
+0x140043300,46,engine_refptr_release_vtable,engine,verified,"Atomic refcount release at +0x08 invoking vtable[0](obj, 1) on zero"
+0x140043360,26,engine_refptr_detach_dec,engine,verified,Clear intrusive refptr slot and atomically decrement refcount at +0x50
+0x140056bd0,18,engine_vtable_destroy_slot2,engine,verified,Null-checked virtual scalar destructor dispatch via vtable slot +0x10
+0x1400575f0,85,engine_rbtree_rotate_left,engine,verified,MSVC std::_Tree left rotation around node
 0x140057650,89,engine_rbtree_rotate_right,engine,verified,MSVC std::_Tree right rotation around node (148 callers)
+0x140060410,88,engine_ptr_array_remove_at,engine,verified,"Shift pointer array elements left from idx, clear tail, decrement count"
 0x140074930,59,engine_handle_equals,engine,verified,Handle object equality via non-zero key at +0x28 or pointer (119 callers)
 0x1400b1970,166,engine_dlist_remove,engine,verified,Intrusive doubly-linked list unlink and count decrement (78 callers)
 0x1401e60c0,1120,engine_telemetry_cohort_init,engine,replaced,No-op PC X-TTG-customercohort HTTP telemetry stub (GameEngine::Loop)

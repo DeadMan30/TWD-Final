@@ -34,3 +34,30 @@ void twd_engine_rbtree_rotate_right(twd_rbtree_node_t **head_ptr, twd_rbtree_nod
     promoted->right = where;
     where->parent = promoted;
 }
+
+/*
+ * Original: WalkingDead4.exe @ 0x1400575f0 (85 bytes)
+ *
+ * Performs a left rotation around `where` in an MSVC-layout red-black tree
+ * whose sentinel header node is pointed to by *head_ptr.
+ */
+TWD_EXPORT
+void twd_engine_rbtree_rotate_left(twd_rbtree_node_t **head_ptr, twd_rbtree_node_t *where) {
+    twd_rbtree_node_t *promoted = where->right;
+    where->right = promoted->left;
+    if (!promoted->left->is_nil) {
+        promoted->left->parent = where;
+    }
+    promoted->parent = where->parent;
+
+    twd_rbtree_node_t *head = *head_ptr;
+    if (where == head->parent) {
+        head->parent = promoted;
+    } else if (where == where->parent->left) {
+        where->parent->left = promoted;
+    } else {
+        where->parent->right = promoted;
+    }
+    promoted->left = where;
+    where->parent = promoted;
+}

@@ -287,12 +287,18 @@ def run_function(root: str, func: str, exe_path: str, record: str | None) -> int
         with open(bin_path, 'wb') as f:
             f.write(code_bytes)
 
+        rt_dir = os.path.join(root, 'runtime')
+        rt_srcs = sorted(
+            os.path.join(rt_dir, fn)
+            for fn in os.listdir(rt_dir)
+            if fn.endswith('.c') and fn != 'platform_android.c'
+        ) if os.path.isdir(rt_dir) else []
         cmd = [
             cc, '-std=c11', '-O3', '-DNDEBUG', '-Wall', '-Wextra', '-Werror',
             '-ffp-contract=off', '-fno-fast-math',
             f'-I{os.path.join(root, "game", "include")}',
             f'-I{os.path.join(root, "runtime", "include")}',
-            test_src, *sys_srcs, '-o', out_exe,
+            test_src, *sys_srcs, *rt_srcs, '-lkernel32', '-luser32', '-lgdi32', '-o', out_exe,
         ]
         subprocess.run(cmd, check=True)
         res = subprocess.run([out_exe, bin_path], capture_output=True, text=True, encoding='utf-8')

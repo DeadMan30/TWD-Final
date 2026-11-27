@@ -26,6 +26,10 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_meta_op_find);
     twd_register_hook(0x1400359f0ULL, "engine_mat4_identity",
                       (void *)twd_engine_mat4_identity);
+    twd_register_hook(0x140037350ULL, "engine_mat4_mul_scalar",
+                      (void *)twd_engine_mat4_mul_scalar);
+    twd_register_hook(0x1400375d0ULL, "engine_mat4_from_diag_translation",
+                      (void *)twd_engine_mat4_from_diag_translation);
     twd_register_hook(0x140037630ULL, "engine_mat4_uniform_scale",
                       (void *)twd_engine_mat4_uniform_scale);
     twd_register_hook(0x140037670ULL, "engine_mat4_diagonal_scale",
@@ -34,8 +38,18 @@ void twd_game_register_hooks(void) {
                       (void *)twd_engine_mat4_from_translation);
     twd_register_hook(0x1400379b0ULL, "engine_mat4_from_scale_translation_vec",
                       (void *)twd_engine_mat4_from_scale_translation_vec);
+    twd_register_hook(0x140043300ULL, "engine_refptr_release_vtable",
+                      (void *)twd_engine_refptr_release_vtable);
+    twd_register_hook(0x140043360ULL, "engine_refptr_detach_dec",
+                      (void *)twd_engine_refptr_detach_dec);
+    twd_register_hook(0x140056bd0ULL, "engine_vtable_destroy_slot2",
+                      (void *)twd_engine_vtable_destroy_slot2);
+    twd_register_hook(0x1400575f0ULL, "engine_rbtree_rotate_left",
+                      (void *)twd_engine_rbtree_rotate_left);
     twd_register_hook(0x140057650ULL, "engine_rbtree_rotate_right",
                       (void *)twd_engine_rbtree_rotate_right);
+    twd_register_hook(0x140060410ULL, "engine_ptr_array_remove_at",
+                      (void *)twd_engine_ptr_array_remove_at);
     twd_register_hook(0x140074930ULL, "engine_handle_equals",
                       (void *)twd_engine_handle_equals);
     twd_register_hook(0x1400b1970ULL, "engine_dlist_remove",
