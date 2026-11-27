@@ -83,12 +83,16 @@ struct twd_gfx_device {
     void (*gl_compile_shader)(uint32_t shader);
     void (*gl_delete_shader)(uint32_t shader);
     void (*gl_get_shader_iv)(uint32_t shader, uint32_t pname, int32_t *params);
+    void (*gl_get_shader_info_log)(uint32_t shader, int32_t max_len, int32_t *len, char *log);
     uint32_t (*gl_create_program)(void);
     void (*gl_attach_shader)(uint32_t program, uint32_t shader);
     void (*gl_link_program)(uint32_t program);
     void (*gl_use_program)(uint32_t program);
     void (*gl_delete_program)(uint32_t program);
     void (*gl_get_program_iv)(uint32_t program, uint32_t pname, int32_t *params);
+    void (*gl_get_program_info_log)(uint32_t program, int32_t max_len, int32_t *len, char *log);
+    const uint8_t *(*gl_get_string)(uint32_t name);
+    uint32_t (*gl_get_error)(void);
     int32_t (*gl_get_attrib_location)(uint32_t program, const char *name);
     int32_t (*gl_get_uniform_location)(uint32_t program, const char *name);
     void (*gl_enable_vertex_attrib_array)(uint32_t index);
@@ -236,6 +240,9 @@ static void gfx_load_gl_procs_from_lib(
     typedef void (*gl_sh_src_fn)(uint32_t, int32_t, const char *const *, const int32_t *);
     typedef void (*gl_u32_fn)(uint32_t);
     typedef void (*gl_iv_fn)(uint32_t, uint32_t, int32_t *);
+    typedef void (*gl_infolog_fn)(uint32_t, int32_t, int32_t *, char *);
+    typedef const uint8_t *(*gl_str_fn)(uint32_t);
+    typedef uint32_t (*gl_err_fn)(void);
     typedef uint32_t (*gl_mk_prog_fn)(void);
     typedef void (*gl_attach_fn)(uint32_t, uint32_t);
     typedef int32_t (*gl_loc_fn)(uint32_t, const char *);
@@ -275,12 +282,16 @@ static void gfx_load_gl_procs_from_lib(
     dev->gl_compile_shader = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glCompileShader");
     dev->gl_delete_shader = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteShader");
     dev->gl_get_shader_iv = (gl_iv_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetShaderiv");
+    dev->gl_get_shader_info_log = (gl_infolog_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetShaderInfoLog");
     dev->gl_create_program = (gl_mk_prog_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glCreateProgram");
     dev->gl_attach_shader = (gl_attach_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glAttachShader");
     dev->gl_link_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glLinkProgram");
     dev->gl_use_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUseProgram");
     dev->gl_delete_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteProgram");
     dev->gl_get_program_iv = (gl_iv_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetProgramiv");
+    dev->gl_get_program_info_log = (gl_infolog_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetProgramInfoLog");
+    dev->gl_get_string = (gl_str_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetString");
+    dev->gl_get_error = (gl_err_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetError");
     dev->gl_get_attrib_location = (gl_loc_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetAttribLocation");
     dev->gl_get_uniform_location = (gl_loc_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetUniformLocation");
     dev->gl_enable_vertex_attrib_array = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glEnableVertexAttribArray");
@@ -483,6 +494,15 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
         if (dev->gl_lib || eglProc) {
             gfx_load_gl_procs_from_lib(dev, dev->gl_lib, eglProc, 1);
         }
+        {
+            const char *vendor = (dev->gl_ctx_ready && dev->gl_get_string)
+                ? (const char *)dev->gl_get_string(0x1F00u) : "n/a";
+            const char *renderer = (dev->gl_ctx_ready && dev->gl_get_string)
+                ? (const char *)dev->gl_get_string(0x1F01u) : "n/a";
+            twd_log("TWD-Final", "Android GLES3 init: win=%p surf=%p ctx=%p caps=0x%x vendor='%s' renderer='%s'",
+                    dev->native_window, dev->egl_surface, dev->egl_context, dev->driver_caps,
+                    vendor ? vendor : "?", renderer ? renderer : "?");
+        }
     }
 #elif defined(_WIN32)
     if (dev->backend == TWD_GFX_BACKEND_GLES3) {
@@ -605,6 +625,14 @@ uint32_t twd_gfx_gl_compile_glsl(twd_gfx_device_t *dev, uint32_t stage, const ch
         int32_t ok = 1;
         dev->gl_get_shader_iv(sh, 0x8B81u, &ok); /* GL_COMPILE_STATUS */
         if (!ok) {
+            char msg[256];
+            msg[0] = '\0';
+            if (dev->gl_get_shader_info_log) {
+                int32_t llen = 0;
+                dev->gl_get_shader_info_log(sh, (int32_t)sizeof(msg) - 1, &llen, msg);
+                msg[sizeof(msg) - 1u] = '\0';
+            }
+            twd_log("TWD-Final", "GLSL shader compile failed (stage=%u): %s", stage, msg);
             if (dev->gl_delete_shader) dev->gl_delete_shader(sh);
             return 0u;
         }
@@ -1068,12 +1096,15 @@ static void gfx_sync_android_egl_surface(twd_gfx_device_t *dev) {
         if (surf && dev->egl_make_current(dev->egl_display, surf, surf, dev->egl_context)) {
             dev->egl_surface = surf;
             dev->gl_ctx_ready = 1;
+            twd_log("TWD-Final", "EGL surface rebound: win=%p surf=%p", cur_win, surf);
         } else {
             if (surf) dev->egl_destroy_surface(dev->egl_display, surf);
             dev->gl_ctx_ready = 0;
+            twd_log("TWD-Final", "EGL surface rebind FAILED for win=%p", cur_win);
         }
     } else {
         dev->gl_ctx_ready = 0;
+        twd_log("TWD-Final", "EGL surface detached (window destroyed)");
     }
 #else
     (void)dev;
@@ -1294,6 +1325,14 @@ static int ensure_hw_tri_pipeline(twd_gfx_device_t *dev) {
         int32_t ok = 1;
         dev->gl_get_program_iv(prog, 0x8B82u, &ok); /* GL_LINK_STATUS */
         if (!ok) {
+            char msg[256];
+            msg[0] = '\0';
+            if (dev->gl_get_program_info_log) {
+                int32_t llen = 0;
+                dev->gl_get_program_info_log(prog, (int32_t)sizeof(msg) - 1, &llen, msg);
+                msg[sizeof(msg) - 1u] = '\0';
+            }
+            twd_log("TWD-Final", "GLSL program link failed: %s", msg);
             if (dev->gl_delete_program) dev->gl_delete_program(prog);
             dev->tri_pipeline_failed = 1;
             return -1;
@@ -1331,6 +1370,10 @@ static int ensure_hw_tri_pipeline(twd_gfx_device_t *dev) {
         dev->tri_pipeline_failed = 1;
         return -1;
     }
+#ifdef __ANDROID__
+    twd_log("TWD-Final", "GLES3 tri pipeline ready: prog=%u vbo=%u white_tex=%u",
+            dev->tri_gl_program, dev->tri_gl_vbo, dev->tri_gl_white_tex);
+#endif
     return 0;
 }
 
@@ -1501,6 +1544,13 @@ static void gfx_blit_backbuffer_overlay(twd_gfx_device_t *dev) {
     b.use_z = 0u;
     memset(b._pad, 0, sizeof(b._pad));
     gfx_draw_gl_vertex_batches(dev, quad, 6u, &b, 1u);
+#ifdef __ANDROID__
+    if (dev->hw_overlay_blits == 0ULL) {
+        uint32_t gerr = dev->gl_get_error ? dev->gl_get_error() : 0u;
+        twd_log("TWD-Final", "First overlay blit: tex=%u size=%ux%u glErr=0x%x",
+                dev->overlay_gl_tex, dev->width, dev->height, gerr);
+    }
+#endif
     dev->hw_overlay_blits++;
     dev->backbuffer_dirty = 0;
 }

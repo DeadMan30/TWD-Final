@@ -63,6 +63,7 @@ uint64_t twd_android_run_frame_loop(
 #include <android/input.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
+#include <android/window.h>
 
 static AInputQueue *g_input_queue = NULL;
 
@@ -193,6 +194,8 @@ static void on_input_queue_destroyed(ANativeActivity *activity, AInputQueue *que
 void twd_android_attach_native_activity(void *native_activity, void (*on_bind_hooks)(void)) {
     ANativeActivity *activity = (ANativeActivity *)native_activity;
     if (!activity) return;
+    ANativeActivity_setWindowFlags(
+        activity, AWINDOW_FLAG_FULLSCREEN | AWINDOW_FLAG_KEEP_SCREEN_ON, 0u);
     activity->callbacks->onDestroy = on_native_destroy;
     activity->callbacks->onPause = on_native_pause;
     activity->callbacks->onResume = on_native_resume;

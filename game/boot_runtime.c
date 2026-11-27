@@ -1533,6 +1533,10 @@ static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_na
         }
     }
     (void)twd_kv_set("lua.scene", "active", scene_name);
+#ifdef __ANDROID__
+    twd_log("TWD-Final", "Switch scene: '%s' items=%u menu_btns=%u boot_font=%d menu_font=%d",
+            scene_name, st->scene_item_count, st->menu_btn_count, st->has_boot_font, st->has_menu_font);
+#endif
 }
 
 static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
@@ -1614,12 +1618,14 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         }
     } else if (st->has_boot_mesh) {
         static const uint8_t k_mesh_tint[4] = {245u, 225u, 190u, 255u};
-        const twd_gfx_texture_t *mtex = st->boot_mesh_tex ? st->boot_mesh_tex : st->splash_tex;
-        (void)twd_d3dmesh_draw_shaded(
-            gfx, &st->boot_mesh, mtex,
-            (float)dw * 0.5f - cam_x * 20.0f,
-            (float)dh * 0.5f + cam_y * 20.0f,
-            180.0f, k_mesh_tint);
+        if (st->boot_mesh_tex || !st->splash_tex) {
+            const twd_gfx_texture_t *mtex = st->boot_mesh_tex ? st->boot_mesh_tex : st->splash_tex;
+            (void)twd_d3dmesh_draw_shaded(
+                gfx, &st->boot_mesh, mtex,
+                (float)dw * 0.5f - cam_x * 20.0f,
+                (float)dh * 0.5f + cam_y * 20.0f,
+                180.0f, k_mesh_tint);
+        }
     }
     if (st->has_boot_font || st->has_menu_font) {
         static const uint8_t k_white[4] = {255u, 255u, 255u, 255u};
@@ -1627,10 +1633,12 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         static const uint8_t k_card_focus[4] = {92u, 62u, 22u, 225u};
         static const uint8_t k_accent[4] = {235u, 175u, 55u, 255u};
         static const uint8_t k_muted[4] = {195u, 200u, 210u, 240u};
-        const twd_font_t *hdr_font = st->has_boot_font ? &st->boot_font : &st->menu_font;
+        int boot_font_usable = (st->has_boot_font && (st->boot_font.ttf_ctx != NULL || st->boot_font.pages[0] != NULL));
+        const twd_font_t *hdr_font = boot_font_usable ? &st->boot_font : (st->has_menu_font ? &st->menu_font : &st->boot_font);
         const twd_font_t *menu_font = st->has_menu_font ? &st->menu_font : hdr_font;
+        float hdr_scale = (hdr_font == &st->menu_font) ? 0.62f : 1.0f;
         const char *label = (st->stats && st->stats->active_scene[0]) ? st->stats->active_scene : "Boot";
-        (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 16.0f, 1.0f, k_white, label);
+        (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 16.0f, hdr_scale, k_white, label);
         if (st->menu_btn_count == 0u && strcmp(label, "ui_boot.scene") != 0 &&
             strncmp(label, "ui_", 3u) != 0) {
             (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 40.0f, 0.85f, k_muted,
@@ -1696,6 +1704,16 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         }
     }
     st->renders++;
+#ifdef __ANDROID__
+    if (st->renders == 1ULL && gfx) {
+        twd_gfx_hw_stats_t hws;
+        twd_gfx_get_hw_stats(gfx, &hws);
+        twd_log("TWD-Final", "Frame 1 rendered: res=%ux%u scene='%s' hw_active=%d queued_verts=%u batches=%u dirty=%d",
+                st->cfg.width, st->cfg.height,
+                (st->stats && st->stats->active_scene[0]) ? st->stats->active_scene : "",
+                hws.hw_active, hws.pending_tri_verts, hws.pending_tri_batches, hws.backbuffer_dirty);
+    }
+#endif
 }
 
 static void boot_on_shutdown(void *user) {
@@ -1988,9 +2006,6 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                             }
                             if (pbuf) twd_ttarch2_free(pbuf);
                         }
-                        if (!st.boot_font_page_tex && st.splash_tex) {
-                            (void)twd_font_attach_page(&st.boot_font, 0u, st.splash_tex);
-                        }
                     }
                     if (fbuf) twd_asset_free(fbuf);
                 }
@@ -2086,6 +2101,14 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     cb.max_frames = def_cfg.max_frames;
 
     twd_clear_quit();
+#ifdef __ANDROID__
+    twd_log("TWD-Final", "Boot ready: dir='%s' archives=%d lua=%d tex=%u fonts=%u meshes=%u scenes=%u active='%s' backend=%d res=%ux%u audio=0x%x",
+            game_dir ? game_dir : "", local_stats.mounted_archives, local_stats.boot_script_ran,
+            local_stats.boot_textures_loaded, local_stats.boot_fonts_loaded,
+            local_stats.boot_meshes_loaded, local_stats.boot_scenes_active,
+            local_stats.active_scene, local_stats.gfx_backend,
+            local_stats.width, local_stats.height, local_stats.audio_caps);
+#endif
     local_stats.frames_rendered = twd_android_run_frame_loop(st.win, st.gfx, &cb);
     local_stats.elapsed_ns = st.elapsed_ns;
     local_stats.input_events_processed = st.input_events;
@@ -2094,6 +2117,19 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         twd_gfx_stats_t gstats_end;
         twd_gfx_get_stats(st.gfx, &gstats_end);
         local_stats.draw_calls = gstats_end.draw_calls;
+#ifdef __ANDROID__
+        {
+            twd_gfx_hw_stats_t hws_end;
+            twd_gfx_get_hw_stats(st.gfx, &hws_end);
+            twd_log("TWD-Final", "Loop exit: frames=%llu draws=%llu hw_flushes=%llu hw_verts=%llu blits=%llu clean=%d",
+                    (unsigned long long)local_stats.frames_rendered,
+                    (unsigned long long)local_stats.draw_calls,
+                    (unsigned long long)hws_end.hw_tri_flushes,
+                    (unsigned long long)hws_end.hw_tri_verts,
+                    (unsigned long long)hws_end.hw_overlay_blits,
+                    local_stats.clean_shutdown);
+        }
+#endif
     }
 
     /* 6. Ordered shutdown */

@@ -2374,6 +2374,106 @@ int main(void) {
             twd_font_free(&ttf_f);
         }
 
+        /* Synthetic OpenType CFF ('OTTO' / 'CFF ') font in 6VSM .font mTtfData */
+        {
+            static const uint8_t k_cff[44] = {
+                1u, 0u, 4u, 1u,                                 /* CFF header (off=0..4) */
+                0u, 1u, 1u, 1u, 2u, 'F',                        /* Name INDEX "F" (off=4..10) */
+                0u, 1u, 1u, 1u, 3u, 160u, 17u,                  /* Top DICT INDEX: CharStrings=21 (160-139) (off=10..17) */
+                0u, 0u,                                         /* String INDEX (off=17..19) */
+                0u, 0u,                                         /* Global Subr INDEX (off=19..21) */
+                0u, 2u, 1u, 1u, 2u, 18u,                        /* CharStrings INDEX hdr: cnt=2 (off=21..27) */
+                14u,                                            /* gid0: endchar */
+                239u, 139u, 21u,                                /* gid1: 100 0 rmoveto */
+                28u, 0x02u, 0xBCu, 6u,                          /* +700 hlineto */
+                28u, 0x02u, 0xBCu, 7u,                          /* +700 vlineto */
+                28u, 0xFDu, 0x44u, 6u,                          /* -700 hlineto */
+                14u                                             /* endchar */
+            };
+            uint8_t otf_buf[384];
+            memset(otf_buf, 0, sizeof(otf_buf));
+            enum {
+                O_CFF  = 108, L_CFF  = 44,
+                O_CMAP = 152, L_CMAP = 44,
+                O_HEAD = 196, L_HEAD = 54,
+                O_HHEA = 250, L_HHEA = 36,
+                O_HMTX = 286, L_HMTX = 8,
+                O_MAXP = 294, L_MAXP = 6,
+                O_TOT  = 300
+            };
+            static const char *const k_otags[6] = {"CFF ","cmap","head","hhea","hmtx","maxp"};
+            static const uint32_t k_ooffs[6] = {O_CFF,O_CMAP,O_HEAD,O_HHEA,O_HMTX,O_MAXP};
+            static const uint32_t k_olens[6] = {L_CFF,L_CMAP,L_HEAD,L_HHEA,L_HMTX,L_MAXP};
+            memcpy(otf_buf, "OTTO", 4u);
+            otf_buf[5] = 6u;
+            for (int ti = 0; ti < 6; ++ti) {
+                uint8_t *tr = otf_buf + 12u + (size_t)ti * 16u;
+                memcpy(tr, k_otags[ti], 4u);
+                tr[10] = (uint8_t)((k_ooffs[ti] >> 8u) & 0xFFu);
+                tr[11] = (uint8_t)(k_ooffs[ti] & 0xFFu);
+                tr[14] = (uint8_t)((k_olens[ti] >> 8u) & 0xFFu);
+                tr[15] = (uint8_t)(k_olens[ti] & 0xFFu);
+            }
+            memcpy(otf_buf + O_CFF, k_cff, L_CFF);
+            otf_buf[O_CMAP + 3] = 1u;
+            otf_buf[O_CMAP + 5] = 3u; otf_buf[O_CMAP + 7] = 1u; otf_buf[O_CMAP + 11] = 12u;
+            otf_buf[O_CMAP + 13] = 4u; otf_buf[O_CMAP + 15] = 32u; otf_buf[O_CMAP + 19] = 4u;
+            otf_buf[O_CMAP + 27] = 'A'; otf_buf[O_CMAP + 28] = 0xFFu; otf_buf[O_CMAP + 29] = 0xFFu;
+            otf_buf[O_CMAP + 33] = 'A'; otf_buf[O_CMAP + 34] = 0xFFu; otf_buf[O_CMAP + 35] = 0xFFu;
+            otf_buf[O_CMAP + 36] = 0xFFu; otf_buf[O_CMAP + 37] = 0xC0u; otf_buf[O_CMAP + 39] = 1u;
+            otf_buf[O_HEAD + 18] = 0x03u; otf_buf[O_HEAD + 19] = 0xE8u;
+            otf_buf[O_HHEA + 4] = 0x03u; otf_buf[O_HHEA + 5] = 0x20u;
+            otf_buf[O_HHEA + 6] = 0xFFu; otf_buf[O_HHEA + 7] = 0x38u;
+            otf_buf[O_HHEA + 35] = 2u;
+            otf_buf[O_HMTX + 0] = 0x02u; otf_buf[O_HMTX + 1] = 0x58u;
+            otf_buf[O_HMTX + 4] = 0x02u; otf_buf[O_HMTX + 5] = 0x58u;
+            otf_buf[O_MAXP + 5] = 2u;
+
+            uint8_t ob[128 + O_TOT];
+            memset(ob, 0, sizeof(ob));
+            size_t oo = 0u;
+            memcpy(ob + oo, "6VSM", 4u); oo += 4u;
+            size_t o_def = oo; oo += 16u;
+            size_t o_start = oo;
+            ttarch_wr_u32(ob + oo, 11u); oo += 4u;
+            ttarch_wr_u32(ob + oo, 3u); oo += 4u;
+            memcpy(ob + oo, "OTF", 3u); oo += 3u;
+            ob[oo++] = 1u; oo += 8u;
+            ttarch_wr_u32(ob + oo, 8u); oo += 8u;
+            ttarch_wr_u32(ob + oo, 8u); oo += 8u;
+            oo += 3u;
+            ttarch_wr_u32(ob + oo, 8u + O_TOT); oo += 4u;
+            ttarch_wr_u32(ob + oo, O_TOT); oo += 4u;
+            memcpy(ob + oo, otf_buf, O_TOT); oo += O_TOT;
+            { float bp = 24.0f; memcpy(ob + oo, &bp, 4u); oo += 4u; }
+            ttarch_wr_u32(ob + oo, 8u); oo += 8u;
+            ttarch_wr_u32(ob + o_def, (uint32_t)(oo - o_start));
+
+            twd_font_t otf_f;
+            TWD_CHECK(twd_font_parse_memory(ob, oo, &otf_f) == 0);
+            TWD_CHECK(otf_f.has_ttf_data == 1 && otf_f.ttf_ctx != NULL);
+            twd_gfx_desc_t ogd;
+            memset(&ogd, 0, sizeof(ogd));
+            ogd.width = 64u; ogd.height = 64u;
+            ogd.preferred_backend = TWD_GFX_BACKEND_NONE;
+            twd_gfx_device_t *ogdev = twd_gfx_device_create(&ogd);
+            TWD_CHECK(ogdev != NULL);
+            static const float k_oblk[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            static const uint8_t k_owht[4] = {255u, 255u, 255u, 255u};
+            twd_gfx_clear(ogdev, k_oblk, 1.0f, 0u);
+            float oadv = twd_font_draw_text(ogdev, &otf_f, 4.0f, 4.0f, 1.0f, k_owht, "A");
+            TWD_CHECK(oadv > 5.0f);
+            size_t obbsz = 0u;
+            const uint8_t *obb = twd_gfx_backbuffer_data(ogdev, NULL, NULL, &obbsz);
+            int olit = 0;
+            for (size_t pi = 0u; pi + 3u < obbsz; pi += 4u) {
+                if (obb[pi] > 128u && obb[pi + 1u] > 128u && obb[pi + 2u] > 128u) { olit++; }
+            }
+            TWD_CHECK(olit > 40);
+            twd_gfx_device_destroy(ogdev);
+            twd_font_free(&otf_f);
+        }
+
         /* Z-buffer triangle occlusion (twd_gfx_draw_triangle_z) + twd_d3dmesh_draw_camera + fmt=41 UNorm10_10_10_2 */
         {
             twd_gfx_desc_t zgd;

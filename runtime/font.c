@@ -77,6 +77,11 @@ typedef struct twd_ttf_ctx {
     uint32_t cmap_off, cmap_len;
     uint32_t loca_off, loca_len;
     uint32_t glyf_off, glyf_len;
+    uint32_t cff_off, cff_len;
+    uint32_t cff_charstrings_off;
+    uint32_t cff_gsubr_off;
+    uint32_t cff_lsubr_off;
+    int is_cff;
     uint32_t cmap_fmt4_off;
     uint32_t cmap_fmt12_off;
     uint16_t units_per_em;
@@ -139,6 +144,8 @@ static void ttf_ctx_destroy(twd_ttf_ctx_t *ctx) {
     free(ctx);
 }
 
+static int twd_cff_init_ctx_helper(twd_ttf_ctx_t *ctx);
+
 static twd_ttf_ctx_t *ttf_ctx_create(const uint8_t *src, size_t len, float base_pt,
                                      float *io_height, float *io_base) {
     if (!src || len < 16u || len > 64u * 1024u * 1024u) return NULL;
@@ -161,7 +168,7 @@ static twd_ttf_ctx_t *ttf_ctx_create(const uint8_t *src, size_t len, float base_
     }
     if (sfnt_off > len || len - sfnt_off < 12u) { ttf_ctx_destroy(ctx); return NULL; }
     uint32_t sfnt_ver = ttf_be32(ctx->data + sfnt_off);
-    if (sfnt_ver != 0x00010000u && sfnt_ver != 0x74727565u) {
+    if (sfnt_ver != 0x00010000u && sfnt_ver != 0x74727565u && sfnt_ver != 0x4F54544Fu) {
         ttf_ctx_destroy(ctx);
         return NULL;
     }
@@ -170,9 +177,17 @@ static twd_ttf_ctx_t *ttf_ctx_create(const uint8_t *src, size_t len, float base_
         ttf_find_table(ctx->data, len, sfnt_off, "maxp", &ctx->maxp_off, &ctx->maxp_len) != 0 ||
         ttf_find_table(ctx->data, len, sfnt_off, "hhea", &ctx->hhea_off, &ctx->hhea_len) != 0 ||
         ttf_find_table(ctx->data, len, sfnt_off, "hmtx", &ctx->hmtx_off, &ctx->hmtx_len) != 0 ||
-        ttf_find_table(ctx->data, len, sfnt_off, "cmap", &ctx->cmap_off, &ctx->cmap_len) != 0 ||
-        ttf_find_table(ctx->data, len, sfnt_off, "loca", &ctx->loca_off, &ctx->loca_len) != 0 ||
-        ttf_find_table(ctx->data, len, sfnt_off, "glyf", &ctx->glyf_off, &ctx->glyf_len) != 0) {
+        ttf_find_table(ctx->data, len, sfnt_off, "cmap", &ctx->cmap_off, &ctx->cmap_len) != 0) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+    if (ttf_find_table(ctx->data, len, sfnt_off, "loca", &ctx->loca_off, &ctx->loca_len) == 0 &&
+        ttf_find_table(ctx->data, len, sfnt_off, "glyf", &ctx->glyf_off, &ctx->glyf_len) == 0) {
+        ctx->is_cff = 0;
+    } else if (ttf_find_table(ctx->data, len, sfnt_off, "CFF ", &ctx->cff_off, &ctx->cff_len) == 0 &&
+               ctx->cff_len >= 4u) {
+        ctx->is_cff = 1;
+    } else {
         ttf_ctx_destroy(ctx);
         return NULL;
     }
@@ -211,6 +226,13 @@ static twd_ttf_ctx_t *ttf_ctx_create(const uint8_t *src, size_t len, float base_
     if (ctx->cmap_fmt4_off == 0u && ctx->cmap_fmt12_off == 0u) {
         ttf_ctx_destroy(ctx);
         return NULL;
+    }
+
+    if (ctx->is_cff) {
+        if (twd_cff_init_ctx_helper(ctx) != 0) {
+            ttf_ctx_destroy(ctx);
+            return NULL;
+        }
     }
 
     float px = (base_pt > 0.0f) ? base_pt : ((io_height && *io_height > 0.0f) ? *io_height : 24.0f);
@@ -532,6 +554,454 @@ static void ttf_decode_glyph(const twd_ttf_ctx_t *ctx, uint16_t gid, float px_sc
     free(pts);
 }
 
+static int cff_rd_index_off(const uint8_t *p, uint8_t osz, uint32_t *out) {
+    if (osz < 1u || osz > 4u) return -1;
+    uint32_t v = 0u;
+    for (uint8_t i = 0u; i < osz; ++i) v = (v << 8u) | p[i];
+    *out = v;
+    return 0;
+}
+
+static int cff_index_end(const uint8_t *buf, size_t end, size_t off, size_t *out_next) {
+    if (off + 2u > end) return -1;
+    uint16_t cnt = ttf_be16(buf + off);
+    if (cnt == 0u) {
+        *out_next = off + 2u;
+        return 0;
+    }
+    if (off + 3u > end) return -1;
+    uint8_t osz = buf[off + 2u];
+    size_t hdr = 3u + (size_t)(cnt + 1u) * (size_t)osz;
+    if (osz < 1u || osz > 4u || hdr > end - off) return -1;
+    size_t data_base = off + hdr;
+    uint32_t last_off = 0u;
+    if (cff_rd_index_off(buf + off + 3u + (size_t)cnt * (size_t)osz, osz, &last_off) != 0 ||
+        last_off < 1u || (size_t)(last_off - 1u) > end - data_base) {
+        return -1;
+    }
+    *out_next = (data_base - 1u) + (size_t)last_off;
+    return 0;
+}
+
+static int cff_index_item(const uint8_t *buf, size_t end, size_t off, uint16_t idx,
+                          const uint8_t **out_ptr, size_t *out_len) {
+    if (off + 2u > end) return -1;
+    uint16_t cnt = ttf_be16(buf + off);
+    if (idx >= cnt || off + 3u > end) return -1;
+    uint8_t osz = buf[off + 2u];
+    size_t hdr = 3u + (size_t)(cnt + 1u) * (size_t)osz;
+    if (osz < 1u || osz > 4u || hdr > end - off) return -1;
+    size_t data_base = off + hdr;
+    uint32_t o0 = 0u, o1 = 0u;
+    if (cff_rd_index_off(buf + off + 3u + (size_t)idx * (size_t)osz, osz, &o0) != 0 ||
+        cff_rd_index_off(buf + off + 3u + (size_t)(idx + 1u) * (size_t)osz, osz, &o1) != 0 ||
+        o0 < 1u || o1 < o0 || (size_t)(o1 - 1u) > end - data_base) {
+        return -1;
+    }
+    *out_ptr = buf + (data_base - 1u) + o0;
+    *out_len = (size_t)(o1 - o0);
+    return 0;
+}
+
+static void cff_scan_dict(const uint8_t *d, size_t dlen,
+                          uint32_t *out_cs_rel, uint32_t *out_priv_sz,
+                          uint32_t *out_priv_rel, uint32_t *out_lsubr_rel) {
+    int32_t stk[48];
+    int sp = 0;
+    size_t p = 0u;
+    while (p < dlen) {
+        uint8_t b0 = d[p];
+        if (b0 == 28u) {
+            if (p + 3u > dlen) break;
+            if (sp < 48) stk[sp++] = (int32_t)ttf_i16(d + p + 1u);
+            p += 3u;
+        } else if (b0 == 29u) {
+            if (p + 5u > dlen) break;
+            uint32_t u = ttf_be32(d + p + 1u);
+            int32_t v = 0;
+            memcpy(&v, &u, sizeof(v));
+            if (sp < 48) stk[sp++] = v;
+            p += 5u;
+        } else if (b0 == 30u) {
+            p++;
+            while (p < dlen) {
+                uint8_t nib = d[p++];
+                if ((nib & 0xF0u) == 0xF0u || (nib & 0x0Fu) == 0x0Fu) break;
+            }
+            if (sp < 48) stk[sp++] = 0;
+        } else if (b0 >= 32u && b0 <= 246u) {
+            if (sp < 48) stk[sp++] = (int32_t)b0 - 139;
+            p++;
+        } else if (b0 >= 247u && b0 <= 250u) {
+            if (p + 2u > dlen) break;
+            if (sp < 48) stk[sp++] = ((int32_t)b0 - 247) * 256 + (int32_t)d[p + 1u] + 108;
+            p += 2u;
+        } else if (b0 >= 251u && b0 <= 254u) {
+            if (p + 2u > dlen) break;
+            if (sp < 48) stk[sp++] = -((int32_t)b0 - 251) * 256 - (int32_t)d[p + 1u] - 108;
+            p += 2u;
+        } else if (b0 <= 21u) {
+            uint32_t op = b0;
+            if (b0 == 12u) {
+                if (p + 2u > dlen) break;
+                op = 0x0C00u | d[p + 1u];
+                p += 2u;
+            } else {
+                p++;
+            }
+            if (op == 17u && out_cs_rel && sp >= 1 && stk[sp - 1] > 0) {
+                *out_cs_rel = (uint32_t)stk[sp - 1];
+            } else if (op == 18u && out_priv_sz && out_priv_rel && sp >= 2 && stk[0] >= 0 && stk[1] > 0) {
+                *out_priv_sz = (uint32_t)stk[0];
+                *out_priv_rel = (uint32_t)stk[1];
+            } else if (op == 19u && out_lsubr_rel && sp >= 1 && stk[sp - 1] > 0) {
+                *out_lsubr_rel = (uint32_t)stk[sp - 1];
+            }
+            sp = 0;
+        } else {
+            p++;
+        }
+    }
+}
+
+static int twd_cff_init_ctx_helper(twd_ttf_ctx_t *ctx) {
+    size_t cff_end = (size_t)ctx->cff_off + (size_t)ctx->cff_len;
+    if (cff_end > ctx->size || ctx->cff_len < 4u) return -1;
+    const uint8_t *buf = ctx->data;
+    if (buf[ctx->cff_off] != 1u) return -1;
+    uint8_t hdr_sz = buf[ctx->cff_off + 2u];
+    size_t pos = (size_t)ctx->cff_off + (size_t)hdr_sz;
+    if (hdr_sz < 4u || pos >= cff_end) return -1;
+
+    /* Name INDEX */
+    if (cff_index_end(buf, cff_end, pos, &pos) != 0) return -1;
+    /* Top DICT INDEX */
+    const uint8_t *top_ptr = NULL;
+    size_t top_len = 0u;
+    if (cff_index_item(buf, cff_end, pos, 0u, &top_ptr, &top_len) != 0) return -1;
+    if (cff_index_end(buf, cff_end, pos, &pos) != 0) return -1;
+    /* String INDEX */
+    if (cff_index_end(buf, cff_end, pos, &pos) != 0) return -1;
+    /* Global Subr INDEX */
+    ctx->cff_gsubr_off = (uint32_t)pos;
+    if (cff_index_end(buf, cff_end, pos, &pos) != 0) return -1;
+
+    uint32_t cs_rel = 0u, priv_sz = 0u, priv_rel = 0u;
+    cff_scan_dict(top_ptr, top_len, &cs_rel, &priv_sz, &priv_rel, NULL);
+    if (cs_rel == 0u || cs_rel >= ctx->cff_len) return -1;
+    ctx->cff_charstrings_off = ctx->cff_off + cs_rel;
+    if (priv_sz > 0u && priv_rel > 0u && (size_t)priv_rel + (size_t)priv_sz <= (size_t)ctx->cff_len) {
+        uint32_t lsubr_rel = 0u;
+        size_t priv_abs = (size_t)ctx->cff_off + (size_t)priv_rel;
+        cff_scan_dict(buf + priv_abs, priv_sz, NULL, NULL, NULL, &lsubr_rel);
+        if (lsubr_rel > 0u && lsubr_rel < ctx->cff_len - priv_rel) {
+            ctx->cff_lsubr_off = (uint32_t)(priv_abs + (size_t)lsubr_rel);
+        }
+    }
+    return 0;
+}
+
+typedef struct cff_vm {
+    const twd_ttf_ctx_t *ctx;
+    ttf_edge_vec_t *out;
+    float px_scale;
+    float stk[48];
+    int sp;
+    float cx, cy, sx, sy;
+    int open;
+    int checked_width;
+    int n_stems;
+    int done;
+} cff_vm_t;
+
+static void cff_shift_width(cff_vm_t *vm, int mod2_expected) {
+    if (vm->checked_width) return;
+    vm->checked_width = 1;
+    if (vm->sp > 0 && (vm->sp % 2) != mod2_expected) {
+        for (int i = 1; i < vm->sp; ++i) vm->stk[i - 1] = vm->stk[i];
+        vm->sp--;
+    }
+}
+
+static void cff_vm_close(cff_vm_t *vm) {
+    if (vm->open && (vm->cx != vm->sx || vm->cy != vm->sy)) {
+        float s = vm->px_scale;
+        (void)ttf_edge_push(vm->out, vm->cx * s, -vm->cy * s, vm->sx * s, -vm->sy * s);
+    }
+    vm->open = 0;
+}
+
+static void cff_vm_move(cff_vm_t *vm, float dx, float dy) {
+    cff_vm_close(vm);
+    vm->cx += dx;
+    vm->cy += dy;
+    vm->sx = vm->cx;
+    vm->sy = vm->cy;
+    vm->open = 1;
+}
+
+static void cff_vm_line(cff_vm_t *vm, float dx, float dy) {
+    float nx = vm->cx + dx;
+    float ny = vm->cy + dy;
+    float s = vm->px_scale;
+    (void)ttf_edge_push(vm->out, vm->cx * s, -vm->cy * s, nx * s, -ny * s);
+    vm->cx = nx;
+    vm->cy = ny;
+}
+
+static void cff_vm_curve(cff_vm_t *vm, float dx1, float dy1,
+                         float dx2, float dy2, float dx3, float dy3) {
+    enum { NSEG = 8 };
+    float x0 = vm->cx, y0 = vm->cy;
+    float x1 = x0 + dx1, y1 = y0 + dy1;
+    float x2 = x1 + dx2, y2 = y1 + dy2;
+    float x3 = x2 + dx3, y3 = y2 + dy3;
+    float s = vm->px_scale;
+    float px = x0 * s, py = -y0 * s;
+    for (int k = 1; k <= NSEG; ++k) {
+        float t = (float)k / (float)NSEG;
+        float u = 1.0f - t;
+        float u2 = u * u, t2 = t * t;
+        float qx = u2 * u * x0 + 3.0f * u2 * t * x1 + 3.0f * u * t2 * x2 + t2 * t * x3;
+        float qy = u2 * u * y0 + 3.0f * u2 * t * y1 + 3.0f * u * t2 * y2 + t2 * t * y3;
+        float nx = qx * s, ny = -qy * s;
+        (void)ttf_edge_push(vm->out, px, py, nx, ny);
+        px = nx;
+        py = ny;
+    }
+    vm->cx = x3;
+    vm->cy = y3;
+}
+
+static int cff_subr_bias(uint16_t cnt) {
+    if (cnt < 1240u) return 107;
+    if (cnt < 33900u) return 1131;
+    return 32768;
+}
+
+static void cff_exec_cs(cff_vm_t *vm, const uint8_t *cs, size_t len, int depth) {
+    if (depth > 10 || !cs || len == 0u || vm->done) return;
+    size_t cff_end = (size_t)vm->ctx->cff_off + (size_t)vm->ctx->cff_len;
+    size_t p = 0u;
+    while (p < len && !vm->done) {
+        uint8_t b0 = cs[p];
+        if (b0 == 28u) {
+            if (p + 3u > len) break;
+            if (vm->sp < 48) vm->stk[vm->sp++] = (float)ttf_i16(cs + p + 1u);
+            p += 3u;
+        } else if (b0 == 255u) {
+            if (p + 5u > len) break;
+            uint32_t u = ttf_be32(cs + p + 1u);
+            int32_t v = 0;
+            memcpy(&v, &u, sizeof(v));
+            if (vm->sp < 48) vm->stk[vm->sp++] = (float)v / 65536.0f;
+            p += 5u;
+        } else if (b0 >= 32u && b0 <= 246u) {
+            if (vm->sp < 48) vm->stk[vm->sp++] = (float)((int32_t)b0 - 139);
+            p++;
+        } else if (b0 >= 247u && b0 <= 250u) {
+            if (p + 2u > len) break;
+            if (vm->sp < 48) vm->stk[vm->sp++] = (float)(((int32_t)b0 - 247) * 256 + (int32_t)cs[p + 1u] + 108);
+            p += 2u;
+        } else if (b0 >= 251u && b0 <= 254u) {
+            if (p + 2u > len) break;
+            if (vm->sp < 48) vm->stk[vm->sp++] = (float)(-((int32_t)b0 - 251) * 256 - (int32_t)cs[p + 1u] - 108);
+            p += 2u;
+        } else {
+            uint8_t op = b0;
+            p++;
+            switch (op) {
+            case 1:  /* hstem */
+            case 3:  /* vstem */
+            case 18: /* hstemhm */
+            case 23: /* vstemhm */
+                cff_shift_width(vm, 0);
+                vm->n_stems += vm->sp / 2;
+                vm->sp = 0;
+                break;
+            case 19: /* hintmask */
+            case 20: /* cntrmask */
+                cff_shift_width(vm, 0);
+                vm->n_stems += vm->sp / 2;
+                vm->sp = 0;
+                p += (size_t)((vm->n_stems + 7) / 8);
+                break;
+            case 21: /* rmoveto */
+                cff_shift_width(vm, 0);
+                if (vm->sp >= 2) cff_vm_move(vm, vm->stk[0], vm->stk[1]);
+                vm->sp = 0;
+                break;
+            case 22: /* hmoveto */
+                cff_shift_width(vm, 1);
+                if (vm->sp >= 1) cff_vm_move(vm, vm->stk[0], 0.0f);
+                vm->sp = 0;
+                break;
+            case 4: /* vmoveto */
+                cff_shift_width(vm, 1);
+                if (vm->sp >= 1) cff_vm_move(vm, 0.0f, vm->stk[0]);
+                vm->sp = 0;
+                break;
+            case 5: /* rlineto */
+                for (int i = 0; i + 1 < vm->sp; i += 2) {
+                    cff_vm_line(vm, vm->stk[i], vm->stk[i + 1]);
+                }
+                vm->sp = 0;
+                break;
+            case 6: /* hlineto */
+            case 7: /* vlineto */ {
+                int horiz = (op == 6);
+                for (int i = 0; i < vm->sp; ++i) {
+                    if (horiz) cff_vm_line(vm, vm->stk[i], 0.0f);
+                    else cff_vm_line(vm, 0.0f, vm->stk[i]);
+                    horiz = !horiz;
+                }
+                vm->sp = 0;
+                break;
+            }
+            case 8: /* rrcurveto */
+                for (int i = 0; i + 5 < vm->sp; i += 6) {
+                    cff_vm_curve(vm, vm->stk[i], vm->stk[i + 1], vm->stk[i + 2],
+                                 vm->stk[i + 3], vm->stk[i + 4], vm->stk[i + 5]);
+                }
+                vm->sp = 0;
+                break;
+            case 24: /* rcurveline */ {
+                int i = 0;
+                for (; i + 7 < vm->sp; i += 6) {
+                    cff_vm_curve(vm, vm->stk[i], vm->stk[i + 1], vm->stk[i + 2],
+                                 vm->stk[i + 3], vm->stk[i + 4], vm->stk[i + 5]);
+                }
+                if (i + 1 < vm->sp) cff_vm_line(vm, vm->stk[i], vm->stk[i + 1]);
+                vm->sp = 0;
+                break;
+            }
+            case 25: /* rlinecurve */ {
+                int i = 0;
+                for (; i + 7 < vm->sp; i += 2) {
+                    cff_vm_line(vm, vm->stk[i], vm->stk[i + 1]);
+                }
+                if (i + 5 < vm->sp) {
+                    cff_vm_curve(vm, vm->stk[i], vm->stk[i + 1], vm->stk[i + 2],
+                                 vm->stk[i + 3], vm->stk[i + 4], vm->stk[i + 5]);
+                }
+                vm->sp = 0;
+                break;
+            }
+            case 26: /* vvcurveto */ {
+                int i = 0;
+                float dx1 = (vm->sp % 4 == 1) ? vm->stk[i++] : 0.0f;
+                for (; i + 3 < vm->sp; i += 4) {
+                    cff_vm_curve(vm, dx1, vm->stk[i], vm->stk[i + 1],
+                                 vm->stk[i + 2], 0.0f, vm->stk[i + 3]);
+                    dx1 = 0.0f;
+                }
+                vm->sp = 0;
+                break;
+            }
+            case 27: /* hhcurveto */ {
+                int i = 0;
+                float dy1 = (vm->sp % 4 == 1) ? vm->stk[i++] : 0.0f;
+                for (; i + 3 < vm->sp; i += 4) {
+                    cff_vm_curve(vm, vm->stk[i], dy1, vm->stk[i + 1],
+                                 vm->stk[i + 2], vm->stk[i + 3], 0.0f);
+                    dy1 = 0.0f;
+                }
+                vm->sp = 0;
+                break;
+            }
+            case 30: /* vhcurveto */
+            case 31: /* hvcurveto */ {
+                int horiz = (op == 31);
+                int i = 0;
+                while (i + 3 < vm->sp) {
+                    int step = (i + 5 == vm->sp) ? 5 : 4;
+                    float extra = (step == 5) ? vm->stk[i + 4] : 0.0f;
+                    if (horiz) {
+                        cff_vm_curve(vm, vm->stk[i], 0.0f, vm->stk[i + 1],
+                                     vm->stk[i + 2], extra, vm->stk[i + 3]);
+                    } else {
+                        cff_vm_curve(vm, 0.0f, vm->stk[i], vm->stk[i + 1],
+                                     vm->stk[i + 2], vm->stk[i + 3], extra);
+                    }
+                    i += step;
+                    horiz = !horiz;
+                }
+                vm->sp = 0;
+                break;
+            }
+            case 10: /* callsubr */
+            case 29: /* callgsubr */ {
+                uint32_t subr_off = (op == 10) ? vm->ctx->cff_lsubr_off : vm->ctx->cff_gsubr_off;
+                if (vm->sp >= 1 && subr_off != 0u && subr_off + 2u <= cff_end) {
+                    int idx = (int)vm->stk[--vm->sp];
+                    uint16_t cnt = ttf_be16(vm->ctx->data + subr_off);
+                    int sidx = idx + cff_subr_bias(cnt);
+                    const uint8_t *sp_ptr = NULL;
+                    size_t sp_len = 0u;
+                    if (sidx >= 0 && sidx < (int)cnt &&
+                        cff_index_item(vm->ctx->data, cff_end, subr_off, (uint16_t)sidx, &sp_ptr, &sp_len) == 0) {
+                        cff_exec_cs(vm, sp_ptr, sp_len, depth + 1);
+                    }
+                }
+                break;
+            }
+            case 11: /* return */
+                return;
+            case 14: /* endchar */
+                cff_vm_close(vm);
+                vm->done = 1;
+                return;
+            case 12: /* escape */
+                if (p < len) {
+                    uint8_t eop = cs[p++];
+                    if (eop == 34u && vm->sp >= 7) { /* hflex */
+                        cff_vm_curve(vm, vm->stk[0], 0.0f, vm->stk[1], vm->stk[2], vm->stk[3], 0.0f);
+                        cff_vm_curve(vm, vm->stk[4], 0.0f, vm->stk[5], -vm->stk[2], vm->stk[6], 0.0f);
+                    } else if (eop == 35u && vm->sp >= 12) { /* flex */
+                        cff_vm_curve(vm, vm->stk[0], vm->stk[1], vm->stk[2], vm->stk[3], vm->stk[4], vm->stk[5]);
+                        cff_vm_curve(vm, vm->stk[6], vm->stk[7], vm->stk[8], vm->stk[9], vm->stk[10], vm->stk[11]);
+                    } else if (eop == 36u && vm->sp >= 9) { /* hflex1 */
+                        float dy1 = vm->stk[1], dy2 = vm->stk[3], dy5 = vm->stk[7];
+                        cff_vm_curve(vm, vm->stk[0], dy1, vm->stk[2], dy2, vm->stk[4], 0.0f);
+                        cff_vm_curve(vm, vm->stk[5], 0.0f, vm->stk[6], dy5, vm->stk[8], -(dy1 + dy2 + dy5));
+                    } else if (eop == 37u && vm->sp >= 11) { /* flex1 */
+                        float dx = vm->stk[0] + vm->stk[2] + vm->stk[4] + vm->stk[6] + vm->stk[8];
+                        float dy = vm->stk[1] + vm->stk[3] + vm->stk[5] + vm->stk[7] + vm->stk[9];
+                        float fabsx = (dx < 0.0f) ? -dx : dx;
+                        float fabsy = (dy < 0.0f) ? -dy : dy;
+                        float dx6 = (fabsx > fabsy) ? vm->stk[10] : -dx;
+                        float dy6 = (fabsx > fabsy) ? -dy : vm->stk[10];
+                        cff_vm_curve(vm, vm->stk[0], vm->stk[1], vm->stk[2], vm->stk[3], vm->stk[4], vm->stk[5]);
+                        cff_vm_curve(vm, vm->stk[6], vm->stk[7], vm->stk[8], vm->stk[9], dx6, dy6);
+                    }
+                    vm->sp = 0;
+                }
+                break;
+            default:
+                vm->sp = 0;
+                break;
+            }
+        }
+    }
+}
+
+static void cff_decode_glyph(const twd_ttf_ctx_t *ctx, uint16_t gid, float px_scale,
+                             ttf_edge_vec_t *out) {
+    if (!ctx || !ctx->is_cff || ctx->cff_charstrings_off == 0u) return;
+    size_t cff_end = (size_t)ctx->cff_off + (size_t)ctx->cff_len;
+    const uint8_t *cs = NULL;
+    size_t cs_len = 0u;
+    if (cff_index_item(ctx->data, cff_end, ctx->cff_charstrings_off, gid, &cs, &cs_len) != 0) return;
+
+    cff_vm_t vm;
+    memset(&vm, 0, sizeof(vm));
+    vm.ctx = ctx;
+    vm.out = out;
+    vm.px_scale = px_scale;
+    cff_exec_cs(&vm, cs, cs_len, 0);
+    cff_vm_close(&vm);
+}
+
 typedef struct ttf_crossing {
     float x;
     int dir;
@@ -564,7 +1034,11 @@ static const ttf_glyph_cache_entry_t *ttf_get_glyph(twd_ttf_ctx_t *ctx, uint32_t
     ent->x_adv = (float)ttf_hmetric_adv(ctx, gid) * px_scale;
 
     ttf_edge_vec_t edges = {NULL, 0u, 0u};
-    ttf_decode_glyph(ctx, gid, px_scale, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0, &edges);
+    if (ctx->is_cff) {
+        cff_decode_glyph(ctx, gid, px_scale, &edges);
+    } else {
+        ttf_decode_glyph(ctx, gid, px_scale, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0, &edges);
+    }
     if (edges.count == 0u) {
         free(edges.items);
         return ent;
