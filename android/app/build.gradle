@@ -2,9 +2,18 @@ plugins {
     id 'com.android.application'
 }
 
+def androidSdkDir = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT') ?: ''
+def ndkParentDir = androidSdkDir ? new File(androidSdkDir, 'ndk') : null
+def installedNdkVer = (ndkParentDir != null && ndkParentDir.isDirectory())
+    ? ndkParentDir.listFiles()?.findAll { it.isDirectory() && new File(it, 'source.properties').exists() }?.collect { it.name }?.sort()?.last()
+    : null
+
 android {
     namespace 'com.twdfinal.android'
     compileSdk 34
+    if (installedNdkVer) {
+        ndkVersion installedNdkVer
+    }
 
     defaultConfig {
         applicationId 'com.twdfinal.android'

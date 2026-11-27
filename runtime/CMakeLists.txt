@@ -28,7 +28,5 @@ if(UNIX AND NOT ANDROID)
 endif()
 
 if(ANDROID)
-    find_library(ANDROID_LIB android)
-    find_library(LOG_LIB log)
-    target_link_libraries(twdrt PUBLIC ${ANDROID_LIB} ${LOG_LIB} m)
+    target_link_libraries(twdrt PUBLIC android log m)
 endif()

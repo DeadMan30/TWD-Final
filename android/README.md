@@ -10,7 +10,12 @@ NativeActivity Gradle project that packages `libtwdgame.so` (built from the root
 
 ## Building
 
-- **Gradle APK (`android/`):** Open `android/` in Android Studio or run `gradle assembleDebug` (requires Android SDK 34, CMake `3.22.1+`, and NDK installed).
+- **Portable local setup (optional, Windows):** If you have a local portable toolchain in `.tools/android/` (JDK 17, Gradle 8.7, Android SDK/NDK — ignored by git), build an APK directly with:
+  ```powershell
+  C:\decomp\.tools\android\build_apk.ps1 -Configuration Debug
+  ```
+  Delete `.tools\android\` at any time to completely remove the portable SDK, NDK, JDK 17, Gradle, and caches with zero leftover files.
+- **Gradle APK (`android/`):** Open `android/` in Android Studio or run `gradle assembleDebug` (requires Android SDK 34, CMake `3.22.1+`, and NDK installed; `android/app/build.gradle` auto-selects the installed NDK under `ANDROID_HOME/ndk`).
 - **Direct NDK `libtwdgame.so` build:**
   ```sh
   cmake -S . -B build-android \
