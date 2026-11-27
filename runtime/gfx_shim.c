@@ -32,6 +32,10 @@ struct twd_gfx_device {
     void *egl_display;
     void *egl_surface;
     void *egl_context;
+    void *egl_config;
+    void *egl_bound_window;
+    void *(*egl_create_surface)(void *dpy, void *cfg, void *win, const int32_t *attrs);
+    unsigned int (*egl_make_current)(void *dpy, void *draw, void *read, void *ctx);
     unsigned int (*egl_swap_buffers)(void *dpy, void *surf);
     unsigned int (*egl_destroy_surface)(void *dpy, void *surf);
     unsigned int (*egl_destroy_context)(void *dpy, void *ctx);
@@ -196,11 +200,6 @@ int twd_gfx_select_backend(int preferred) {
         return preferred;
     }
 #ifdef __ANDROID__
-    void *vk = twd_dynlib_open("libvulkan.so");
-    if (vk) {
-        twd_dynlib_close(vk);
-        return TWD_GFX_BACKEND_VULKAN;
-    }
     return TWD_GFX_BACKEND_GLES3;
 #else
     return TWD_GFX_BACKEND_NONE;
@@ -456,6 +455,8 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
                 egl_create_surf_fn mkSurf = (egl_create_surf_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglCreateWindowSurface");
                 egl_create_ctx_fn mkCtx = (egl_create_ctx_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglCreateContext");
                 egl_make_cur_fn mkCur = (egl_make_cur_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglMakeCurrent");
+                dev->egl_create_surface = mkSurf;
+                dev->egl_make_current = mkCur;
                 if (dev->native_window && chooseCfg && mkSurf && mkCtx && mkCur) {
                     static const int32_t cfg_attrs[] = {
                         0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3025, 24, 0x3040, 0x40, 0x3038
@@ -464,11 +465,13 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
                     void *cfg = NULL;
                     int32_t ncfg = 0;
                     if (chooseCfg(dpy, cfg_attrs, &cfg, 1, &ncfg) && ncfg > 0 && cfg) {
+                        dev->egl_config = cfg;
                         void *surf = mkSurf(dpy, cfg, dev->native_window, NULL);
                         void *ctx = mkCtx(dpy, cfg, NULL, ctx_attrs);
                         if (surf && ctx && mkCur(dpy, surf, surf, ctx)) {
                             dev->egl_surface = surf;
                             dev->egl_context = ctx;
+                            dev->egl_bound_window = dev->native_window;
                             dev->gl_ctx_ready = 1;
                         }
                     }
@@ -764,6 +767,9 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
         dev->gl_active_program = 0u;
     }
     if (dev->egl_display) {
+        if (dev->egl_make_current) {
+            dev->egl_make_current(dev->egl_display, NULL, NULL, NULL);
+        }
         if (dev->egl_surface && dev->egl_destroy_surface) {
             dev->egl_destroy_surface(dev->egl_display, dev->egl_surface);
         }
@@ -1042,8 +1048,40 @@ void twd_gfx_texture_destroy(twd_gfx_texture_t *tex) {
     free(tex);
 }
 
-void twd_gfx_begin_frame(twd_gfx_device_t *dev) {
+static void gfx_sync_android_egl_surface(twd_gfx_device_t *dev) {
+#ifdef __ANDROID__
+    if (!dev || dev->backend != TWD_GFX_BACKEND_GLES3 || !dev->egl_display ||
+        !dev->egl_context || !dev->egl_config || !dev->egl_create_surface ||
+        !dev->egl_make_current || !dev->egl_destroy_surface) {
+        return;
+    }
+    void *cur_win = twd_android_get_native_window();
+    if (cur_win == dev->egl_bound_window) return;
+    if (dev->egl_surface) {
+        dev->egl_make_current(dev->egl_display, NULL, NULL, NULL);
+        dev->egl_destroy_surface(dev->egl_display, dev->egl_surface);
+        dev->egl_surface = NULL;
+    }
+    dev->egl_bound_window = cur_win;
+    if (cur_win) {
+        void *surf = dev->egl_create_surface(dev->egl_display, dev->egl_config, cur_win, NULL);
+        if (surf && dev->egl_make_current(dev->egl_display, surf, surf, dev->egl_context)) {
+            dev->egl_surface = surf;
+            dev->gl_ctx_ready = 1;
+        } else {
+            if (surf) dev->egl_destroy_surface(dev->egl_display, surf);
+            dev->gl_ctx_ready = 0;
+        }
+    } else {
+        dev->gl_ctx_ready = 0;
+    }
+#else
     (void)dev;
+#endif
+}
+
+void twd_gfx_begin_frame(twd_gfx_device_t *dev) {
+    gfx_sync_android_egl_surface(dev);
 }
 
 static uint8_t clamp_f_u8(float v) {
@@ -1869,6 +1907,7 @@ void twd_gfx_draw_indexed(
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {
     (void)sync_interval;
     if (!dev) return -1;
+    gfx_sync_android_egl_surface(dev);
     gfx_flush_hw_triangles(dev);
     gfx_blit_backbuffer_overlay(dev);
     if (dev->custom_swap_buffers) {
@@ -2519,6 +2558,11 @@ int32_t twd_d3d11_create_device_shim(
     twd_gfx_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     desc.native_window = window;
+#ifdef __ANDROID__
+    if (twd_android_get_native_window() != NULL) {
+        desc.native_window = twd_android_get_native_window();
+    }
+#endif
     desc.width = (uint32_t)w;
     desc.height = (uint32_t)h;
     desc.preferred_backend = -1;

@@ -19,13 +19,13 @@ else()
     add_compile_options(-Wall -Wextra -Werror -ffp-contract=off -fno-fast-math)
 endif()
 
-enable_testing()
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
 add_subdirectory(runtime)
 add_subdirectory(game)
 
 if(NOT ANDROID)
+    enable_testing()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
     add_executable(twd_boot game/twd_boot_main.c)
     target_link_libraries(twd_boot PRIVATE twdgame twdrt)
 

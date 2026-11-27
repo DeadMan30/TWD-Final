@@ -66,6 +66,19 @@ uint64_t twd_android_run_frame_loop(
 
 static AInputQueue *g_input_queue = NULL;
 
+static int map_android_keycode(int32_t code) {
+    if (code == AKEYCODE_DPAD_UP) return 38;
+    if (code == AKEYCODE_DPAD_DOWN) return 40;
+    if (code == AKEYCODE_DPAD_LEFT) return 37;
+    if (code == AKEYCODE_DPAD_RIGHT) return 39;
+    if (code == AKEYCODE_DPAD_CENTER || code == AKEYCODE_ENTER || code == AKEYCODE_BUTTON_A) return 13;
+    if (code == AKEYCODE_SPACE || code == AKEYCODE_BUTTON_X) return 32;
+    if (code == AKEYCODE_BACK || code == AKEYCODE_DEL || code == AKEYCODE_ESCAPE || code == AKEYCODE_BUTTON_B) return 8;
+    if (code >= AKEYCODE_0 && code <= AKEYCODE_9) return '0' + (code - AKEYCODE_0);
+    if (code >= AKEYCODE_A && code <= AKEYCODE_Z) return 'A' + (code - AKEYCODE_A);
+    return (int)code;
+}
+
 static void pump_android_input(void) {
     if (!g_input_queue) return;
     AInputEvent *ev = NULL;
@@ -79,7 +92,7 @@ static void pump_android_input(void) {
             int32_t act = AKeyEvent_getAction(ev);
             int32_t code = AKeyEvent_getKeyCode(ev);
             if (act == AKEY_EVENT_ACTION_DOWN || act == AKEY_EVENT_ACTION_UP) {
-                twd_android_on_key(code, act == AKEY_EVENT_ACTION_DOWN);
+                twd_android_on_key(map_android_keycode(code), act == AKEY_EVENT_ACTION_DOWN);
                 handled = 1;
             }
         } else if (etype == AINPUT_EVENT_TYPE_MOTION) {
@@ -130,6 +143,16 @@ static void on_native_destroy(ANativeActivity *activity) {
     twd_platform_shutdown();
 }
 
+static void on_native_pause(ANativeActivity *activity) {
+    (void)activity;
+    twd_android_on_focus(0);
+}
+
+static void on_native_resume(ANativeActivity *activity) {
+    (void)activity;
+    twd_android_on_focus(1);
+}
+
 static void on_window_focus_changed(ANativeActivity *activity, int has_focus) {
     (void)activity;
     twd_android_on_focus(has_focus);
@@ -171,6 +194,8 @@ void twd_android_attach_native_activity(void *native_activity, void (*on_bind_ho
     ANativeActivity *activity = (ANativeActivity *)native_activity;
     if (!activity) return;
     activity->callbacks->onDestroy = on_native_destroy;
+    activity->callbacks->onPause = on_native_pause;
+    activity->callbacks->onResume = on_native_resume;
     activity->callbacks->onWindowFocusChanged = on_window_focus_changed;
     activity->callbacks->onNativeWindowCreated = on_native_window_created;
     activity->callbacks->onNativeWindowResized = on_native_window_resized;

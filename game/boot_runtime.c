@@ -720,6 +720,7 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
     } else if (ev->kind == TWD_EVT_RESIZE && st->gfx && ev->param1 > 0ULL && ev->param2 > 0) {
         st->cfg.width = (uint32_t)ev->param1;
         st->cfg.height = (uint32_t)ev->param2;
+        (void)twd_gfx_resize(st->gfx, st->cfg.width, st->cfg.height);
         twd_gfx_set_viewport(st->gfx, 0.0f, 0.0f, (float)st->cfg.width, (float)st->cfg.height, 0.0f, 1.0f);
         boot_layout_menu_buttons(st);
     } else if (ev->kind == TWD_EVT_KEY) {
@@ -831,6 +832,31 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                 st->menu_focus = 0;
                 boot_switch_to_scene(st, "ui_menuMain.scene");
                 return;
+            }
+            if (st->stats && boot_is_gameplay_3d(st, st->stats->active_scene)) {
+                if (st->opt_subtitles && (st->dlg_line[0] != '\0' || st->dlg_choices_open)) {
+                    uint32_t dh = st->cfg.height ? st->cfg.height : 720u;
+                    uint32_t dw = st->cfg.width ? st->cfg.width : 1280u;
+                    int32_t bar_h = st->dlg_choices_open ? 96 : 64;
+                    int32_t bar_y = (int32_t)dh - bar_h - 12;
+                    if (bar_y < 80) bar_y = 80;
+                    if (px >= 24 && px < (int32_t)dw - 24 && py >= bar_y && py < bar_y + bar_h) {
+                        if (st->dlg_choices_open) {
+                            static const char *const k_tchoices[3] = {"Help AJ", "Check Area", "Stay Silent"};
+                            int32_t bar_w = (int32_t)dw - 48;
+                            int32_t rel_x = px - 24;
+                            uint32_t ci = (bar_w > 0) ? (uint32_t)((rel_x * 3) / bar_w) : 0u;
+                            if (ci > 2u) ci = 2u;
+                            boot_copy_trunc(st->dlg_last_choice, sizeof(st->dlg_last_choice), k_tchoices[ci]);
+                            (void)twd_kv_set("scene", "last_choice", st->dlg_last_choice);
+                            st->dlg_choices_open = 0;
+                        }
+                        if (st->has_scene_landb) {
+                            boot_advance_dialogue(st, 1);
+                        }
+                        return;
+                    }
+                }
             }
             if (st->stats && boot_is_gameplay_3d(st, st->stats->active_scene) &&
                 st->scene_item_count > 0u) {
@@ -1724,6 +1750,44 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
             game_dir = dir_buf;
         }
     }
+    if (!installed_key) {
+        size_t ksz = 0u;
+        void *kbuf = twd_asset_read_alloc("archive_key.txt", &ksz);
+        if (!kbuf && game_dir && strlen(game_dir) + sizeof("/archive_key.txt") + 1u < 540u) {
+            char kp[540];
+            size_t gl = strlen(game_dir);
+            memcpy(kp, game_dir, gl);
+            memcpy(kp + gl, "/archive_key.txt", sizeof("/archive_key.txt"));
+            twd_file_t kf;
+            if (twd_file_open(kp, TWD_FILE_OPEN_READ, &kf) == 0) {
+                uint8_t tmp[256];
+                int64_t nr = twd_file_read(&kf, tmp, sizeof(tmp) - 1u);
+                twd_file_close(&kf);
+                if (nr > 0) {
+                    tmp[(size_t)nr] = 0u;
+                    size_t kl = (size_t)nr;
+                    while (kl > 0u && (tmp[kl - 1u] == '\n' || tmp[kl - 1u] == '\r' ||
+                                       tmp[kl - 1u] == ' ' || tmp[kl - 1u] == '\t')) {
+                        tmp[--kl] = 0u;
+                    }
+                    if (kl > 0u && twd_crypto_install_archive_key(tmp, kl) == 0) {
+                        installed_key = 1;
+                    }
+                }
+            }
+        } else if (kbuf && ksz > 0u) {
+            uint8_t *kp = (uint8_t *)kbuf;
+            size_t kl = ksz;
+            while (kl > 0u && (kp[kl - 1u] == '\n' || kp[kl - 1u] == '\r' ||
+                               kp[kl - 1u] == ' ' || kp[kl - 1u] == '\t')) {
+                kl--;
+            }
+            if (kl > 0u && twd_crypto_install_archive_key(kp, kl) == 0) {
+                installed_key = 1;
+            }
+        }
+        if (kbuf) twd_asset_free(kbuf);
+    }
     if (game_dir && twd_path_is_dir(game_dir)) {
         int m = twd_ttarch2_mount_dir(game_dir);
         if (m > 0) local_stats.mounted_archives += m;
@@ -1737,6 +1801,26 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 if (ma > 0) local_stats.mounted_archives += ma;
             }
         }
+#ifdef __ANDROID__
+        if (local_stats.mounted_archives == 0) {
+            char idir[512];
+            if (twd_android_get_data_dir(0, idir, sizeof(idir)) > 0 && strcmp(idir, game_dir) != 0 &&
+                twd_path_is_dir(idir)) {
+                int mi = twd_ttarch2_mount_dir(idir);
+                if (mi > 0) local_stats.mounted_archives += mi;
+                size_t il = strlen(idir);
+                if (il + sizeof("/Archives") + 1u < 540u) {
+                    char iarch[540];
+                    memcpy(iarch, idir, il);
+                    memcpy(iarch + il, "/Archives", sizeof("/Archives"));
+                    if (twd_path_is_dir(iarch)) {
+                        int mia = twd_ttarch2_mount_dir(iarch);
+                        if (mia > 0) local_stats.mounted_archives += mia;
+                    }
+                }
+            }
+        }
+#endif
         if ((local_stats.audio_caps & TWD_AUDIO_CAP_FMOD_STUDIO) == 0 && gl + 24u < sizeof(dir_buf)) {
             char fmod_c[540], fmod_s[540];
 #ifdef _WIN32

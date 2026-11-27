@@ -4,6 +4,7 @@
 
 #ifdef __ANDROID__
 #include <android/native_activity.h>
+#include <android/native_window.h>
 #include <string.h>
 
 static twd_thread_t g_boot_thread;
@@ -28,7 +29,16 @@ static int android_boot_worker(void *arg) {
     twd_boot_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.game_dir = (data_dir[0] != '\0') ? data_dir : NULL;
-    cfg.preferred_backend = -1;
+    cfg.preferred_backend = TWD_GFX_BACKEND_GLES3;
+    ANativeWindow *nw = (ANativeWindow *)twd_android_get_native_window();
+    if (nw) {
+        int32_t nw_w = ANativeWindow_getWidth(nw);
+        int32_t nw_h = ANativeWindow_getHeight(nw);
+        if (nw_w > 0 && nw_h > 0) {
+            cfg.width = (uint32_t)nw_w;
+            cfg.height = (uint32_t)nw_h;
+        }
+    }
 
     twd_boot_stats_t stats;
     (void)twd_game_boot_run(&cfg, &stats);
