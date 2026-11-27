@@ -553,6 +553,135 @@ int main(void) {
         }
     }
 
+    /* Fourth boot pass: Settings toggle -> Episodes menu -> launch adv_trainStation.scene + pan */
+    {
+        static const char ep_lua[] = "SceneOpen(\"ui_boot.scene\")\n";
+        static const char ep_names[] =
+            "Boot.lua\0ui_boot.scene\0ui_menuMain.scene\0ui_episodes.scene\0adv_trainStation.scene\0";
+        uint8_t s_sc0[128], s_sc1[128], s_sc2[128], s_sc3[128];
+        size_t l0 = build_min_scene(s_sc0, sizeof(s_sc0), "ui_boot.scene");
+        size_t l1 = build_min_scene(s_sc1, sizeof(s_sc1), "ui_menuMain.scene");
+        size_t l2 = build_min_scene(s_sc2, sizeof(s_sc2), "ui_episodes.scene");
+        size_t l3 = build_min_scene(s_sc3, sizeof(s_sc3), "adv_trainStation.scene");
+        if (l0 != 93u || l1 != 97u || l2 != 97u || l3 != 102u) return 34;
+
+        enum {
+            EN_ENT = 5,
+            EN_NAMES = sizeof(ep_names) - 1,
+            EN_BASE = 12 + EN_ENT * 28 + EN_NAMES,
+            EB_LEN = sizeof(ep_lua) - 1,
+            E0_LEN = 93,
+            E1_LEN = 97,
+            E2_LEN = 97,
+            E3_LEN = 102,
+            E_PAY = EN_BASE + EB_LEN + E0_LEN + E1_LEN + E2_LEN + E3_LEN
+        };
+        uint8_t epkg[12 + E_PAY];
+        memset(epkg, 0, sizeof(epkg));
+        memcpy(epkg, "NCTT", 4u);
+        wr_u64(epkg + 4u, (uint64_t)E_PAY);
+        uint8_t *etoc = epkg + 12u;
+        wr_u32(etoc + 0u, TWD_TTARCH2_TOC_TTA4);
+        wr_u32(etoc + 4u, (uint32_t)EN_NAMES);
+        wr_u32(etoc + 8u, (uint32_t)EN_ENT);
+
+        wr_u64(etoc + 12u + 0u * 28u + 0u, twd_crc64(0ULL, "Boot.lua"));
+        wr_u64(etoc + 12u + 0u * 28u + 8u, 0ULL);
+        wr_u32(etoc + 12u + 0u * 28u + 16u, (uint32_t)EB_LEN);
+        wr_u16(etoc + 12u + 0u * 28u + 26u, 0u);
+
+        wr_u64(etoc + 12u + 1u * 28u + 0u, twd_crc64(0ULL, "ui_boot.scene"));
+        wr_u64(etoc + 12u + 1u * 28u + 8u, (uint64_t)EB_LEN);
+        wr_u32(etoc + 12u + 1u * 28u + 16u, (uint32_t)E0_LEN);
+        wr_u16(etoc + 12u + 1u * 28u + 26u, 9u);
+
+        wr_u64(etoc + 12u + 2u * 28u + 0u, twd_crc64(0ULL, "ui_menuMain.scene"));
+        wr_u64(etoc + 12u + 2u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN));
+        wr_u32(etoc + 12u + 2u * 28u + 16u, (uint32_t)E1_LEN);
+        wr_u16(etoc + 12u + 2u * 28u + 26u, 23u);
+
+        wr_u64(etoc + 12u + 3u * 28u + 0u, twd_crc64(0ULL, "ui_episodes.scene"));
+        wr_u64(etoc + 12u + 3u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN + E1_LEN));
+        wr_u32(etoc + 12u + 3u * 28u + 16u, (uint32_t)E2_LEN);
+        wr_u16(etoc + 12u + 3u * 28u + 26u, 41u);
+
+        wr_u64(etoc + 12u + 4u * 28u + 0u, twd_crc64(0ULL, "adv_trainStation.scene"));
+        wr_u64(etoc + 12u + 4u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN + E1_LEN + E2_LEN));
+        wr_u32(etoc + 12u + 4u * 28u + 16u, (uint32_t)E3_LEN);
+        wr_u16(etoc + 12u + 4u * 28u + 26u, 59u);
+
+        memcpy(etoc + 12u + EN_ENT * 28u, ep_names, EN_NAMES);
+        memcpy(etoc + EN_BASE, ep_lua, EB_LEN);
+        memcpy(etoc + EN_BASE + EB_LEN, s_sc0, E0_LEN);
+        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN, s_sc1, E1_LEN);
+        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN + E1_LEN, s_sc2, E2_LEN);
+        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN + E1_LEN + E2_LEN, s_sc3, E3_LEN);
+
+        if (twd_mkdir("twd_boot_ep_dir") != 0) return 35;
+        twd_file_t ef;
+        if (twd_file_open("twd_boot_ep_dir/ep0.ttarch2",
+                          TWD_FILE_OPEN_WRITE | TWD_FILE_CREATE, &ef) != 0) {
+            (void)twd_rmdir("twd_boot_ep_dir");
+            return 36;
+        }
+        int64_t ewr = twd_file_write(&ef, epkg, sizeof(epkg));
+        int ecl = twd_file_close(&ef);
+        if (ewr != (int64_t)sizeof(epkg) || ecl != 0) {
+            (void)twd_file_delete("twd_boot_ep_dir/ep0.ttarch2");
+            (void)twd_rmdir("twd_boot_ep_dir");
+            return 37;
+        }
+
+        twd_win_event_t evs[7];
+        memset(evs, 0, sizeof(evs));
+        /* 0: Enter ui_menuMain.scene */
+        evs[0].kind = TWD_EVT_KEY; evs[0].param1 = 13u; evs[0].param2 = 1;
+        /* 1: Click button 2 (Settings at y=252..296) */
+        evs[1].kind = TWD_EVT_POINTER; evs[1].param1 = (uint64_t)TWD_TOUCH_DOWN;
+        evs[1].param2 = ((uint64_t)120u << 32) | 265u;
+        /* 2: Click button 0 (Subtitles toggle at y=140..184) */
+        evs[2].kind = TWD_EVT_POINTER; evs[2].param1 = (uint64_t)TWD_TOUCH_DOWN;
+        evs[2].param2 = ((uint64_t)120u << 32) | 155u;
+        /* 3: Backspace -> back to Main Menu */
+        evs[3].kind = TWD_EVT_KEY; evs[3].param1 = 8u; evs[3].param2 = 1;
+        /* 4: Click button 1 (Episodes at y=196..240) -> ui_episodes.scene */
+        evs[4].kind = TWD_EVT_POINTER; evs[4].param1 = (uint64_t)TWD_TOUCH_DOWN;
+        evs[4].param2 = ((uint64_t)120u << 32) | 210u;
+        /* 5: Enter (Episode 1 selected) -> adv_trainStation.scene */
+        evs[5].kind = TWD_EVT_KEY; evs[5].param1 = 13u; evs[5].param2 = 1;
+        /* 6: 'D' (68) camera pan in gameplay scene */
+        evs[6].kind = TWD_EVT_KEY; evs[6].param1 = 68u; evs[6].param2 = 1;
+        for (int ei = 0; ei < 7; ++ei) twd_window_push_event(&evs[ei]);
+
+        twd_boot_config_t e4cfg;
+        memset(&e4cfg, 0, sizeof(e4cfg));
+        e4cfg.game_dir = "twd_boot_ep_dir";
+        e4cfg.save_dir = "twd_boot_ep_save_dir";
+        e4cfg.width = 640u;
+        e4cfg.height = 480u;
+        e4cfg.max_frames = 2u;
+        e4cfg.preferred_backend = -1;
+
+        twd_boot_stats_t e4stats;
+        int e4rc = twd_game_boot_run(&e4cfg, &e4stats);
+        (void)twd_file_delete("twd_boot_ep_dir/ep0.ttarch2");
+        (void)twd_rmdir("twd_boot_ep_dir");
+        (void)twd_rmdir("twd_boot_ep_save_dir");
+
+        if (e4rc != 0) return 38;
+        if (strcmp(e4stats.active_scene, "adv_trainStation.scene") != 0 ||
+            e4stats.input_events_processed < 7u || e4stats.clean_shutdown != 1) {
+            return 39;
+        }
+        {
+            char sub[8] = {0}, pan[8] = {0};
+            if (twd_kv_get("prefs", "subtitles", sub, sizeof(sub)) <= 0 || strcmp(sub, "0") != 0 ||
+                twd_kv_get("scene", "cam_panned", pan, sizeof(pan)) <= 0 || strcmp(pan, "1") != 0) {
+                return 40;
+            }
+        }
+    }
+
     printf("test_game_boot: ok (hooks=%u, archives=%d, props=%u, lua=%u, tex=%u, res=%ux%u, frames=%llu)\n",
            stats.hook_count, stats.mounted_archives, stats.prefs_property_count,
            stats.boot_scripts_executed, stats.boot_textures_loaded, stats.width, stats.height,

@@ -58,10 +58,20 @@ typedef struct twd_boot_loop_state {
     int has_boot_mesh;
     twd_boot_scene_item_t scene_items[TWD_BOOT_MAX_SCENE_ITEMS];
     uint32_t scene_item_count;
+#define TWD_MENU_PAGE_MAIN     0
+#define TWD_MENU_PAGE_EPISODES 1
+#define TWD_MENU_PAGE_SETTINGS 2
+
     twd_boot_menu_btn_t menu_btns[TWD_BOOT_MAX_MENU_BTNS];
     uint32_t menu_btn_count;
     int32_t menu_focus;
+    int menu_page;
     int menu_script_ran;
+    int opt_subtitles;
+    int opt_windowed;
+    int opt_fx_quality;
+    float cam_pan_x;
+    float cam_pan_y;
     char menu_status[96];
     void *d3d_dev;
     void *d3d_ctx;
@@ -537,26 +547,87 @@ static int boot_on_init(void *user) {
 
 static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_name);
 static void boot_layout_menu_buttons(twd_boot_loop_state_t *st);
+static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *scene_name);
+
+static void boot_launch_episode(twd_boot_loop_state_t *st, int ep_idx) {
+    static const char *const k_ep_cands[4][3] = {
+        {"adv_trainStation.scene", "adv_boardingSchoolExterior.scene", "adv_roadTile.scene"},
+        {"adv_boardingSchoolDorm.scene", "adv_boardingSchoolExteriorNight.scene", "adv_forestShack.scene"},
+        {"adv_boardingSchoolBasement.scene", "adv_forestShack.scene", "adv_trainStation.scene"},
+        {"adv_forestTile.scene", "adv_roadTile.scene", "adv_boardingSchoolExterior.scene"}
+    };
+    if (!st || ep_idx < 0 || ep_idx >= 4) return;
+    for (int ci = 0; ci < 3; ++ci) {
+        const char *sc = k_ep_cands[ep_idx][ci];
+        if (sc && twd_ttarch2_exists_mounted(sc)) {
+            st->cam_pan_x = 0.0f;
+            st->cam_pan_y = 0.0f;
+            st->menu_status[0] = '\0';
+            boot_switch_to_scene(st, sc);
+            return;
+        }
+    }
+    memcpy(st->menu_status, "Ready: Episode 1 - Done Running", 32u);
+}
 
 static void boot_activate_menu_button(twd_boot_loop_state_t *st, uint32_t idx) {
     if (!st || idx >= st->menu_btn_count) return;
     const twd_boot_menu_btn_t *btn = &st->menu_btns[idx];
+    char action[32];
+    char label[64];
+    memcpy(action, btn->action, sizeof(action));
+    memcpy(label, btn->label, sizeof(label));
     st->menu_focus = (int32_t)idx;
-    (void)twd_kv_set("ui", "last_hit", btn->action);
-    (void)twd_kv_set("ui", "last_button_label", btn->label);
-    (void)twd_kv_set("ui", "menu_action", btn->action);
+    (void)twd_kv_set("ui", "last_hit", action);
+    (void)twd_kv_set("ui", "last_button_label", label);
+    (void)twd_kv_set("ui", "menu_action", action);
 
-    if (strcmp(btn->action, "play") == 0) {
+    if (strcmp(action, "play") == 0) {
         if (st->save_mgr) (void)twd_save_new_game(st->save_mgr, 1u);
-        memcpy(st->menu_status, "Ready: Episode 1 - Done Running", 32u);
-    } else if (strcmp(btn->action, "episodes") == 0) {
-        memcpy(st->menu_status, "Episodes (1-4)", 15u);
+        boot_launch_episode(st, 0);
+    } else if (strcmp(action, "episodes") == 0) {
+        memcpy(st->menu_status, "Select Episode (1-4)", 21u);
         if (twd_ttarch2_exists_mounted("ui_episodes.scene")) {
+            st->menu_page = TWD_MENU_PAGE_EPISODES;
+            st->menu_focus = 0;
             boot_switch_to_scene(st, "ui_episodes.scene");
         }
-    } else if (strcmp(btn->action, "settings") == 0) {
-        memcpy(st->menu_status, "Extras & Settings", 18u);
-    } else if (strcmp(btn->action, "quit") == 0) {
+    } else if (strcmp(action, "ep1") == 0) {
+        boot_launch_episode(st, 0);
+    } else if (strcmp(action, "ep2") == 0) {
+        boot_launch_episode(st, 1);
+    } else if (strcmp(action, "ep3") == 0) {
+        boot_launch_episode(st, 2);
+    } else if (strcmp(action, "ep4") == 0) {
+        boot_launch_episode(st, 3);
+    } else if (strcmp(action, "settings") == 0) {
+        st->menu_page = TWD_MENU_PAGE_SETTINGS;
+        st->menu_focus = 0;
+        memcpy(st->menu_status, "Settings", 9u);
+        boot_populate_menu_buttons(st, "ui_menuMain.scene");
+    } else if (strcmp(action, "opt_subtitles") == 0) {
+        st->opt_subtitles = st->opt_subtitles ? 0 : 1;
+        (void)twd_kv_set("prefs", "subtitles", st->opt_subtitles ? "1" : "0");
+        boot_populate_menu_buttons(st, "ui_menuMain.scene");
+    } else if (strcmp(action, "opt_windowed") == 0) {
+        st->opt_windowed = st->opt_windowed ? 0 : 1;
+        (void)twd_kv_set("prefs", "windowed", st->opt_windowed ? "1" : "0");
+        boot_populate_menu_buttons(st, "ui_menuMain.scene");
+    } else if (strcmp(action, "opt_fx") == 0) {
+        st->opt_fx_quality = (st->opt_fx_quality + 1) % 3;
+        boot_kv_set_u32("fx_brush_quality", (uint32_t)st->opt_fx_quality);
+        boot_populate_menu_buttons(st, "ui_menuMain.scene");
+    } else if (strcmp(action, "back_main") == 0) {
+        st->menu_page = TWD_MENU_PAGE_MAIN;
+        st->menu_focus = 0;
+        st->menu_status[0] = '\0';
+        if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") != 0 &&
+            twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+            boot_switch_to_scene(st, "ui_menuMain.scene");
+        } else {
+            boot_populate_menu_buttons(st, "ui_menuMain.scene");
+        }
+    } else if (strcmp(action, "quit") == 0) {
         memcpy(st->menu_status, "Exiting...", 11u);
         twd_post_quit(0);
     }
@@ -580,9 +651,10 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
             } else if ((ev->param1 == 13ULL || ev->param1 == 32ULL) && st->scenes && st->stats &&
                        strcmp(st->stats->active_scene, "ui_boot.scene") == 0 &&
                        twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+                st->menu_page = TWD_MENU_PAGE_MAIN;
+                st->menu_focus = 0;
                 boot_switch_to_scene(st, "ui_menuMain.scene");
-            } else if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
-                       st->menu_btn_count > 0u) {
+            } else if (st->menu_btn_count > 0u) {
                 if (ev->param1 == 38ULL) {
                     st->menu_focus = (st->menu_focus > 0)
                         ? (st->menu_focus - 1) : (int32_t)(st->menu_btn_count - 1u);
@@ -592,16 +664,43 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                     uint32_t fi = (st->menu_focus >= 0 && (uint32_t)st->menu_focus < st->menu_btn_count)
                         ? (uint32_t)st->menu_focus : 0u;
                     boot_activate_menu_button(st, fi);
-                } else if (ev->param1 == 8ULL && twd_ttarch2_exists_mounted("ui_boot.scene")) {
-                    boot_switch_to_scene(st, "ui_boot.scene");
+                } else if (ev->param1 == 8ULL) {
+                    if (st->menu_page == TWD_MENU_PAGE_SETTINGS) {
+                        st->menu_page = TWD_MENU_PAGE_MAIN;
+                        st->menu_focus = 0;
+                        boot_populate_menu_buttons(st, "ui_menuMain.scene");
+                    } else if (st->stats && strcmp(st->stats->active_scene, "ui_episodes.scene") == 0 &&
+                               twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+                        st->menu_page = TWD_MENU_PAGE_MAIN;
+                        st->menu_focus = 0;
+                        boot_switch_to_scene(st, "ui_menuMain.scene");
+                    } else if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
+                               twd_ttarch2_exists_mounted("ui_boot.scene")) {
+                        boot_switch_to_scene(st, "ui_boot.scene");
+                    }
                 }
-            } else if (ev->param1 == 8ULL && st->scenes && st->stats) {
-                if (strcmp(st->stats->active_scene, "ui_episodes.scene") == 0 &&
-                    twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
-                    boot_switch_to_scene(st, "ui_menuMain.scene");
-                } else if (strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
-                           twd_ttarch2_exists_mounted("ui_boot.scene")) {
-                    boot_switch_to_scene(st, "ui_boot.scene");
+            } else if (st->scenes && st->stats && strcmp(st->stats->active_scene, "ui_boot.scene") != 0) {
+                /* Gameplay scene camera pan & back navigation */
+                if (ev->param1 == 65ULL || ev->param1 == 37ULL) {
+                    st->cam_pan_x -= 0.5f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 68ULL || ev->param1 == 39ULL) {
+                    st->cam_pan_x += 0.5f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 87ULL || ev->param1 == 38ULL) {
+                    st->cam_pan_y += 0.5f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 83ULL || ev->param1 == 40ULL) {
+                    st->cam_pan_y -= 0.5f;
+                    (void)twd_kv_set("scene", "cam_panned", "1");
+                } else if (ev->param1 == 8ULL) {
+                    if (twd_ttarch2_exists_mounted("ui_episodes.scene")) {
+                        st->menu_page = TWD_MENU_PAGE_EPISODES;
+                        boot_switch_to_scene(st, "ui_episodes.scene");
+                    } else if (twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+                        st->menu_page = TWD_MENU_PAGE_MAIN;
+                        boot_switch_to_scene(st, "ui_menuMain.scene");
+                    }
                 }
             }
         }
@@ -611,8 +710,7 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
         uint32_t action = (uint32_t)(ev->param1 & 0xffffffffu);
         uint32_t btn = (action == TWD_TOUCH_DOWN || action == TWD_TOUCH_MOVE) ? 1u : 0u;
         twd_input_set_pointer((float)px, (float)py, btn);
-        if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
-            st->menu_btn_count > 0u) {
+        if (st->menu_btn_count > 0u) {
             for (uint32_t bi = 0u; bi < st->menu_btn_count; ++bi) {
                 const twd_boot_menu_btn_t *b = &st->menu_btns[bi];
                 if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h) {
@@ -627,6 +725,8 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
         if (action == TWD_TOUCH_DOWN && st->scenes) {
             if (st->stats && strcmp(st->stats->active_scene, "ui_boot.scene") == 0 &&
                 twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+                st->menu_page = TWD_MENU_PAGE_MAIN;
+                st->menu_focus = 0;
                 boot_switch_to_scene(st, "ui_menuMain.scene");
                 return;
             }
@@ -833,41 +933,99 @@ static void boot_layout_menu_buttons(twd_boot_loop_state_t *st) {
     }
 }
 
+static void boot_copy_trunc(char *dst, size_t cap, const char *src) {
+    if (!dst || cap == 0u) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t sl = strlen(src);
+    if (sl >= cap) sl = cap - 1u;
+    if (sl > 0u) memcpy(dst, src, sl);
+    dst[sl] = '\0';
+}
+
+static void boot_format_single_line(char *dst, size_t cap, const char *raw) {
+    twd_landb_strip_markup(raw ? raw : "", dst, cap);
+    for (size_t i = 0u; dst[i] != '\0'; ++i) {
+        if (dst[i] == '\n' || dst[i] == '\r') dst[i] = ' ';
+    }
+}
+
 static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *scene_name) {
     if (!st) return;
     st->menu_btn_count = 0u;
-    if (!scene_name || strcmp(scene_name, "ui_menuMain.scene") != 0) return;
+    if (!scene_name) return;
 
-    static const struct {
-        uint32_t landb_id;
-        const char *fallback;
-        const char *action;
-    } k_btns[4] = {
-        {0x17a0a293u, "Play", "play"},
-        {0x17a0a03cu, "Episodes", "episodes"},
-        {0x17a0a30bu, "Extras & Settings", "settings"},
-        {0x17a0a153u, "Exit", "quit"}
-    };
-
-    for (uint32_t i = 0u; i < 4u && i < TWD_BOOT_MAX_MENU_BTNS; ++i) {
-        twd_boot_menu_btn_t *b = &st->menu_btns[st->menu_btn_count++];
-        memset(b, 0, sizeof(*b));
-        const char *txt = st->has_menu_landb
-            ? twd_landb_find_text(&st->menu_landb, k_btns[i].landb_id) : NULL;
-        if (txt && txt[0] != '\0') {
-            twd_landb_strip_markup(txt, b->label, sizeof(b->label));
+    if (strcmp(scene_name, "ui_episodes.scene") == 0) {
+        st->menu_page = TWD_MENU_PAGE_EPISODES;
+        static const struct {
+            uint32_t landb_id;
+            const char *fallback;
+            const char *action;
+        } k_eps[5] = {
+            {0x17a0a203u, "Episode 1: Done Running", "ep1"},
+            {0x17a0a204u, "Episode 2: Suffer the Children", "ep2"},
+            {0x17a0a205u, "Episode 3: Broken Toys", "ep3"},
+            {0x17a0a206u, "Episode 4: Take Us Back", "ep4"},
+            {0u, "Back", "back_main"}
+        };
+        for (uint32_t i = 0u; i < 5u && i < TWD_BOOT_MAX_MENU_BTNS; ++i) {
+            twd_boot_menu_btn_t *b = &st->menu_btns[st->menu_btn_count++];
+            memset(b, 0, sizeof(*b));
+            const char *txt = (k_eps[i].landb_id != 0u && st->has_menu_landb)
+                ? twd_landb_find_text(&st->menu_landb, k_eps[i].landb_id) : NULL;
+            if (txt && txt[0] != '\0') boot_format_single_line(b->label, sizeof(b->label), txt);
+            if (b->label[0] == '\0') boot_copy_trunc(b->label, sizeof(b->label), k_eps[i].fallback);
+            boot_copy_trunc(b->action, sizeof(b->action), k_eps[i].action);
         }
-        if (b->label[0] == '\0') {
-            size_t fl = strlen(k_btns[i].fallback);
-            if (fl >= sizeof(b->label)) fl = sizeof(b->label) - 1u;
-            memcpy(b->label, k_btns[i].fallback, fl);
-            b->label[fl] = '\0';
+    } else if (strcmp(scene_name, "ui_menuMain.scene") == 0 && st->menu_page == TWD_MENU_PAGE_SETTINGS) {
+        static const char *const k_fx_names[3] = {"Low", "Medium", "High"};
+        const char *fx_lbl = k_fx_names[(st->opt_fx_quality >= 0 && st->opt_fx_quality < 3)
+            ? st->opt_fx_quality : 2];
+        const char *opt_lbls[4];
+        static const char *const k_opt_acts[4] = {
+            "opt_subtitles", "opt_windowed", "opt_fx", "back_main"
+        };
+        opt_lbls[0] = st->opt_subtitles ? "Subtitles: ON" : "Subtitles: OFF";
+        opt_lbls[1] = st->opt_windowed ? "Windowed: ON" : "Windowed: OFF";
+        opt_lbls[2] = fx_lbl;
+        opt_lbls[3] = "Back";
+        for (uint32_t i = 0u; i < 4u && i < TWD_BOOT_MAX_MENU_BTNS; ++i) {
+            twd_boot_menu_btn_t *b = &st->menu_btns[st->menu_btn_count++];
+            memset(b, 0, sizeof(*b));
+            if (i == 2u) {
+                static const char k_pfx[] = "FX Quality: ";
+                size_t pl = sizeof(k_pfx) - 1u;
+                memcpy(b->label, k_pfx, pl);
+                boot_copy_trunc(b->label + pl, sizeof(b->label) - pl, opt_lbls[i]);
+            } else {
+                boot_copy_trunc(b->label, sizeof(b->label), opt_lbls[i]);
+            }
+            boot_copy_trunc(b->action, sizeof(b->action), k_opt_acts[i]);
         }
-        size_t al = strlen(k_btns[i].action);
-        if (al >= sizeof(b->action)) al = sizeof(b->action) - 1u;
-        memcpy(b->action, k_btns[i].action, al);
-        b->action[al] = '\0';
+    } else if (strcmp(scene_name, "ui_menuMain.scene") == 0) {
+        st->menu_page = TWD_MENU_PAGE_MAIN;
+        static const struct {
+            uint32_t landb_id;
+            const char *fallback;
+            const char *action;
+        } k_btns[4] = {
+            {0x17a0a293u, "Play", "play"},
+            {0x17a0a03cu, "Episodes", "episodes"},
+            {0x17a0a30bu, "Extras & Settings", "settings"},
+            {0x17a0a153u, "Exit", "quit"}
+        };
+        for (uint32_t i = 0u; i < 4u && i < TWD_BOOT_MAX_MENU_BTNS; ++i) {
+            twd_boot_menu_btn_t *b = &st->menu_btns[st->menu_btn_count++];
+            memset(b, 0, sizeof(*b));
+            const char *txt = st->has_menu_landb
+                ? twd_landb_find_text(&st->menu_landb, k_btns[i].landb_id) : NULL;
+            if (txt && txt[0] != '\0') boot_format_single_line(b->label, sizeof(b->label), txt);
+            if (b->label[0] == '\0') boot_copy_trunc(b->label, sizeof(b->label), k_btns[i].fallback);
+            boot_copy_trunc(b->action, sizeof(b->action), k_btns[i].action);
+        }
+    } else {
+        return;
     }
+
     if (st->menu_focus < 0 || (uint32_t)st->menu_focus >= st->menu_btn_count) {
         st->menu_focus = 0;
     }
@@ -1005,6 +1163,8 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
             }
         }
     }
+    cam_x += st->cam_pan_x;
+    cam_y += st->cam_pan_y;
 
     if (st->splash_tex && st->scene_item_count == 0u) {
         uint32_t sw = 0u, sh = 0u;
@@ -1057,6 +1217,11 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         const twd_font_t *menu_font = st->has_menu_font ? &st->menu_font : hdr_font;
         const char *label = (st->stats && st->stats->active_scene[0]) ? st->stats->active_scene : "Boot";
         (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 16.0f, 1.0f, k_white, label);
+        if (st->menu_btn_count == 0u && strcmp(label, "ui_boot.scene") != 0 &&
+            strncmp(label, "ui_", 3u) != 0) {
+            (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 40.0f, 0.85f, k_muted,
+                                     "WASD/Arrows: Pan  |  Backspace: Menu");
+        }
         if (st->menu_btn_count > 0u) {
             float txt_scale = (dh >= 480u) ? 0.85f : 0.68f;
             float line_h = (menu_font->height > 0.0f) ? menu_font->height * txt_scale : 22.0f;
@@ -1177,6 +1342,17 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     local_stats.found_prefs_prop =
         boot_load_prefs_prop("prefs.prop", &local_stats, &w, &h) ||
         boot_load_prefs_prop("config/prefs.prop", &local_stats, &w, &h);
+    st.opt_subtitles = 1;
+    st.opt_windowed = 1;
+    st.opt_fx_quality = 2;
+    {
+        char pv[16];
+        if (twd_kv_get("prefs", "windowed", pv, sizeof(pv)) > 0) st.opt_windowed = (pv[0] != '0') ? 1 : 0;
+        if (twd_kv_get("prefs", "fx_brush_quality", pv, sizeof(pv)) > 0 &&
+            pv[0] >= '0' && pv[0] <= '2') {
+            st.opt_fx_quality = pv[0] - '0';
+        }
+    }
     {
         static const char *const k_boot_scripts[] = {
             "Boot.lua", "_boot.lua", "scripts/_boot.lua", "_resdesc_50_Boot.lua"
