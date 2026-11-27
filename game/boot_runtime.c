@@ -12,6 +12,16 @@
 #include <string.h>
 
 #define TWD_BOOT_MAX_SCENE_ITEMS 32u
+#define TWD_BOOT_MAX_MENU_BTNS   8u
+
+typedef struct twd_boot_menu_btn {
+    char label[64];
+    char action[32];
+    int32_t x;
+    int32_t y;
+    int32_t w;
+    int32_t h;
+} twd_boot_menu_btn_t;
 
 typedef struct twd_boot_scene_item {
     twd_d3dmesh_t mesh;
@@ -37,13 +47,22 @@ typedef struct twd_boot_loop_state {
     twd_gfx_texture_t *boot_font_page_tex;
     twd_font_t boot_font;
     int has_boot_font;
+    twd_font_t menu_font;
+    int has_menu_font;
     twd_landb_t boot_landb;
     int has_boot_landb;
+    twd_landb_t menu_landb;
+    int has_menu_landb;
     twd_d3dmesh_t boot_mesh;
     twd_d3dmesh_gpu_t boot_mesh_gpu;
     int has_boot_mesh;
     twd_boot_scene_item_t scene_items[TWD_BOOT_MAX_SCENE_ITEMS];
     uint32_t scene_item_count;
+    twd_boot_menu_btn_t menu_btns[TWD_BOOT_MAX_MENU_BTNS];
+    uint32_t menu_btn_count;
+    int32_t menu_focus;
+    int menu_script_ran;
+    char menu_status[96];
     void *d3d_dev;
     void *d3d_ctx;
     void *d3d_swap;
@@ -345,7 +364,7 @@ static int lua_save_has_space(twd_lua_vm_t *vm, void *user, int argc, const twd_
 }
 
 typedef struct boot_lua_ctx {
-    char required[32][64];
+    char required[128][64];
     uint32_t required_count;
 } boot_lua_ctx_t;
 
@@ -421,7 +440,7 @@ static int lua_require(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val
                     break;
                 }
             }
-            if (!already && ctx->required_count < 32u) {
+            if (!already && ctx->required_count < 128u) {
                 size_t ml = strlen(m);
                 if (ml >= sizeof(ctx->required[0])) ml = sizeof(ctx->required[0]) - 1u;
                 memcpy(ctx->required[ctx->required_count], m, ml);
@@ -517,6 +536,31 @@ static int boot_on_init(void *user) {
 }
 
 static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_name);
+static void boot_layout_menu_buttons(twd_boot_loop_state_t *st);
+
+static void boot_activate_menu_button(twd_boot_loop_state_t *st, uint32_t idx) {
+    if (!st || idx >= st->menu_btn_count) return;
+    const twd_boot_menu_btn_t *btn = &st->menu_btns[idx];
+    st->menu_focus = (int32_t)idx;
+    (void)twd_kv_set("ui", "last_hit", btn->action);
+    (void)twd_kv_set("ui", "last_button_label", btn->label);
+    (void)twd_kv_set("ui", "menu_action", btn->action);
+
+    if (strcmp(btn->action, "play") == 0) {
+        if (st->save_mgr) (void)twd_save_new_game(st->save_mgr, 1u);
+        memcpy(st->menu_status, "Ready: Episode 1 - Done Running", 32u);
+    } else if (strcmp(btn->action, "episodes") == 0) {
+        memcpy(st->menu_status, "Episodes (1-4)", 15u);
+        if (twd_ttarch2_exists_mounted("ui_episodes.scene")) {
+            boot_switch_to_scene(st, "ui_episodes.scene");
+        }
+    } else if (strcmp(btn->action, "settings") == 0) {
+        memcpy(st->menu_status, "Extras & Settings", 18u);
+    } else if (strcmp(btn->action, "quit") == 0) {
+        memcpy(st->menu_status, "Exiting...", 11u);
+        twd_post_quit(0);
+    }
+}
 
 static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *ev) {
     if (!st || !ev) return;
@@ -527,6 +571,7 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
         st->cfg.width = (uint32_t)ev->param1;
         st->cfg.height = (uint32_t)ev->param2;
         twd_gfx_set_viewport(st->gfx, 0.0f, 0.0f, (float)st->cfg.width, (float)st->cfg.height, 0.0f, 1.0f);
+        boot_layout_menu_buttons(st);
     } else if (ev->kind == TWD_EVT_KEY) {
         twd_input_set_key((uint32_t)ev->param1, (ev->param2 != 0) ? 1 : 0);
         if (ev->param2 != 0) {
@@ -536,10 +581,28 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                        strcmp(st->stats->active_scene, "ui_boot.scene") == 0 &&
                        twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
                 boot_switch_to_scene(st, "ui_menuMain.scene");
-            } else if (ev->param1 == 8ULL && st->scenes && st->stats &&
-                       strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
-                       twd_ttarch2_exists_mounted("ui_boot.scene")) {
-                boot_switch_to_scene(st, "ui_boot.scene");
+            } else if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
+                       st->menu_btn_count > 0u) {
+                if (ev->param1 == 38ULL) {
+                    st->menu_focus = (st->menu_focus > 0)
+                        ? (st->menu_focus - 1) : (int32_t)(st->menu_btn_count - 1u);
+                } else if (ev->param1 == 40ULL) {
+                    st->menu_focus = (st->menu_focus + 1) % (int32_t)st->menu_btn_count;
+                } else if (ev->param1 == 13ULL || ev->param1 == 32ULL) {
+                    uint32_t fi = (st->menu_focus >= 0 && (uint32_t)st->menu_focus < st->menu_btn_count)
+                        ? (uint32_t)st->menu_focus : 0u;
+                    boot_activate_menu_button(st, fi);
+                } else if (ev->param1 == 8ULL && twd_ttarch2_exists_mounted("ui_boot.scene")) {
+                    boot_switch_to_scene(st, "ui_boot.scene");
+                }
+            } else if (ev->param1 == 8ULL && st->scenes && st->stats) {
+                if (strcmp(st->stats->active_scene, "ui_episodes.scene") == 0 &&
+                    twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
+                    boot_switch_to_scene(st, "ui_menuMain.scene");
+                } else if (strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
+                           twd_ttarch2_exists_mounted("ui_boot.scene")) {
+                    boot_switch_to_scene(st, "ui_boot.scene");
+                }
             }
         }
     } else if (ev->kind == TWD_EVT_POINTER) {
@@ -548,6 +611,19 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
         uint32_t action = (uint32_t)(ev->param1 & 0xffffffffu);
         uint32_t btn = (action == TWD_TOUCH_DOWN || action == TWD_TOUCH_MOVE) ? 1u : 0u;
         twd_input_set_pointer((float)px, (float)py, btn);
+        if (st->stats && strcmp(st->stats->active_scene, "ui_menuMain.scene") == 0 &&
+            st->menu_btn_count > 0u) {
+            for (uint32_t bi = 0u; bi < st->menu_btn_count; ++bi) {
+                const twd_boot_menu_btn_t *b = &st->menu_btns[bi];
+                if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h) {
+                    st->menu_focus = (int32_t)bi;
+                    if (action == TWD_TOUCH_DOWN) {
+                        boot_activate_menu_button(st, bi);
+                    }
+                    return;
+                }
+            }
+        }
         if (action == TWD_TOUCH_DOWN && st->scenes) {
             if (st->stats && strcmp(st->stats->active_scene, "ui_boot.scene") == 0 &&
                 twd_ttarch2_exists_mounted("ui_menuMain.scene")) {
@@ -672,12 +748,16 @@ static void boot_free_scene_items(twd_boot_loop_state_t *st) {
     st->scene_item_count = 0u;
 }
 
+static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *scene_name);
+
 static void boot_populate_scene_items(twd_boot_loop_state_t *st) {
     if (!st || !st->scenes) return;
     boot_free_scene_items(st);
     const char *pri = twd_scene_mgr_primary_name(st->scenes);
     twd_scene_t *psc = pri ? twd_scene_mgr_find(st->scenes, pri) : NULL;
     if (!psc) return;
+
+    boot_populate_menu_buttons(st, pri);
 
     if (st->has_boot_landb) {
         twd_scene_agent_t *ag_start = twd_scene_find_agent(psc, "ui_boot_start");
@@ -737,8 +817,152 @@ static void boot_populate_scene_items(twd_boot_loop_state_t *st) {
     }
 }
 
+static void boot_layout_menu_buttons(twd_boot_loop_state_t *st) {
+    if (!st) return;
+    uint32_t dh = st->cfg.height ? st->cfg.height : 720u;
+    int32_t base_x = 56;
+    int32_t base_y = (dh >= 480u) ? 140 : 88;
+    int32_t btn_w = (dh >= 480u) ? 320 : 240;
+    int32_t btn_h = (dh >= 480u) ? 44 : 34;
+    int32_t step_y = btn_h + 12;
+    for (uint32_t i = 0u; i < st->menu_btn_count; ++i) {
+        st->menu_btns[i].x = base_x;
+        st->menu_btns[i].y = base_y + (int32_t)i * step_y;
+        st->menu_btns[i].w = btn_w;
+        st->menu_btns[i].h = btn_h;
+    }
+}
+
+static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *scene_name) {
+    if (!st) return;
+    st->menu_btn_count = 0u;
+    if (!scene_name || strcmp(scene_name, "ui_menuMain.scene") != 0) return;
+
+    static const struct {
+        uint32_t landb_id;
+        const char *fallback;
+        const char *action;
+    } k_btns[4] = {
+        {0x17a0a293u, "Play", "play"},
+        {0x17a0a03cu, "Episodes", "episodes"},
+        {0x17a0a30bu, "Extras & Settings", "settings"},
+        {0x17a0a153u, "Exit", "quit"}
+    };
+
+    for (uint32_t i = 0u; i < 4u && i < TWD_BOOT_MAX_MENU_BTNS; ++i) {
+        twd_boot_menu_btn_t *b = &st->menu_btns[st->menu_btn_count++];
+        memset(b, 0, sizeof(*b));
+        const char *txt = st->has_menu_landb
+            ? twd_landb_find_text(&st->menu_landb, k_btns[i].landb_id) : NULL;
+        if (txt && txt[0] != '\0') {
+            twd_landb_strip_markup(txt, b->label, sizeof(b->label));
+        }
+        if (b->label[0] == '\0') {
+            size_t fl = strlen(k_btns[i].fallback);
+            if (fl >= sizeof(b->label)) fl = sizeof(b->label) - 1u;
+            memcpy(b->label, k_btns[i].fallback, fl);
+            b->label[fl] = '\0';
+        }
+        size_t al = strlen(k_btns[i].action);
+        if (al >= sizeof(b->action)) al = sizeof(b->action) - 1u;
+        memcpy(b->action, k_btns[i].action, al);
+        b->action[al] = '\0';
+    }
+    if (st->menu_focus < 0 || (uint32_t)st->menu_focus >= st->menu_btn_count) {
+        st->menu_focus = 0;
+    }
+    boot_layout_menu_buttons(st);
+}
+
+static void boot_register_lua_api(twd_lua_vm_t *lvm, twd_boot_loop_state_t *st, boot_lua_ctx_t *bctx) {
+    if (!lvm || !st || !bctx) return;
+    (void)twd_lua_vm_register(lvm, "SceneOpen", lua_scene_open, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneAdd", lua_scene_add, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneIsActive", lua_scene_is_active, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneHide", lua_scene_hide, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneRemove", lua_scene_remove, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneFind", lua_scene_find, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneGetAgents", lua_scene_get_agents, st->scenes);
+    (void)twd_lua_vm_register(lvm, "SceneAddAgent", lua_scene_add_agent, st->scenes);
+    (void)twd_lua_vm_register(lvm, "AgentFind", lua_agent_find, st->scenes);
+    (void)twd_lua_vm_register(lvm, "AgentSetPos", lua_agent_set_pos, st->scenes);
+    (void)twd_lua_vm_register(lvm, "Input_IsKeyDown", lua_input_is_key_down, NULL);
+    (void)twd_lua_vm_register(lvm, "CursorGetPos", lua_cursor_get_pos, NULL);
+    (void)twd_lua_vm_register(lvm, "GameEngine_Quit", lua_engine_quit, NULL);
+    (void)twd_lua_vm_register(lvm, "SaveGame", lua_save_game, st);
+    (void)twd_lua_vm_register(lvm, "LoadGame", lua_load_game, st);
+    (void)twd_lua_vm_register(lvm, "NewGame", lua_new_game, st);
+    (void)twd_lua_vm_register(lvm, "ResetGame", lua_reset_game, st);
+    (void)twd_lua_vm_register(lvm, "IsSaving", lua_is_saving, st);
+    (void)twd_lua_vm_register(lvm, "IsSaveGameCorrupt", lua_is_save_corrupt, st);
+    (void)twd_lua_vm_register(lvm, "SaveLoadSetSaveDisplayName", lua_save_set_display_name, st);
+    (void)twd_lua_vm_register(lvm, "SaveLoadClearRuntimeProperties", lua_save_clear_props, st);
+    (void)twd_lua_vm_register(lvm, "SaveLoadRemoveUserFiles", lua_save_remove_files, st);
+    (void)twd_lua_vm_register(lvm, "SaveLoadHasAvailableSpace", lua_save_has_space, st);
+    (void)twd_lua_vm_register(lvm, "LoadScript", lua_load_script, NULL);
+    (void)twd_lua_vm_register(lvm, "GameMode", lua_game_mode, NULL);
+    (void)twd_lua_vm_register(lvm, "require", lua_require, bctx);
+    (void)twd_lua_vm_register(lvm, "ResourceExists", lua_resource_exists, NULL);
+    (void)twd_lua_vm_register(lvm, "IsToolBuild", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsRunningFromMaya", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformAppleTV", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformXboxOne", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformPS4", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformAndroid", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformIOS", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "IsPlatformSmallScreen", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "Input_UseCursor", lua_ret_const_bool, (void *)(uintptr_t)1u);
+    (void)twd_lua_vm_register(lvm, "Input_UseTouch", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "DebugMenu_AddButton", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "DebugMenu_AddCustomButton", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "DebugMenu_ToggleButtons", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "OverlayShowLoadingScreen", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "SceneSetTimeScale", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "InputMapperAddEvent", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "ThreadStart", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "Vector", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "FileSetExtension", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "FileStripExtension", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "CreateResource", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "PropertyGet", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "PropertySet", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "AgentSetProperty", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "TextSet", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "Preload_SetSubProjectShaderPack", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "PlatformAppleTV_RemoveAssetPack", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "DLCStatus_Refresh", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "UserManager_AutomaticallyLogIn", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "PlatformAppleTV_SetMenuSuspendAllowed", lua_ret_nil, NULL);
+}
+
+static void boot_exec_menu_main(twd_boot_loop_state_t *st) {
+    if (!st || st->menu_script_ran) return;
+    if (!twd_ttarch2_exists_mounted("Menu_Main.lua")) return;
+    st->menu_script_ran = 1;
+    twd_lua_vm_t *mvm = twd_lua_vm_create();
+    if (!mvm) return;
+    boot_lua_ctx_t bctx;
+    memset(&bctx, 0, sizeof(bctx));
+    boot_register_lua_api(mvm, st, &bctx);
+    if (twd_lua_vm_exec_vfs(mvm, "Menu_Main.lua") == 0) {
+        if (st->stats) {
+            st->stats->boot_scripts_executed += twd_lua_vm_executed_count(mvm);
+        }
+        (void)twd_kv_set("lua.menu", "loaded", "1");
+        if (twd_lua_vm_get_global(mvm, "Menu_Main_Start") != NULL) {
+            if (twd_lua_vm_call_global(mvm, "Menu_Main_Start", 0, NULL, NULL) == 0) {
+                (void)twd_kv_set("lua.menu", "started", "1");
+            }
+        }
+    }
+    twd_lua_vm_destroy(mvm);
+}
+
 static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_name) {
     if (!st || !st->scenes || !scene_name || scene_name[0] == '\0') return;
+    if (strcmp(scene_name, "ui_menuMain.scene") == 0) {
+        boot_exec_menu_main(st);
+    }
     if (twd_scene_mgr_open(st->scenes, scene_name) != 0) return;
     boot_populate_scene_items(st);
     if (st->stats) {
@@ -823,10 +1047,38 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
             (float)dh * 0.5f + cam_y * 20.0f,
             180.0f, k_mesh_tint);
     }
-    if (st->has_boot_font) {
+    if (st->has_boot_font || st->has_menu_font) {
         static const uint8_t k_white[4] = {255u, 255u, 255u, 255u};
+        static const uint8_t k_card_bg[4] = {20u, 24u, 32u, 195u};
+        static const uint8_t k_card_focus[4] = {92u, 62u, 22u, 225u};
+        static const uint8_t k_accent[4] = {235u, 175u, 55u, 255u};
+        static const uint8_t k_muted[4] = {195u, 200u, 210u, 240u};
+        const twd_font_t *hdr_font = st->has_boot_font ? &st->boot_font : &st->menu_font;
+        const twd_font_t *menu_font = st->has_menu_font ? &st->menu_font : hdr_font;
         const char *label = (st->stats && st->stats->active_scene[0]) ? st->stats->active_scene : "Boot";
-        (void)twd_font_draw_text(gfx, &st->boot_font, 16.0f, 16.0f, 1.0f, k_white, label);
+        (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 16.0f, 1.0f, k_white, label);
+        if (st->menu_btn_count > 0u) {
+            float txt_scale = (dh >= 480u) ? 0.85f : 0.68f;
+            float line_h = (menu_font->height > 0.0f) ? menu_font->height * txt_scale : 22.0f;
+            for (uint32_t bi = 0u; bi < st->menu_btn_count; ++bi) {
+                const twd_boot_menu_btn_t *b = &st->menu_btns[bi];
+                int focused = ((int32_t)bi == st->menu_focus);
+                (void)twd_gfx_draw_rect(gfx, b->x, b->y, b->w, b->h, focused ? k_card_focus : k_card_bg);
+                if (focused) {
+                    (void)twd_gfx_draw_rect(gfx, b->x, b->y, 6, b->h, k_accent);
+                }
+                float ty = (float)b->y + ((float)b->h - line_h) * 0.5f;
+                if (ty < (float)b->y + 4.0f) ty = (float)b->y + 4.0f;
+                (void)twd_font_draw_text(gfx, menu_font, (float)(b->x + 18), ty, txt_scale,
+                                         focused ? k_white : k_muted, b->label);
+            }
+            if (st->menu_status[0] != '\0') {
+                const twd_boot_menu_btn_t *last = &st->menu_btns[st->menu_btn_count - 1u];
+                (void)twd_font_draw_text(gfx, menu_font, (float)last->x,
+                                         (float)(last->y + last->h + 16),
+                                         txt_scale * 0.85f, k_accent, st->menu_status);
+            }
+        }
         if (st->scenes) {
             const char *pri = twd_scene_mgr_primary_name(st->scenes);
             twd_scene_t *psc = pri ? twd_scene_mgr_find(st->scenes, pri) : NULL;
@@ -834,7 +1086,7 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
                 float uy = 48.0f;
                 for (uint32_t ai = 0u; ai < psc->agent_count; ++ai) {
                     if (psc->agents[ai].visible && psc->agents[ai].ui_text[0] != '\0') {
-                        (void)twd_font_draw_text(gfx, &st->boot_font, 24.0f, uy, 1.0f, k_white, psc->agents[ai].ui_text);
+                        (void)twd_font_draw_text(gfx, hdr_font, 24.0f, uy, 1.0f, k_white, psc->agents[ai].ui_text);
                         uy += 24.0f;
                     }
                 }
@@ -940,58 +1192,9 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
             local_stats.found_boot_lua = 1;
             twd_lua_vm_t *lvm = twd_lua_vm_create();
             if (lvm) {
-                (void)twd_lua_vm_register(lvm, "SceneOpen", lua_scene_open, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneAdd", lua_scene_add, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneIsActive", lua_scene_is_active, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneHide", lua_scene_hide, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneRemove", lua_scene_remove, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneFind", lua_scene_find, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneGetAgents", lua_scene_get_agents, st.scenes);
-                (void)twd_lua_vm_register(lvm, "SceneAddAgent", lua_scene_add_agent, st.scenes);
-                (void)twd_lua_vm_register(lvm, "AgentFind", lua_agent_find, st.scenes);
-                (void)twd_lua_vm_register(lvm, "AgentSetPos", lua_agent_set_pos, st.scenes);
-                (void)twd_lua_vm_register(lvm, "Input_IsKeyDown", lua_input_is_key_down, NULL);
-                (void)twd_lua_vm_register(lvm, "CursorGetPos", lua_cursor_get_pos, NULL);
-                (void)twd_lua_vm_register(lvm, "GameEngine_Quit", lua_engine_quit, NULL);
-                (void)twd_lua_vm_register(lvm, "SaveGame", lua_save_game, &st);
-                (void)twd_lua_vm_register(lvm, "LoadGame", lua_load_game, &st);
-                (void)twd_lua_vm_register(lvm, "NewGame", lua_new_game, &st);
-                (void)twd_lua_vm_register(lvm, "ResetGame", lua_reset_game, &st);
-                (void)twd_lua_vm_register(lvm, "IsSaving", lua_is_saving, &st);
-                (void)twd_lua_vm_register(lvm, "IsSaveGameCorrupt", lua_is_save_corrupt, &st);
-                (void)twd_lua_vm_register(lvm, "SaveLoadSetSaveDisplayName", lua_save_set_display_name, &st);
-                (void)twd_lua_vm_register(lvm, "SaveLoadClearRuntimeProperties", lua_save_clear_props, &st);
-                (void)twd_lua_vm_register(lvm, "SaveLoadRemoveUserFiles", lua_save_remove_files, &st);
-                (void)twd_lua_vm_register(lvm, "SaveLoadHasAvailableSpace", lua_save_has_space, &st);
                 boot_lua_ctx_t bctx;
                 memset(&bctx, 0, sizeof(bctx));
-                (void)twd_lua_vm_register(lvm, "LoadScript", lua_load_script, NULL);
-                (void)twd_lua_vm_register(lvm, "GameMode", lua_game_mode, NULL);
-                (void)twd_lua_vm_register(lvm, "require", lua_require, &bctx);
-                (void)twd_lua_vm_register(lvm, "ResourceExists", lua_resource_exists, NULL);
-                (void)twd_lua_vm_register(lvm, "IsToolBuild", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsRunningFromMaya", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformAppleTV", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformXboxOne", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformPS4", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformAndroid", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformIOS", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "IsPlatformSmallScreen", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "Input_UseCursor", lua_ret_const_bool, (void *)(uintptr_t)1u);
-                (void)twd_lua_vm_register(lvm, "Input_UseTouch", lua_ret_const_bool, NULL);
-                (void)twd_lua_vm_register(lvm, "DebugMenu_AddButton", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "DebugMenu_AddCustomButton", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "DebugMenu_ToggleButtons", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "OverlayShowLoadingScreen", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "SceneSetTimeScale", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "InputMapperAddEvent", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "ThreadStart", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "Vector", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "FileSetExtension", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "CreateResource", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "DLCStatus_Refresh", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "UserManager_AutomaticallyLogIn", lua_ret_nil, NULL);
-                (void)twd_lua_vm_register(lvm, "PlatformAppleTV_SetMenuSuspendAllowed", lua_ret_nil, NULL);
+                boot_register_lua_api(lvm, &st, &bctx);
                 if (twd_lua_vm_exec_buffer(lvm, boot_buf, boot_sz, boot_path) == 0) {
                     local_stats.boot_script_ran = 1;
                     local_stats.boot_scripts_executed = twd_lua_vm_executed_count(lvm);
@@ -1107,14 +1310,33 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 }
             }
             {
+                size_t mfsz = 0u;
+                void *mfbuf = twd_asset_read_alloc("MenuBody.font", &mfsz);
+                if (mfbuf && mfsz > 0u && twd_font_parse_memory(mfbuf, mfsz, &st.menu_font) == 0) {
+                    st.has_menu_font = 1;
+                    local_stats.boot_fonts_loaded++;
+                }
+                if (mfbuf) twd_asset_free(mfbuf);
+            }
+            {
                 size_t lbsz = 0u;
                 void *lbbuf = twd_asset_read_alloc("boot_english.landb", &lbsz);
                 if (lbbuf && lbsz > 0u && twd_landb_parse_memory(lbbuf, lbsz, &st.boot_landb) == 0) {
                     st.has_boot_landb = 1;
                 }
                 if (lbbuf) twd_asset_free(lbbuf);
+
+                size_t mlbsz = 0u;
+                void *mlbbuf = twd_asset_read_alloc("ui_menu_english.landb", &mlbsz);
+                if (mlbbuf && mlbsz > 0u && twd_landb_parse_memory(mlbbuf, mlbsz, &st.menu_landb) == 0) {
+                    st.has_menu_landb = 1;
+                }
+                if (mlbbuf) twd_asset_free(mlbbuf);
             }
 
+            if (strcmp(local_stats.active_scene, "ui_menuMain.scene") == 0) {
+                boot_exec_menu_main(&st);
+            }
             boot_populate_scene_items(&st);
 
             if (st.scene_item_count == 0u) {
@@ -1195,7 +1417,9 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
         twd_d3dmesh_free(&st.boot_mesh);
     }
     if (st.has_boot_font) twd_font_free(&st.boot_font);
+    if (st.has_menu_font) twd_font_free(&st.menu_font);
     if (st.has_boot_landb) twd_landb_free(&st.boot_landb);
+    if (st.has_menu_landb) twd_landb_free(&st.menu_landb);
     if (st.boot_font_page_tex) twd_gfx_texture_destroy(st.boot_font_page_tex);
     if (st.boot_mesh_tex) twd_gfx_texture_destroy(st.boot_mesh_tex);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);

@@ -1314,3 +1314,26 @@ int twd_lua_vm_exec_vfs(twd_lua_vm_t *vm, const char *rel_path) {
     twd_asset_free(buf);
     return rc;
 }
+
+int twd_lua_vm_call_global(twd_lua_vm_t *vm,
+                           const char *name,
+                           int argc,
+                           const twd_lua_val_t *argv,
+                           twd_lua_val_t *out_ret) {
+    if (!vm || !name || vm->call_depth >= 16u) return -1;
+    const twd_lua_val_t *fnv = table_get(vm->globals, name);
+    if (!fnv) return -1;
+    if (fnv->kind == TWD_LUA_T_CFUNC && fnv->u.ptr) {
+        const lua_cfunc_binding_t *bind = (const lua_cfunc_binding_t *)fnv->u.ptr;
+        return bind->fn(vm, bind->user, argc, argv, out_ret);
+    }
+    if (fnv->kind == TWD_LUA_T_CLOSURE && fnv->u.ptr) {
+        const lua_closure_t *cl = (const lua_closure_t *)fnv->u.ptr;
+        if (!cl->pr) return -1;
+        vm->call_depth++;
+        int rc = vm_exec_proto_closure(vm, cl->pr, cl->upvals, cl->nupvals, argc, argv, out_ret);
+        vm->call_depth--;
+        return rc;
+    }
+    return -1;
+}

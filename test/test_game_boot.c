@@ -514,6 +514,14 @@ int main(void) {
         enter_ev.param2 = 1;
         twd_window_push_event(&enter_ev);
 
+        /* Click button 1 ("episodes" at x=56..376, y=196..240 for 640x480) after entering Main Menu */
+        twd_win_event_t click_ev;
+        memset(&click_ev, 0, sizeof(click_ev));
+        click_ev.kind = TWD_EVT_POINTER;
+        click_ev.param1 = (uint64_t)TWD_TOUCH_DOWN;
+        click_ev.param2 = ((uint64_t)120u << 32) | 210u;
+        twd_window_push_event(&click_ev);
+
         twd_boot_config_t tcfg;
         memset(&tcfg, 0, sizeof(tcfg));
         tcfg.game_dir = "twd_boot_trans_dir";
@@ -531,10 +539,17 @@ int main(void) {
 
         if (trc != 0) return 31;
         if (tstats.mounted_archives != 1 || tstats.found_boot_lua != 1 ||
-            tstats.boot_script_ran != 1 || tstats.input_events_processed < 1u ||
+            tstats.boot_script_ran != 1 || tstats.input_events_processed < 2u ||
             strcmp(tstats.active_scene, "ui_menuMain.scene") != 0 ||
             tstats.frames_rendered != 2ULL || tstats.clean_shutdown != 1) {
             return 32;
+        }
+        {
+            char hitv[32];
+            if (twd_kv_get("ui", "last_hit", hitv, sizeof(hitv)) <= 0 ||
+                strcmp(hitv, "episodes") != 0) {
+                return 33;
+            }
         }
     }
 

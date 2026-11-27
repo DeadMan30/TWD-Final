@@ -2070,6 +2070,147 @@ int main(void) {
         TWD_CHECK(ansv != NULL && ansv->kind == TWD_LUA_T_NUM && ansv->u.num == 99.0f);
         twd_lua_vm_destroy(cv);
 
+        /* Direct twd_lua_vm_call_global check on a Lua-defined closure */
+        {
+            static const uint8_t k_lua52_fn[] = {
+                0x1Bu, 'L', 'u', 'a', 0x52u, 0x00u, 0x01u, 0x04u, 0x04u, 0x04u, 0x04u, 0x00u,
+                0x19u, 0x93u, 0x0Du, 0x0Au, 0x1Au, 0x0Au,
+                0,0,0,0, 0,0,0,0, 0, 0, 2,
+                3,0,0,0,
+                0x25u, 0x00u, 0x00u, 0x00u, /* OP_CLOSURE r0, p0 (bx=0) */
+                0x08u, 0x00u, 0x00u, 0x80u, /* OP_SETTABUP u0, K0="fn", r0 */
+                0x1Fu, 0x00u, 0x80u, 0x00u, /* OP_RETURN */
+                1,0,0,0, 4, 3,0,0,0, 'f','n',0,
+                1,0,0,0,
+                0,0,0,0, 0,0,0,0, 0, 0, 2,
+                2,0,0,0,
+                0x01u, 0x00u, 0x00u, 0x00u, /* OP_LOADK r0, K0=77 */
+                0x1Fu, 0x00u, 0x00u, 0x01u, /* OP_RETURN r0, b=2 */
+                1,0,0,0, 3, 0x00u, 0x00u, 0x9Au, 0x42u, /* float 77.0f = 0x429a0000 */
+                0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+                0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0
+            };
+            twd_lua_vm_t *fv = twd_lua_vm_create();
+            TWD_CHECK(fv != NULL);
+            TWD_CHECK(twd_lua_vm_exec_buffer(fv, k_lua52_fn, sizeof(k_lua52_fn), "fn.lc") == 0);
+            twd_lua_val_t f_ret;
+            memset(&f_ret, 0, sizeof(f_ret));
+            TWD_CHECK(twd_lua_vm_call_global(fv, "fn", 0, NULL, &f_ret) == 0);
+            TWD_CHECK(f_ret.kind == TWD_LUA_T_NUM && f_ret.u.num == 77.0f);
+            twd_lua_vm_destroy(fv);
+        }
+
+        /* Synthetic SFNT font embedded in 6VSM .font mTtfData + scanline rasterization check */
+        {
+            uint8_t sfnt[512];
+            memset(sfnt, 0, sizeof(sfnt));
+            /* Table offsets inside SFNT (header=12 + 7*16=124) */
+            enum {
+                OFF_CMAP = 124, LEN_CMAP = 44,
+                OFF_GLYF = 168, LEN_GLYF = 32,
+                OFF_HEAD = 200, LEN_HEAD = 54,
+                OFF_HHEA = 254, LEN_HHEA = 36,
+                OFF_HMTX = 290, LEN_HMTX = 8,
+                OFF_LOCA = 298, LEN_LOCA = 12,
+                OFF_MAXP = 310, LEN_MAXP = 6,
+                SFNT_SZ  = 316
+            };
+            static const char *const k_tags[7] = {"cmap","glyf","head","hhea","hmtx","loca","maxp"};
+            static const uint32_t k_offs[7] = {OFF_CMAP,OFF_GLYF,OFF_HEAD,OFF_HHEA,OFF_HMTX,OFF_LOCA,OFF_MAXP};
+            static const uint32_t k_lens[7] = {LEN_CMAP,LEN_GLYF,LEN_HEAD,LEN_HHEA,LEN_HMTX,LEN_LOCA,LEN_MAXP};
+            /* SFNT 0x00010000 header */
+            sfnt[1] = 1u; sfnt[5] = 7u;
+            for (int ti = 0; ti < 7; ++ti) {
+                uint8_t *tr = sfnt + 12u + (size_t)ti * 16u;
+                memcpy(tr, k_tags[ti], 4u);
+                tr[8]  = (uint8_t)((k_offs[ti] >> 24u) & 0xFFu);
+                tr[9]  = (uint8_t)((k_offs[ti] >> 16u) & 0xFFu);
+                tr[10] = (uint8_t)((k_offs[ti] >> 8u) & 0xFFu);
+                tr[11] = (uint8_t)(k_offs[ti] & 0xFFu);
+                tr[14] = (uint8_t)((k_lens[ti] >> 8u) & 0xFFu);
+                tr[15] = (uint8_t)(k_lens[ti] & 0xFFu);
+            }
+            /* cmap: v0, 1 subtable at +12 (pid=3, eid=1), fmt 4 (len 32, 2 segs: 'A' & 0xFFFF) */
+            sfnt[OFF_CMAP + 3] = 1u;
+            sfnt[OFF_CMAP + 5] = 3u; sfnt[OFF_CMAP + 7] = 1u; sfnt[OFF_CMAP + 11] = 12u;
+            uint8_t *cm = sfnt + OFF_CMAP + 12u;
+            cm[1] = 4u; cm[3] = 32u; cm[7] = 4u; /* fmt=4, len=32, segCountX2=4 */
+            cm[15] = 'A'; cm[16] = 0xFFu; cm[17] = 0xFFu; /* endCount */
+            cm[21] = 'A'; cm[22] = 0xFFu; cm[23] = 0xFFu; /* startCount */
+            /* idDelta[0] = 1 - 'A' = -64 = 0xFFC0, idDelta[1] = 1 */
+            cm[24] = 0xFFu; cm[25] = 0xC0u; cm[27] = 1u;
+            /* glyf gid1: 1 contour, bbox(100,0..900,800), endPts[0]=2, inst=0, flags=1,1,1 */
+            uint8_t *gl = sfnt + OFF_GLYF;
+            gl[1] = 1u; gl[3] = 100u; gl[6] = 0x03u; gl[7] = 0x84u; gl[8] = 0x03u; gl[9] = 0x20u;
+            gl[11] = 2u; /* endPts[0]=2 */
+            gl[14] = 1u; gl[15] = 1u; gl[16] = 1u; /* 3 on-curve 16-bit flags */
+            /* dx = +100 (0x0064), +800 (0x0320), -400 (0xFE70) */
+            gl[17] = 0x00u; gl[18] = 100u; gl[19] = 0x03u; gl[20] = 0x20u; gl[21] = 0xFEu; gl[22] = 0x70u;
+            /* dy = 0, 0, +800 (0x0320) */
+            gl[27] = 0x03u; gl[28] = 0x20u;
+            /* head: unitsPerEm=1000 (0x03E8) @+18, indexToLocFormat=1 @+50 */
+            sfnt[OFF_HEAD + 18] = 0x03u; sfnt[OFF_HEAD + 19] = 0xE8u;
+            sfnt[OFF_HEAD + 51] = 1u;
+            /* hhea: ascent=800(0x0320), descent=-200(0xFF38), numHMetrics=2 @+34 */
+            sfnt[OFF_HHEA + 4] = 0x03u; sfnt[OFF_HHEA + 5] = 0x20u;
+            sfnt[OFF_HHEA + 6] = 0xFFu; sfnt[OFF_HHEA + 7] = 0x38u;
+            sfnt[OFF_HHEA + 35] = 2u;
+            /* hmtx: gid0 & gid1 adv=600 (0x0258) */
+            sfnt[OFF_HMTX + 0] = 0x02u; sfnt[OFF_HMTX + 1] = 0x58u;
+            sfnt[OFF_HMTX + 4] = 0x02u; sfnt[OFF_HMTX + 5] = 0x58u;
+            /* loca (long): [0, 0, 32] */
+            sfnt[OFF_LOCA + 11] = 32u;
+            /* maxp: numGlyphs=2 */
+            sfnt[OFF_MAXP + 5] = 2u;
+
+            uint8_t fblob[128 + SFNT_SZ];
+            memset(fblob, 0, sizeof(fblob));
+            size_t fo = 0u;
+            memcpy(fblob + fo, "6VSM", 4u); fo += 4u;
+            size_t f_def = fo; fo += 16u; /* def + dbg + async + typecnt */
+            size_t f_start = fo;
+            ttarch_wr_u32(fblob + fo, 11u); fo += 4u; /* mName blk: "TTF" */
+            ttarch_wr_u32(fblob + fo, 3u); fo += 4u;
+            memcpy(fblob + fo, "TTF", 3u); fo += 3u;
+            fblob[fo++] = 1u; fo += 8u; /* mbUnicode=1, mHeight=0, mBase=0 */
+            ttarch_wr_u32(fblob + fo, 8u); fo += 8u; /* mGlyphInfo (0) */
+            ttarch_wr_u32(fblob + fo, 8u); fo += 8u; /* mTexturePages (0) */
+            fo += 3u; /* 3 flags */
+            ttarch_wr_u32(fblob + fo, 8u + SFNT_SZ); fo += 4u;
+            ttarch_wr_u32(fblob + fo, SFNT_SZ); fo += 4u;
+            memcpy(fblob + fo, sfnt, SFNT_SZ); fo += SFNT_SZ;
+            { float bp = 24.0f; memcpy(fblob + fo, &bp, 4u); fo += 4u; }
+            ttarch_wr_u32(fblob + fo, 8u); fo += 8u;
+            ttarch_wr_u32(fblob + f_def, (uint32_t)(fo - f_start));
+
+            twd_font_t ttf_f;
+            TWD_CHECK(twd_font_parse_memory(fblob, fo, &ttf_f) == 0);
+            TWD_CHECK(ttf_f.has_ttf_data == 1 && ttf_f.ttf_ctx != NULL);
+            TWD_CHECK(ttf_f.height > 15.0f && ttf_f.base > 10.0f);
+
+            twd_gfx_desc_t fgd;
+            memset(&fgd, 0, sizeof(fgd));
+            fgd.width = 64u;
+            fgd.height = 64u;
+            fgd.preferred_backend = TWD_GFX_BACKEND_NONE;
+            twd_gfx_device_t *fgdev = twd_gfx_device_create(&fgd);
+            TWD_CHECK(fgdev != NULL);
+            static const float k_blk[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            static const uint8_t k_wht[4] = {255u, 255u, 255u, 255u};
+            twd_gfx_clear(fgdev, k_blk, 1.0f, 0u);
+            float adv = twd_font_draw_text(fgdev, &ttf_f, 4.0f, 4.0f, 1.0f, k_wht, "A");
+            TWD_CHECK(adv > 5.0f);
+            size_t bbsz = 0u;
+            const uint8_t *bb = twd_gfx_backbuffer_data(fgdev, NULL, NULL, &bbsz);
+            int lit = 0;
+            for (size_t pi = 0u; pi + 3u < bbsz; pi += 4u) {
+                if (bb[pi] > 128u && bb[pi + 1u] > 128u && bb[pi + 2u] > 128u) { lit++; }
+            }
+            TWD_CHECK(lit > 10);
+            twd_gfx_device_destroy(fgdev);
+            twd_font_free(&ttf_f);
+        }
+
         twd_crypto_clear_archive_key();
     }
 

@@ -355,6 +355,7 @@ typedef struct twd_font {
     uint32_t page_count;
     uint64_t page_hashes[TWD_FONT_MAX_PAGES];
     const twd_gfx_texture_t *pages[TWD_FONT_MAX_PAGES];
+    void *ttf_ctx;
 } twd_font_t;
 
 int twd_font_parse_memory(const void *data, size_t size, twd_font_t *out);
@@ -388,6 +389,12 @@ int twd_gfx_draw_sprite(
     int32_t sx, int32_t sy, int32_t sw, int32_t sh,
     int32_t dx, int32_t dy, int32_t dw, int32_t dh,
     const uint8_t rgba_tint[4]);
+int twd_gfx_draw_alpha8(
+    twd_gfx_device_t *dev,
+    const uint8_t *alpha,
+    int32_t w, int32_t h,
+    int32_t dx, int32_t dy,
+    const uint8_t rgba[4]);
 
 typedef struct twd_gfx_vertex2d {
     float x, y, z;
@@ -1049,6 +1056,11 @@ int twd_lua_vm_set_global_bool(twd_lua_vm_t *vm, const char *name, int val);
 const twd_lua_val_t *twd_lua_vm_get_global(const twd_lua_vm_t *vm, const char *name);
 int twd_lua_vm_exec_buffer(twd_lua_vm_t *vm, const void *data, size_t len, const char *chunk_name);
 int twd_lua_vm_exec_vfs(twd_lua_vm_t *vm, const char *rel_path);
+int twd_lua_vm_call_global(twd_lua_vm_t *vm,
+                           const char *name,
+                           int argc,
+                           const twd_lua_val_t *argv,
+                           twd_lua_val_t *out_ret);
 uint32_t twd_lua_vm_executed_count(const twd_lua_vm_t *vm);
 twd_lua_chunk_kind_t twd_lua_vm_last_chunk_kind(const twd_lua_vm_t *vm);
 

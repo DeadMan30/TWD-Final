@@ -27,6 +27,641 @@ static float font_rd_f32(const uint8_t *p) {
     return out;
 }
 
+static uint16_t ttf_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8u) | (uint16_t)p[1]);
+}
+
+static int16_t ttf_i16(const uint8_t *p) {
+    uint16_t u = ttf_be16(p);
+    int16_t s = 0;
+    memcpy(&s, &u, sizeof(s));
+    return s;
+}
+
+static uint32_t ttf_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24u) | ((uint32_t)p[1] << 16u) |
+           ((uint32_t)p[2] << 8u) | (uint32_t)p[3];
+}
+
+static int32_t ttf_ifloor(float x) {
+    int32_t i = (int32_t)x;
+    return ((float)i > x) ? (i - 1) : i;
+}
+
+static int32_t ttf_iceil(float x) {
+    int32_t i = (int32_t)x;
+    return ((float)i < x) ? (i + 1) : i;
+}
+
+#define TWD_TTF_CACHE_CAP 256u
+
+typedef struct ttf_glyph_cache_entry {
+    uint32_t codepoint;
+    uint32_t px_round;
+    int32_t x_off;
+    int32_t y_off;
+    int32_t gw;
+    int32_t gh;
+    float x_adv;
+    uint8_t *alpha;
+    int valid;
+} ttf_glyph_cache_entry_t;
+
+typedef struct twd_ttf_ctx {
+    uint8_t *data;
+    size_t size;
+    uint32_t head_off, head_len;
+    uint32_t maxp_off, maxp_len;
+    uint32_t hhea_off, hhea_len;
+    uint32_t hmtx_off, hmtx_len;
+    uint32_t cmap_off, cmap_len;
+    uint32_t loca_off, loca_len;
+    uint32_t glyf_off, glyf_len;
+    uint32_t cmap_fmt4_off;
+    uint32_t cmap_fmt12_off;
+    uint16_t units_per_em;
+    int16_t index_to_loc_fmt;
+    uint16_t num_glyphs;
+    uint16_t num_hmetrics;
+    int16_t ascent;
+    int16_t descent;
+    int16_t line_gap;
+    float default_px;
+    float ascent_ratio;
+    ttf_glyph_cache_entry_t cache[TWD_TTF_CACHE_CAP];
+    uint32_t cache_cursor;
+} twd_ttf_ctx_t;
+
+typedef struct ttf_edge {
+    float x0, y0, x1, y1;
+} ttf_edge_t;
+
+typedef struct ttf_edge_vec {
+    ttf_edge_t *items;
+    uint32_t count;
+    uint32_t cap;
+} ttf_edge_vec_t;
+
+typedef struct ttf_pt {
+    float x, y;
+    uint8_t on_curve;
+} ttf_pt_t;
+
+static int ttf_find_table(const uint8_t *buf, size_t size, uint32_t sfnt_off,
+                          const char tag[4], uint32_t *out_off, uint32_t *out_len) {
+    if (sfnt_off > size || size - sfnt_off < 12u) return -1;
+    uint16_t ntab = ttf_be16(buf + sfnt_off + 4u);
+    if ((size_t)ntab * 16u > size - sfnt_off - 12u) return -1;
+    for (uint16_t i = 0u; i < ntab; ++i) {
+        const uint8_t *rec = buf + sfnt_off + 12u + (size_t)i * 16u;
+        if (memcmp(rec, tag, 4u) == 0) {
+            uint32_t off = ttf_be32(rec + 8u);
+            uint32_t len = ttf_be32(rec + 12u);
+            if (off <= size && len <= size - off) {
+                *out_off = off;
+                *out_len = len;
+                return 0;
+            }
+            return -1;
+        }
+    }
+    return -1;
+}
+
+static void ttf_ctx_destroy(twd_ttf_ctx_t *ctx) {
+    if (!ctx) return;
+    for (uint32_t i = 0u; i < TWD_TTF_CACHE_CAP; ++i) {
+        free(ctx->cache[i].alpha);
+        ctx->cache[i].alpha = NULL;
+        ctx->cache[i].valid = 0;
+    }
+    free(ctx->data);
+    free(ctx);
+}
+
+static twd_ttf_ctx_t *ttf_ctx_create(const uint8_t *src, size_t len, float base_pt,
+                                     float *io_height, float *io_base) {
+    if (!src || len < 16u || len > 64u * 1024u * 1024u) return NULL;
+    twd_ttf_ctx_t *ctx = (twd_ttf_ctx_t *)calloc(1u, sizeof(*ctx));
+    if (!ctx) return NULL;
+    ctx->data = (uint8_t *)malloc(len);
+    if (!ctx->data) {
+        free(ctx);
+        return NULL;
+    }
+    memcpy(ctx->data, src, len);
+    ctx->size = len;
+
+    uint32_t sfnt_off = 0u;
+    if (memcmp(ctx->data, "ttcf", 4u) == 0) {
+        if (len < 16u) { ttf_ctx_destroy(ctx); return NULL; }
+        uint32_t nfonts = ttf_be32(ctx->data + 8u);
+        if (nfonts == 0u) { ttf_ctx_destroy(ctx); return NULL; }
+        sfnt_off = ttf_be32(ctx->data + 12u);
+    }
+    if (sfnt_off > len || len - sfnt_off < 12u) { ttf_ctx_destroy(ctx); return NULL; }
+    uint32_t sfnt_ver = ttf_be32(ctx->data + sfnt_off);
+    if (sfnt_ver != 0x00010000u && sfnt_ver != 0x74727565u) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    if (ttf_find_table(ctx->data, len, sfnt_off, "head", &ctx->head_off, &ctx->head_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "maxp", &ctx->maxp_off, &ctx->maxp_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "hhea", &ctx->hhea_off, &ctx->hhea_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "hmtx", &ctx->hmtx_off, &ctx->hmtx_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "cmap", &ctx->cmap_off, &ctx->cmap_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "loca", &ctx->loca_off, &ctx->loca_len) != 0 ||
+        ttf_find_table(ctx->data, len, sfnt_off, "glyf", &ctx->glyf_off, &ctx->glyf_len) != 0) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+    if (ctx->head_len < 54u || ctx->maxp_len < 6u || ctx->hhea_len < 36u || ctx->cmap_len < 4u) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    ctx->units_per_em = ttf_be16(ctx->data + ctx->head_off + 18u);
+    ctx->index_to_loc_fmt = ttf_i16(ctx->data + ctx->head_off + 50u);
+    ctx->num_glyphs = ttf_be16(ctx->data + ctx->maxp_off + 4u);
+    ctx->ascent = ttf_i16(ctx->data + ctx->hhea_off + 4u);
+    ctx->descent = ttf_i16(ctx->data + ctx->hhea_off + 6u);
+    ctx->line_gap = ttf_i16(ctx->data + ctx->hhea_off + 8u);
+    ctx->num_hmetrics = ttf_be16(ctx->data + ctx->hhea_off + 34u);
+    if (ctx->units_per_em == 0u || ctx->num_glyphs == 0u) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    uint16_t n_sub = ttf_be16(ctx->data + ctx->cmap_off + 2u);
+    for (uint16_t i = 0u; i < n_sub && 4u + (uint32_t)(i + 1u) * 8u <= ctx->cmap_len; ++i) {
+        const uint8_t *rec = ctx->data + ctx->cmap_off + 4u + (size_t)i * 8u;
+        uint16_t pid = ttf_be16(rec);
+        uint16_t eid = ttf_be16(rec + 2u);
+        uint32_t rel = ttf_be32(rec + 4u);
+        if (rel >= ctx->cmap_len || ctx->cmap_len - rel < 4u) continue;
+        uint32_t abs_off = ctx->cmap_off + rel;
+        uint16_t fmt = ttf_be16(ctx->data + abs_off);
+        if (fmt == 12u && (pid == 3u || pid == 0u) && ctx->cmap_fmt12_off == 0u) {
+            ctx->cmap_fmt12_off = abs_off;
+        } else if (fmt == 4u && ((pid == 3u && eid == 1u) || pid == 0u)) {
+            if (ctx->cmap_fmt4_off == 0u || pid == 3u) ctx->cmap_fmt4_off = abs_off;
+        }
+    }
+    if (ctx->cmap_fmt4_off == 0u && ctx->cmap_fmt12_off == 0u) {
+        ttf_ctx_destroy(ctx);
+        return NULL;
+    }
+
+    float px = (base_pt > 0.0f) ? base_pt : ((io_height && *io_height > 0.0f) ? *io_height : 24.0f);
+    ctx->default_px = px;
+    ctx->ascent_ratio = (float)ctx->ascent / (float)ctx->units_per_em;
+    if (io_height && *io_height <= 0.0f) {
+        float h = (float)((int32_t)ctx->ascent - (int32_t)ctx->descent + (int32_t)ctx->line_gap) *
+                  px / (float)ctx->units_per_em;
+        *io_height = (h > 0.0f) ? h : px;
+    }
+    if (io_base && *io_base <= 0.0f) {
+        float b = (float)ctx->ascent * px / (float)ctx->units_per_em;
+        *io_base = (b > 0.0f) ? b : px * 0.8f;
+    }
+    return ctx;
+}
+
+static uint16_t ttf_cmap_lookup(const twd_ttf_ctx_t *ctx, uint32_t cp) {
+    if (ctx->cmap_fmt12_off != 0u && ctx->cmap_fmt12_off + 16u <= ctx->size) {
+        const uint8_t *t = ctx->data + ctx->cmap_fmt12_off;
+        uint32_t ngrp = ttf_be32(t + 12u);
+        uint32_t avail = (uint32_t)(ctx->size - (ctx->cmap_fmt12_off + 16u)) / 12u;
+        if (ngrp > avail) ngrp = avail;
+        uint32_t lo = 0u, hi = ngrp;
+        while (lo < hi) {
+            uint32_t mid = lo + (hi - lo) / 2u;
+            const uint8_t *g = t + 16u + (size_t)mid * 12u;
+            uint32_t sc = ttf_be32(g);
+            uint32_t ec = ttf_be32(g + 4u);
+            if (cp < sc) hi = mid;
+            else if (cp > ec) lo = mid + 1u;
+            else {
+                uint32_t sg = ttf_be32(g + 8u);
+                uint32_t gid = sg + (cp - sc);
+                return (gid < ctx->num_glyphs) ? (uint16_t)gid : 0u;
+            }
+        }
+    }
+    if (ctx->cmap_fmt4_off != 0u && cp <= 0xFFFFu && ctx->cmap_fmt4_off + 14u <= ctx->size) {
+        const uint8_t *t = ctx->data + ctx->cmap_fmt4_off;
+        uint16_t seg_x2 = ttf_be16(t + 6u);
+        uint16_t nseg = (uint16_t)(seg_x2 / 2u);
+        size_t need = 16u + (size_t)nseg * 8u;
+        if (nseg > 0u && ctx->cmap_fmt4_off + need <= ctx->size) {
+            const uint8_t *end_codes = t + 14u;
+            const uint8_t *start_codes = end_codes + (size_t)nseg * 2u + 2u;
+            const uint8_t *id_deltas = start_codes + (size_t)nseg * 2u;
+            const uint8_t *id_ranges = id_deltas + (size_t)nseg * 2u;
+            for (uint16_t i = 0u; i < nseg; ++i) {
+                uint16_t ec = ttf_be16(end_codes + (size_t)i * 2u);
+                uint16_t sc = ttf_be16(start_codes + (size_t)i * 2u);
+                if (cp < sc || cp > ec) continue;
+                int16_t delta = ttf_i16(id_deltas + (size_t)i * 2u);
+                uint16_t roff = ttf_be16(id_ranges + (size_t)i * 2u);
+                if (roff == 0u) {
+                    uint16_t gid = (uint16_t)((uint16_t)cp + (uint16_t)delta);
+                    return (gid < ctx->num_glyphs) ? gid : 0u;
+                }
+                size_t ptr_off = (size_t)(id_ranges + (size_t)i * 2u - ctx->data) +
+                                 (size_t)roff + (size_t)(cp - sc) * 2u;
+                if (ptr_off + 2u <= ctx->size) {
+                    uint16_t gid = ttf_be16(ctx->data + ptr_off);
+                    if (gid != 0u) gid = (uint16_t)(gid + (uint16_t)delta);
+                    return (gid < ctx->num_glyphs) ? gid : 0u;
+                }
+                return 0u;
+            }
+        }
+    }
+    return 0u;
+}
+
+static uint16_t ttf_hmetric_adv(const twd_ttf_ctx_t *ctx, uint16_t gid) {
+    if (ctx->num_hmetrics == 0u || ctx->hmtx_len < 4u) return ctx->units_per_em / 2u;
+    uint16_t idx = (gid < ctx->num_hmetrics) ? gid : (uint16_t)(ctx->num_hmetrics - 1u);
+    size_t off = (size_t)ctx->hmtx_off + (size_t)idx * 4u;
+    if (off + 2u > ctx->size) return ctx->units_per_em / 2u;
+    return ttf_be16(ctx->data + off);
+}
+
+static int ttf_edge_push(ttf_edge_vec_t *v, float x0, float y0, float x1, float y1) {
+    if (y0 == y1) return 0;
+    if (v->count >= v->cap) {
+        uint32_t ncap = v->cap ? v->cap * 2u : 128u;
+        ttf_edge_t *ni = (ttf_edge_t *)realloc(v->items, (size_t)ncap * sizeof(ttf_edge_t));
+        if (!ni) return -1;
+        v->items = ni;
+        v->cap = ncap;
+    }
+    v->items[v->count].x0 = x0;
+    v->items[v->count].y0 = y0;
+    v->items[v->count].x1 = x1;
+    v->items[v->count].y1 = y1;
+    v->count++;
+    return 0;
+}
+
+static void ttf_emit_quad(ttf_edge_vec_t *v, float x0, float y0, float x1, float y1,
+                          float x2, float y2, float px_scale,
+                          float a, float b, float c, float d, float tx, float ty) {
+    enum { NSEG = 6 };
+    float sx = (x0 * a + y0 * c + tx) * px_scale;
+    float sy = -(x0 * b + y0 * d + ty) * px_scale;
+    for (int s = 1; s <= NSEG; ++s) {
+        float t = (float)s / (float)NSEG;
+        float it = 1.0f - t;
+        float qx = it * it * x0 + 2.0f * it * t * x1 + t * t * x2;
+        float qy = it * it * y0 + 2.0f * it * t * y1 + t * t * y2;
+        float nx = (qx * a + qy * c + tx) * px_scale;
+        float ny = -(qx * b + qy * d + ty) * px_scale;
+        (void)ttf_edge_push(v, sx, sy, nx, ny);
+        sx = nx;
+        sy = ny;
+    }
+}
+
+static void ttf_decode_glyph(const twd_ttf_ctx_t *ctx, uint16_t gid, float px_scale,
+                             float ma, float mb, float mc, float md, float mtx, float mty,
+                             int depth, ttf_edge_vec_t *out) {
+    if (depth > 4 || gid >= ctx->num_glyphs) return;
+    uint32_t g0 = 0u, g1 = 0u;
+    if (ctx->index_to_loc_fmt == 0) {
+        size_t off = (size_t)ctx->loca_off + (size_t)gid * 2u;
+        if (off + 4u > ctx->loca_off + ctx->loca_len) return;
+        g0 = (uint32_t)ttf_be16(ctx->data + off) * 2u;
+        g1 = (uint32_t)ttf_be16(ctx->data + off + 2u) * 2u;
+    } else {
+        size_t off = (size_t)ctx->loca_off + (size_t)gid * 4u;
+        if (off + 8u > ctx->loca_off + ctx->loca_len) return;
+        g0 = ttf_be32(ctx->data + off);
+        g1 = ttf_be32(ctx->data + off + 4u);
+    }
+    if (g1 <= g0 || g1 > ctx->glyf_len || g1 - g0 < 10u) return;
+
+    const uint8_t *g = ctx->data + ctx->glyf_off + g0;
+    const uint8_t *gend = ctx->data + ctx->glyf_off + g1;
+    int16_t ncont = ttf_i16(g);
+    const uint8_t *p = g + 10u;
+
+    if (ncont < 0) {
+        /* Compound glyph */
+        uint16_t flags = 0u;
+        do {
+            if (p + 4u > gend) break;
+            flags = ttf_be16(p);
+            uint16_t sub_gid = ttf_be16(p + 2u);
+            p += 4u;
+            int32_t arg1 = 0, arg2 = 0;
+            if (flags & 0x0001u) {
+                if (p + 4u > gend) break;
+                arg1 = ttf_i16(p);
+                arg2 = ttf_i16(p + 2u);
+                p += 4u;
+            } else {
+                if (p + 2u > gend) break;
+                arg1 = (int8_t)p[0];
+                arg2 = (int8_t)p[1];
+                p += 2u;
+            }
+            float ca = 1.0f, cb = 0.0f, cc = 0.0f, cd = 1.0f;
+            if (flags & 0x0008u) {
+                if (p + 2u > gend) break;
+                ca = cd = (float)ttf_i16(p) / 16384.0f;
+                p += 2u;
+            } else if (flags & 0x0040u) {
+                if (p + 4u > gend) break;
+                ca = (float)ttf_i16(p) / 16384.0f;
+                cd = (float)ttf_i16(p + 2u) / 16384.0f;
+                p += 4u;
+            } else if (flags & 0x0080u) {
+                if (p + 8u > gend) break;
+                ca = (float)ttf_i16(p) / 16384.0f;
+                cb = (float)ttf_i16(p + 2u) / 16384.0f;
+                cc = (float)ttf_i16(p + 4u) / 16384.0f;
+                cd = (float)ttf_i16(p + 6u) / 16384.0f;
+                p += 8u;
+            }
+            float dx = (flags & 0x0002u) ? (float)arg1 : 0.0f;
+            float dy = (flags & 0x0002u) ? (float)arg2 : 0.0f;
+            float na = ca * ma + cb * mc;
+            float nb = ca * mb + cb * md;
+            float nc = cc * ma + cd * mc;
+            float nd = cc * mb + cd * md;
+            float ntx = dx * ma + dy * mc + mtx;
+            float nty = dx * mb + dy * md + mty;
+            ttf_decode_glyph(ctx, sub_gid, px_scale, na, nb, nc, nd, ntx, nty, depth + 1, out);
+        } while (flags & 0x0020u);
+        return;
+    }
+
+    if (ncont == 0 || (size_t)ncont * 2u + 2u > (size_t)(gend - p)) return;
+    uint16_t last_pt = ttf_be16(p + (size_t)(ncont - 1) * 2u);
+    uint32_t npts = (uint32_t)last_pt + 1u;
+    if (npts > 8192u) return;
+    const uint8_t *end_pts = p;
+    p += (size_t)ncont * 2u;
+    uint16_t inst_len = ttf_be16(p);
+    p += 2u;
+    if ((size_t)inst_len > (size_t)(gend - p)) return;
+    p += inst_len;
+
+    uint8_t *flags = (uint8_t *)malloc(npts);
+    ttf_pt_t *pts = (ttf_pt_t *)calloc(npts, sizeof(ttf_pt_t));
+    if (!flags || !pts) {
+        free(flags);
+        free(pts);
+        return;
+    }
+
+    uint32_t fi = 0u;
+    while (fi < npts && p < gend) {
+        uint8_t fl = *p++;
+        flags[fi++] = fl;
+        if ((fl & 0x08u) && p < gend) {
+            uint8_t rep = *p++;
+            while (rep-- > 0u && fi < npts) flags[fi++] = fl;
+        }
+    }
+    if (fi < npts) { free(flags); free(pts); return; }
+
+    int32_t cx = 0;
+    for (uint32_t i = 0u; i < npts; ++i) {
+        uint8_t fl = flags[i];
+        int32_t dx = 0;
+        if (fl & 0x02u) {
+            if (p >= gend) { free(flags); free(pts); return; }
+            dx = (fl & 0x10u) ? (int32_t)(*p++) : -(int32_t)(*p++);
+        } else if (!(fl & 0x10u)) {
+            if (p + 2u > gend) { free(flags); free(pts); return; }
+            dx = ttf_i16(p);
+            p += 2u;
+        }
+        cx += dx;
+        pts[i].x = (float)cx;
+        pts[i].on_curve = (fl & 0x01u) ? 1u : 0u;
+    }
+
+    int32_t cy = 0;
+    for (uint32_t i = 0u; i < npts; ++i) {
+        uint8_t fl = flags[i];
+        int32_t dy = 0;
+        if (fl & 0x04u) {
+            if (p >= gend) { free(flags); free(pts); return; }
+            dy = (fl & 0x20u) ? (int32_t)(*p++) : -(int32_t)(*p++);
+        } else if (!(fl & 0x20u)) {
+            if (p + 2u > gend) { free(flags); free(pts); return; }
+            dy = ttf_i16(p);
+            p += 2u;
+        }
+        cy += dy;
+        pts[i].y = (float)cy;
+    }
+
+    uint32_t start = 0u;
+    for (int16_t c = 0; c < ncont; ++c) {
+        uint32_t end = (uint32_t)ttf_be16(end_pts + (size_t)c * 2u);
+        if (end < start || end >= npts) break;
+        uint32_t len = (end - start) + 1u;
+        if (len >= 2u) {
+            uint32_t idx0 = start;
+            ttf_pt_t cur;
+            if (pts[start].on_curve) {
+                cur = pts[start];
+                idx0 = start + 1u;
+            } else if (pts[end].on_curve) {
+                cur = pts[end];
+            } else {
+                cur.x = 0.5f * (pts[start].x + pts[end].x);
+                cur.y = 0.5f * (pts[start].y + pts[end].y);
+                cur.on_curve = 1u;
+            }
+            ttf_pt_t first_pt = cur;
+            uint32_t steps = (pts[start].on_curve) ? (len - 1u) : len;
+            ttf_pt_t off = {0.0f, 0.0f, 0u};
+            int has_off = 0;
+            for (uint32_t s = 0u; s < steps; ++s) {
+                uint32_t idx = start + ((idx0 - start + s) % len);
+                ttf_pt_t pt = pts[idx];
+                if (pt.on_curve) {
+                    if (has_off) {
+                        ttf_emit_quad(out, cur.x, cur.y, off.x, off.y, pt.x, pt.y,
+                                      px_scale, ma, mb, mc, md, mtx, mty);
+                        has_off = 0;
+                    } else {
+                        float x0 = (cur.x * ma + cur.y * mc + mtx) * px_scale;
+                        float y0 = -(cur.x * mb + cur.y * md + mty) * px_scale;
+                        float x1 = (pt.x * ma + pt.y * mc + mtx) * px_scale;
+                        float y1 = -(pt.x * mb + pt.y * md + mty) * px_scale;
+                        (void)ttf_edge_push(out, x0, y0, x1, y1);
+                    }
+                    cur = pt;
+                } else {
+                    if (has_off) {
+                        ttf_pt_t mid;
+                        mid.x = 0.5f * (off.x + pt.x);
+                        mid.y = 0.5f * (off.y + pt.y);
+                        ttf_emit_quad(out, cur.x, cur.y, off.x, off.y, mid.x, mid.y,
+                                      px_scale, ma, mb, mc, md, mtx, mty);
+                        cur = mid;
+                    }
+                    off = pt;
+                    has_off = 1;
+                }
+            }
+            if (has_off) {
+                ttf_emit_quad(out, cur.x, cur.y, off.x, off.y, first_pt.x, first_pt.y,
+                              px_scale, ma, mb, mc, md, mtx, mty);
+            } else if (cur.x != first_pt.x || cur.y != first_pt.y) {
+                float x0 = (cur.x * ma + cur.y * mc + mtx) * px_scale;
+                float y0 = -(cur.x * mb + cur.y * md + mty) * px_scale;
+                float x1 = (first_pt.x * ma + first_pt.y * mc + mtx) * px_scale;
+                float y1 = -(first_pt.x * mb + first_pt.y * md + mty) * px_scale;
+                (void)ttf_edge_push(out, x0, y0, x1, y1);
+            }
+        }
+        start = end + 1u;
+    }
+    free(flags);
+    free(pts);
+}
+
+typedef struct ttf_crossing {
+    float x;
+    int dir;
+} ttf_crossing_t;
+
+static const ttf_glyph_cache_entry_t *ttf_get_glyph(twd_ttf_ctx_t *ctx, uint32_t cp, float px_h) {
+    if (!ctx) return NULL;
+    if (px_h < 6.0f) px_h = 6.0f;
+    if (px_h > 128.0f) px_h = 128.0f;
+    uint32_t px_round = (uint32_t)(px_h + 0.5f);
+
+    for (uint32_t i = 0u; i < TWD_TTF_CACHE_CAP; ++i) {
+        if (ctx->cache[i].valid && ctx->cache[i].codepoint == cp &&
+            ctx->cache[i].px_round == px_round) {
+            return &ctx->cache[i];
+        }
+    }
+
+    uint32_t slot = ctx->cache_cursor % TWD_TTF_CACHE_CAP;
+    ctx->cache_cursor++;
+    ttf_glyph_cache_entry_t *ent = &ctx->cache[slot];
+    free(ent->alpha);
+    memset(ent, 0, sizeof(*ent));
+    ent->codepoint = cp;
+    ent->px_round = px_round;
+    ent->valid = 1;
+
+    uint16_t gid = ttf_cmap_lookup(ctx, cp);
+    float px_scale = (float)px_round / (float)ctx->units_per_em;
+    ent->x_adv = (float)ttf_hmetric_adv(ctx, gid) * px_scale;
+
+    ttf_edge_vec_t edges = {NULL, 0u, 0u};
+    ttf_decode_glyph(ctx, gid, px_scale, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0, &edges);
+    if (edges.count == 0u) {
+        free(edges.items);
+        return ent;
+    }
+
+    float minx = edges.items[0].x0, maxx = edges.items[0].x0;
+    float miny = edges.items[0].y0, maxy = edges.items[0].y0;
+    for (uint32_t i = 0u; i < edges.count; ++i) {
+        const ttf_edge_t *e = &edges.items[i];
+        if (e->x0 < minx) minx = e->x0;
+        if (e->x0 > maxx) maxx = e->x0;
+        if (e->x1 < minx) minx = e->x1;
+        if (e->x1 > maxx) maxx = e->x1;
+        if (e->y0 < miny) miny = e->y0;
+        if (e->y0 > maxy) maxy = e->y0;
+        if (e->y1 < miny) miny = e->y1;
+        if (e->y1 > maxy) maxy = e->y1;
+    }
+
+    int32_t ix0 = ttf_ifloor(minx);
+    int32_t iy0 = ttf_ifloor(miny);
+    int32_t ix1 = ttf_iceil(maxx);
+    int32_t iy1 = ttf_iceil(maxy);
+    int32_t gw = ix1 - ix0;
+    int32_t gh = iy1 - iy0;
+    if (gw <= 0 || gh <= 0 || gw > 256 || gh > 256) {
+        free(edges.items);
+        return ent;
+    }
+
+    uint8_t *alpha = (uint8_t *)calloc((size_t)gw * (size_t)gh, 1u);
+    if (!alpha) {
+        free(edges.items);
+        return ent;
+    }
+
+    uint16_t *row_cov = (uint16_t *)calloc((size_t)gw, sizeof(uint16_t));
+    ttf_crossing_t xings[512];
+    if (!row_cov) {
+        free(alpha);
+        free(edges.items);
+        return ent;
+    }
+
+    for (int32_t row = 0; row < gh; ++row) {
+        memset(row_cov, 0, (size_t)gw * sizeof(uint16_t));
+        for (int sy = 0; sy < 4; ++sy) {
+            float py = (float)(iy0 + row) + ((float)sy + 0.5f) * 0.25f;
+            uint32_t nx = 0u;
+            for (uint32_t ei = 0u; ei < edges.count && nx < 512u; ++ei) {
+                const ttf_edge_t *e = &edges.items[ei];
+                int down = (e->y0 <= py && e->y1 > py);
+                int up = (e->y1 <= py && e->y0 > py);
+                if (!down && !up) continue;
+                float t = (py - e->y0) / (e->y1 - e->y0);
+                xings[nx].x = e->x0 + t * (e->x1 - e->x0);
+                xings[nx].dir = down ? 1 : -1;
+                nx++;
+            }
+            for (uint32_t i = 1u; i < nx; ++i) {
+                ttf_crossing_t key = xings[i];
+                uint32_t j = i;
+                while (j > 0u && xings[j - 1u].x > key.x) {
+                    xings[j] = xings[j - 1u];
+                    j--;
+                }
+                xings[j] = key;
+            }
+            uint32_t xi = 0u;
+            int wind = 0;
+            for (int32_t col = 0; col < gw; ++col) {
+                for (int sx = 0; sx < 4; ++sx) {
+                    float px = (float)(ix0 + col) + ((float)sx + 0.5f) * 0.25f;
+                    while (xi < nx && xings[xi].x <= px) {
+                        wind += xings[xi].dir;
+                        xi++;
+                    }
+                    if (wind != 0) row_cov[col]++;
+                }
+            }
+        }
+        for (int32_t col = 0; col < gw; ++col) {
+            uint16_t c = row_cov[col];
+            alpha[(size_t)row * (size_t)gw + (size_t)col] = (uint8_t)((c * 255u + 8u) / 16u);
+        }
+    }
+
+    free(row_cov);
+    free(edges.items);
+    ent->x_off = ix0;
+    ent->y_off = iy0;
+    ent->gw = gw;
+    ent->gh = gh;
+    ent->alpha = alpha;
+    return ent;
+}
+
 static int font_read_block(const uint8_t *buf, size_t limit, size_t *cursor,
                            size_t *out_start, size_t *out_end) {
     if (*cursor + 4u > limit) return -1;
@@ -43,6 +678,7 @@ static int font_read_block(const uint8_t *buf, size_t limit, size_t *cursor,
 
 void twd_font_free(twd_font_t *font) {
     if (!font) return;
+    ttf_ctx_destroy((twd_ttf_ctx_t *)font->ttf_ctx);
     free(font->glyphs);
     memset(font, 0, sizeof(*font));
 }
@@ -144,10 +780,18 @@ int twd_font_parse_memory(const void *data, size_t size, twd_font_t *out) {
     }
 
     /* Optional mTtfData (blocked BinaryBuffer), mBasePointSize (f32), mPreferredPointSizes */
+    const uint8_t *ttf_ptr = NULL;
+    size_t ttf_len = 0u;
     if (pos + 4u <= limit && font_read_block(buf, limit, &pos, &bs, &be) == 0) {
         if (be - bs >= 4u) {
             int32_t ttf_sz = font_rd_i32(buf + bs);
-            out->has_ttf_data = (ttf_sz > 0) ? 1 : 0;
+            if (ttf_sz > 0) {
+                out->has_ttf_data = 1;
+                if ((size_t)ttf_sz <= (be - bs) - 4u) {
+                    ttf_ptr = buf + bs + 4u;
+                    ttf_len = (size_t)ttf_sz;
+                }
+            }
         }
         if (pos + 4u <= limit) {
             out->base_point_size = font_rd_f32(buf + pos);
@@ -156,6 +800,9 @@ int twd_font_parse_memory(const void *data, size_t size, twd_font_t *out) {
         if (pos + 4u <= limit) {
             (void)font_read_block(buf, limit, &pos, NULL, NULL);
         }
+    }
+    if (ttf_ptr && ttf_len > 0u) {
+        out->ttf_ctx = ttf_ctx_create(ttf_ptr, ttf_len, out->base_point_size, &out->height, &out->base);
     }
     return 0;
 }
@@ -225,6 +872,9 @@ float twd_font_draw_text(
     (void)bb_sz;
     if (!bb_ro || bb_w == 0u || bb_h == 0u) return 0.0f;
 
+    twd_ttf_ctx_t *ttf = (twd_ttf_ctx_t *)font->ttf_ctx;
+    float line_h = (font->height > 0.0f) ? font->height : (ttf ? ttf->default_px : 16.0f);
+
     float pen_x = x;
     float pen_y = y;
     const char *p = utf8_text;
@@ -232,10 +882,24 @@ float twd_font_draw_text(
         uint32_t cp = next_utf8_cp(&p);
         if (cp == '\n') {
             pen_x = x;
-            pen_y += (font->height > 0.0f ? font->height : 16.0f) * scale;
+            pen_y += line_h * scale;
             continue;
         }
         const twd_font_glyph_t *g = twd_font_find_glyph(font, cp);
+        if (!g && ttf) {
+            float target_px = ttf->default_px * scale;
+            const ttf_glyph_cache_entry_t *cg = ttf_get_glyph(ttf, cp, target_px);
+            if (cg) {
+                if (cg->alpha && cg->gw > 0 && cg->gh > 0) {
+                    float baseline_y = pen_y + (float)cg->px_round * ttf->ascent_ratio;
+                    int32_t dx = (int32_t)(pen_x + (float)cg->x_off + 0.5f);
+                    int32_t dy = (int32_t)(baseline_y + (float)cg->y_off + 0.5f);
+                    (void)twd_gfx_draw_alpha8(dev, cg->alpha, cg->gw, cg->gh, dx, dy, col);
+                }
+                pen_x += (cg->x_adv > 0.0f) ? cg->x_adv : (8.0f * scale);
+                continue;
+            }
+        }
         if (!g) {
             pen_x += 8.0f * scale;
             continue;

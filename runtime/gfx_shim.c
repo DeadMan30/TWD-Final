@@ -757,6 +757,46 @@ int twd_gfx_draw_sprite(
     return 0;
 }
 
+int twd_gfx_draw_alpha8(
+    twd_gfx_device_t *dev,
+    const uint8_t *alpha,
+    int32_t w, int32_t h,
+    int32_t dx, int32_t dy,
+    const uint8_t rgba[4]) {
+    if (!dev || !dev->backbuffer || !alpha || !rgba || w <= 0 || h <= 0) {
+        return -1;
+    }
+    int32_t x0 = (dx < 0) ? 0 : dx;
+    int32_t y0 = (dy < 0) ? 0 : dy;
+    int32_t x1 = dx + w;
+    int32_t y1 = dy + h;
+    if (x1 > (int32_t)dev->width) x1 = (int32_t)dev->width;
+    if (y1 > (int32_t)dev->height) y1 = (int32_t)dev->height;
+    if (x0 >= x1 || y0 >= y1) {
+        dev->draw_calls++;
+        return 0;
+    }
+
+    uint8_t cr = rgba[0];
+    uint8_t cg = rgba[1];
+    uint8_t cb = rgba[2];
+    uint32_t ca = rgba[3];
+    for (int32_t y = y0; y < y1; ++y) {
+        const uint8_t *srow = alpha + (size_t)(y - dy) * (size_t)w + (size_t)(x0 - dx);
+        uint8_t *drow = dev->backbuffer + ((size_t)y * (size_t)dev->width + (size_t)x0) * 4u;
+        for (int32_t x = x0; x < x1; ++x) {
+            uint8_t cov = *srow++;
+            if (cov != 0u) {
+                uint8_t a = (uint8_t)((ca * (uint32_t)cov) / 255u);
+                blend_pixel_rgba8(drow, cr, cg, cb, a);
+            }
+            drow += 4u;
+        }
+    }
+    dev->draw_calls++;
+    return 0;
+}
+
 static float tri_edge(float ax, float ay, float bx, float by, float px, float py) {
     return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 }
