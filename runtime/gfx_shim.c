@@ -1,8 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "twd_runtime.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef struct gfx_hw_batch {
+    uint32_t start_vert;
+    uint32_t vert_count;
+    uint32_t gl_tex;
+    uint8_t use_z;
+    uint8_t _pad[3];
+} gfx_hw_batch_t;
 
 struct twd_gfx_device {
     int32_t refs;
@@ -21,6 +37,21 @@ struct twd_gfx_device {
     unsigned int (*egl_destroy_context)(void *dpy, void *ctx);
     unsigned int (*egl_terminate)(void *dpy);
     void *gl_lib;
+    int gl_ctx_ready;
+    int is_gles;
+    int (*custom_swap_buffers)(void *user);
+    void *custom_swap_user;
+#ifdef _WIN32
+    HWND win_hwnd;
+    HDC win_hdc;
+    HGLRC wgl_hglrc;
+    void *win_gdi_lib;
+    void *win_user_lib;
+    BOOL (WINAPI *wgl_delete_context)(HGLRC);
+    BOOL (WINAPI *wgl_make_current)(HDC, HGLRC);
+    BOOL (WINAPI *gdi_swap_buffers)(HDC);
+    int (WINAPI *user_release_dc)(HWND, HDC);
+#endif
     void (*gl_viewport)(int32_t x, int32_t y, int32_t w, int32_t h);
     void (*gl_scissor)(int32_t x, int32_t y, int32_t w, int32_t h);
     void (*gl_clear_color)(float r, float g, float b, float a);
@@ -47,12 +78,57 @@ struct twd_gfx_device {
     void (*gl_shader_source)(uint32_t shader, int32_t count, const char *const *str, const int32_t *len);
     void (*gl_compile_shader)(uint32_t shader);
     void (*gl_delete_shader)(uint32_t shader);
+    void (*gl_get_shader_iv)(uint32_t shader, uint32_t pname, int32_t *params);
     uint32_t (*gl_create_program)(void);
     void (*gl_attach_shader)(uint32_t program, uint32_t shader);
     void (*gl_link_program)(uint32_t program);
     void (*gl_use_program)(uint32_t program);
     void (*gl_delete_program)(uint32_t program);
+    void (*gl_get_program_iv)(uint32_t program, uint32_t pname, int32_t *params);
+    int32_t (*gl_get_attrib_location)(uint32_t program, const char *name);
+    int32_t (*gl_get_uniform_location)(uint32_t program, const char *name);
+    void (*gl_enable_vertex_attrib_array)(uint32_t index);
+    void (*gl_disable_vertex_attrib_array)(uint32_t index);
+    void (*gl_vertex_attrib_pointer)(uint32_t index, int32_t size, uint32_t type,
+                                     uint8_t normalized, int32_t stride, const void *pointer);
+    void (*gl_uniform_1i)(int32_t location, int32_t v0);
+    void (*gl_uniform_1f)(int32_t location, float v0);
+    void (*gl_uniform_2f)(int32_t location, float v0, float v1);
+    void (*gl_uniform_4f)(int32_t location, float v0, float v1, float v2, float v3);
+    void (*gl_enable)(uint32_t cap);
+    void (*gl_disable)(uint32_t cap);
+    void (*gl_depth_func)(uint32_t func);
+    void (*gl_depth_mask)(uint8_t flag);
+    void (*gl_blend_func)(uint32_t sfactor, uint32_t dfactor);
+    void (*gl_gen_vertex_arrays)(int32_t n, uint32_t *arrays);
+    void (*gl_delete_vertex_arrays)(int32_t n, const uint32_t *arrays);
+    void (*gl_bind_vertex_array)(uint32_t array);
     uint32_t gl_active_program;
+    uint32_t tri_gl_program;
+    int32_t tri_a_pos;
+    int32_t tri_a_uv;
+    int32_t tri_a_col;
+    int32_t tri_u_viewport;
+    int32_t tri_u_tex;
+    int32_t tri_u_use_tex;
+    int32_t tri_u_use_z;
+    int tri_pipeline_failed;
+    uint32_t tri_gl_vbo;
+    uint32_t tri_gl_vao;
+    uint32_t tri_gl_white_tex;
+    uint32_t overlay_gl_tex;
+    uint32_t overlay_tex_w;
+    uint32_t overlay_tex_h;
+    int backbuffer_dirty;
+    twd_gfx_vertex2d_t *gpu_tri_verts;
+    size_t gpu_tri_vert_count;
+    size_t gpu_tri_vert_cap;
+    gfx_hw_batch_t *gpu_tri_batches;
+    size_t gpu_tri_batch_count;
+    size_t gpu_tri_batch_cap;
+    uint64_t hw_tri_flushes;
+    uint64_t hw_tri_verts_submitted;
+    uint64_t hw_overlay_blits;
     uint32_t width;
     uint32_t height;
     int vsync;
@@ -131,6 +207,142 @@ int twd_gfx_select_backend(int preferred) {
 #endif
 }
 
+typedef void *(*gfx_get_proc_fn)(const char *name);
+
+static void *gfx_sym_resolve(void *lib, gfx_get_proc_fn get_proc, const char *name) {
+    void *p = lib ? twd_dynlib_sym(lib, name) : NULL;
+    if (!p && get_proc) {
+        p = get_proc(name);
+    }
+    return p;
+}
+
+static void gfx_load_gl_procs_from_lib(
+    twd_gfx_device_t *dev, void *lib, gfx_get_proc_fn get_proc, int is_gles) {
+    if (!dev || (!lib && !get_proc)) return;
+    typedef void (*gl_vp_fn)(int32_t, int32_t, int32_t, int32_t);
+    typedef void (*gl_cc_fn)(float, float, float, float);
+    typedef void (*gl_clr_fn)(uint32_t);
+    typedef void (*gl_da_fn)(uint32_t, int32_t, int32_t);
+    typedef void (*gl_de_fn)(uint32_t, int32_t, uint32_t, const void *);
+    typedef void (*gl_gen_fn)(int32_t, uint32_t *);
+    typedef void (*gl_del_fn)(int32_t, const uint32_t *);
+    typedef void (*gl_bind_fn)(uint32_t, uint32_t);
+    typedef void (*gl_bdata_fn)(uint32_t, ptrdiff_t, const void *, uint32_t);
+    typedef void (*gl_bsub_fn)(uint32_t, ptrdiff_t, ptrdiff_t, const void *);
+    typedef void (*gl_tex2d_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
+    typedef void (*gl_texsub_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
+    typedef void (*gl_texparam_fn)(uint32_t, uint32_t, int32_t);
+    typedef uint32_t (*gl_mk_sh_fn)(uint32_t);
+    typedef void (*gl_sh_src_fn)(uint32_t, int32_t, const char *const *, const int32_t *);
+    typedef void (*gl_u32_fn)(uint32_t);
+    typedef void (*gl_iv_fn)(uint32_t, uint32_t, int32_t *);
+    typedef uint32_t (*gl_mk_prog_fn)(void);
+    typedef void (*gl_attach_fn)(uint32_t, uint32_t);
+    typedef int32_t (*gl_loc_fn)(uint32_t, const char *);
+    typedef void (*gl_vap_fn)(uint32_t, int32_t, uint32_t, uint8_t, int32_t, const void *);
+    typedef void (*gl_u1i_fn)(int32_t, int32_t);
+    typedef void (*gl_u1f_fn)(int32_t, float);
+    typedef void (*gl_u2f_fn)(int32_t, float, float);
+    typedef void (*gl_u4f_fn)(int32_t, float, float, float, float);
+    typedef void (*gl_u8_fn)(uint8_t);
+    typedef void (*gl_blend_fn)(uint32_t, uint32_t);
+
+    dev->is_gles = is_gles ? 1 : 0;
+    dev->gl_viewport = (gl_vp_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glViewport");
+    dev->gl_scissor = (gl_vp_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glScissor");
+    dev->gl_clear_color = (gl_cc_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glClearColor");
+    dev->gl_clear = (gl_clr_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glClear");
+    dev->gl_draw_arrays = (gl_da_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDrawArrays");
+    dev->gl_draw_elements = (gl_de_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDrawElements");
+    if (dev->gl_clear_color && dev->gl_clear && dev->gl_draw_arrays) {
+        dev->driver_caps |= 4;
+    }
+
+    dev->gl_gen_buffers = (gl_gen_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGenBuffers");
+    dev->gl_delete_buffers = (gl_del_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteBuffers");
+    dev->gl_bind_buffer = (gl_bind_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBindBuffer");
+    dev->gl_buffer_data = (gl_bdata_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBufferData");
+    dev->gl_buffer_sub_data = (gl_bsub_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBufferSubData");
+    dev->gl_gen_textures = (gl_gen_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGenTextures");
+    dev->gl_delete_textures = (gl_del_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteTextures");
+    dev->gl_active_texture = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glActiveTexture");
+    dev->gl_bind_texture = (gl_bind_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBindTexture");
+    dev->gl_tex_image_2d = (gl_tex2d_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glTexImage2D");
+    dev->gl_tex_sub_image_2d = (gl_texsub_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glTexSubImage2D");
+    dev->gl_tex_parameter_i = (gl_texparam_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glTexParameteri");
+    dev->gl_create_shader = (gl_mk_sh_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glCreateShader");
+    dev->gl_shader_source = (gl_sh_src_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glShaderSource");
+    dev->gl_compile_shader = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glCompileShader");
+    dev->gl_delete_shader = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteShader");
+    dev->gl_get_shader_iv = (gl_iv_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetShaderiv");
+    dev->gl_create_program = (gl_mk_prog_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glCreateProgram");
+    dev->gl_attach_shader = (gl_attach_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glAttachShader");
+    dev->gl_link_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glLinkProgram");
+    dev->gl_use_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUseProgram");
+    dev->gl_delete_program = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteProgram");
+    dev->gl_get_program_iv = (gl_iv_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetProgramiv");
+    dev->gl_get_attrib_location = (gl_loc_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetAttribLocation");
+    dev->gl_get_uniform_location = (gl_loc_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGetUniformLocation");
+    dev->gl_enable_vertex_attrib_array = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glEnableVertexAttribArray");
+    dev->gl_disable_vertex_attrib_array = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDisableVertexAttribArray");
+    dev->gl_vertex_attrib_pointer = (gl_vap_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glVertexAttribPointer");
+    dev->gl_uniform_1i = (gl_u1i_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUniform1i");
+    dev->gl_uniform_1f = (gl_u1f_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUniform1f");
+    dev->gl_uniform_2f = (gl_u2f_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUniform2f");
+    dev->gl_uniform_4f = (gl_u4f_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glUniform4f");
+    dev->gl_enable = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glEnable");
+    dev->gl_disable = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDisable");
+    dev->gl_depth_func = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDepthFunc");
+    dev->gl_depth_mask = (gl_u8_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDepthMask");
+    dev->gl_blend_func = (gl_blend_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBlendFunc");
+    dev->gl_gen_vertex_arrays = (gl_gen_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glGenVertexArrays");
+    dev->gl_delete_vertex_arrays = (gl_del_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glDeleteVertexArrays");
+    dev->gl_bind_vertex_array = (gl_u32_fn)(uintptr_t)gfx_sym_resolve(lib, get_proc, "glBindVertexArray");
+
+    if (dev->gl_gen_buffers && dev->gl_buffer_data && dev->gl_gen_textures &&
+        dev->gl_tex_image_2d && dev->gl_create_shader && dev->gl_create_program) {
+        dev->driver_caps |= 8;
+    }
+}
+
+#ifdef _WIN32
+typedef PROC (WINAPI *twd_wgl_get_proc_fn)(LPCSTR);
+static twd_wgl_get_proc_fn g_active_wgl_get_proc = NULL;
+
+static void *gfx_wgl_proc_adapter(const char *name) {
+    if (!g_active_wgl_get_proc || !name) return NULL;
+    PROC p = g_active_wgl_get_proc(name);
+    uintptr_t addr = (uintptr_t)p;
+    if (addr == 0u || addr == 1u || addr == 2u || addr == 3u || addr == (uintptr_t)-1) {
+        return NULL;
+    }
+    return (void *)addr;
+}
+#endif
+
+static int gfx_is_gl_active(const twd_gfx_device_t *dev) {
+    if (!dev || dev->backend != TWD_GFX_BACKEND_GLES3) return 0;
+    if (!(dev->driver_caps & 4)) return 0;
+    return (dev->egl_surface != NULL || dev->gl_ctx_ready != 0) ? 1 : 0;
+}
+
+static int gfx_can_hw_triangles(const twd_gfx_device_t *dev) {
+    if (!gfx_is_gl_active(dev)) return 0;
+    if (!(dev->driver_caps & 8)) return 0;
+    if (!dev->gl_bind_buffer || !dev->gl_delete_buffers || !dev->gl_delete_textures ||
+        !dev->gl_bind_texture || !dev->gl_shader_source || !dev->gl_compile_shader ||
+        !dev->gl_attach_shader || !dev->gl_link_program || !dev->gl_use_program ||
+        !dev->gl_get_attrib_location || !dev->gl_get_uniform_location ||
+        !dev->gl_enable_vertex_attrib_array || !dev->gl_vertex_attrib_pointer ||
+        !dev->gl_uniform_1i || !dev->gl_uniform_2f ||
+        !dev->gl_enable || !dev->gl_disable || !dev->gl_depth_func ||
+        !dev->gl_depth_mask || !dev->gl_blend_func) {
+        return 0;
+    }
+    return !dev->tri_pipeline_failed;
+}
+
 twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
     twd_gfx_device_t *dev = (twd_gfx_device_t *)calloc(1, sizeof(*dev));
     if (!dev) return NULL;
@@ -144,6 +356,13 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
     dev->viewport.width = (float)dev->width;
     dev->viewport.height = (float)dev->height;
     dev->viewport.max_depth = 1.0f;
+    dev->tri_a_pos = -1;
+    dev->tri_a_uv = -1;
+    dev->tri_a_col = -1;
+    dev->tri_u_viewport = -1;
+    dev->tri_u_tex = -1;
+    dev->tri_u_use_tex = -1;
+    dev->tri_u_use_z = -1;
     if ((size_t)dev->width <= ((size_t)-1) / 4u / (size_t)dev->height) {
         size_t bb_sz = (size_t)dev->width * (size_t)dev->height * 4u;
         dev->backbuffer = (uint8_t *)calloc(1u, bb_sz ? bb_sz : 4u);
@@ -220,6 +439,9 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
         egl_swap_fn eglSwap = dev->backend_lib
             ? (egl_swap_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglSwapBuffers")
             : NULL;
+        gfx_get_proc_fn eglProc = dev->backend_lib
+            ? (gfx_get_proc_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglGetProcAddress")
+            : NULL;
         if (getDpy && eglInit && eglSwap) {
             dev->driver_caps |= 2;
             void *dpy = getDpy(NULL);
@@ -236,7 +458,7 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
                 egl_make_cur_fn mkCur = (egl_make_cur_fn)(uintptr_t)twd_dynlib_sym(dev->backend_lib, "eglMakeCurrent");
                 if (dev->native_window && chooseCfg && mkSurf && mkCtx && mkCur) {
                     static const int32_t cfg_attrs[] = {
-                        0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3040, 0x40, 0x3038
+                        0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3025, 24, 0x3040, 0x40, 0x3038
                     };
                     static const int32_t ctx_attrs[] = { 0x3098, 3, 0x3038 };
                     void *cfg = NULL;
@@ -247,6 +469,7 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
                         if (surf && ctx && mkCur(dpy, surf, surf, ctx)) {
                             dev->egl_surface = surf;
                             dev->egl_context = ctx;
+                            dev->gl_ctx_ready = 1;
                         }
                     }
                 }
@@ -254,59 +477,101 @@ twd_gfx_device_t *twd_gfx_device_create(const twd_gfx_desc_t *desc) {
         }
         dev->gl_lib = twd_dynlib_open("libGLESv3.so");
         if (!dev->gl_lib) dev->gl_lib = twd_dynlib_open("libGLESv2.so");
+        if (dev->gl_lib || eglProc) {
+            gfx_load_gl_procs_from_lib(dev, dev->gl_lib, eglProc, 1);
+        }
+    }
+#elif defined(_WIN32)
+    if (dev->backend == TWD_GFX_BACKEND_GLES3) {
+        dev->gl_lib = twd_dynlib_open("opengl32.dll");
         if (dev->gl_lib) {
-            typedef void (*gl_vp_fn)(int32_t, int32_t, int32_t, int32_t);
-            typedef void (*gl_cc_fn)(float, float, float, float);
-            typedef void (*gl_clr_fn)(uint32_t);
-            typedef void (*gl_da_fn)(uint32_t, int32_t, int32_t);
-            typedef void (*gl_de_fn)(uint32_t, int32_t, uint32_t, const void *);
-            dev->gl_viewport = (gl_vp_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glViewport");
-            dev->gl_scissor = (gl_vp_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glScissor");
-            dev->gl_clear_color = (gl_cc_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glClearColor");
-            dev->gl_clear = (gl_clr_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glClear");
-            dev->gl_draw_arrays = (gl_da_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDrawArrays");
-            dev->gl_draw_elements = (gl_de_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDrawElements");
-            if (dev->gl_clear_color && dev->gl_clear && dev->gl_draw_arrays) {
-                dev->driver_caps |= 4;
-            }
-            typedef void (*gl_gen_fn)(int32_t, uint32_t *);
-            typedef void (*gl_del_fn)(int32_t, const uint32_t *);
-            typedef void (*gl_bind_fn)(uint32_t, uint32_t);
-            typedef void (*gl_bdata_fn)(uint32_t, ptrdiff_t, const void *, uint32_t);
-            typedef void (*gl_bsub_fn)(uint32_t, ptrdiff_t, ptrdiff_t, const void *);
-            typedef void (*gl_tex2d_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
-            typedef void (*gl_texsub_fn)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t, const void *);
-            typedef void (*gl_texparam_fn)(uint32_t, uint32_t, int32_t);
-            typedef uint32_t (*gl_mk_sh_fn)(uint32_t);
-            typedef void (*gl_sh_src_fn)(uint32_t, int32_t, const char *const *, const int32_t *);
-            typedef void (*gl_u32_fn)(uint32_t);
-            typedef uint32_t (*gl_mk_prog_fn)(void);
-            typedef void (*gl_attach_fn)(uint32_t, uint32_t);
+            typedef HGLRC (WINAPI *wgl_create_fn)(HDC);
+            typedef BOOL (WINAPI *wgl_del_fn)(HGLRC);
+            typedef BOOL (WINAPI *wgl_mkcur_fn)(HDC, HGLRC);
+            wgl_create_fn wglCreate = (wgl_create_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "wglCreateContext");
+            wgl_del_fn wglDel = (wgl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "wglDeleteContext");
+            wgl_mkcur_fn wglCur = (wgl_mkcur_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "wglMakeCurrent");
+            twd_wgl_get_proc_fn wglProc =
+                (twd_wgl_get_proc_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "wglGetProcAddress");
+            dev->wgl_delete_context = wglDel;
+            dev->wgl_make_current = wglCur;
 
-            dev->gl_gen_buffers = (gl_gen_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glGenBuffers");
-            dev->gl_delete_buffers = (gl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteBuffers");
-            dev->gl_bind_buffer = (gl_bind_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBindBuffer");
-            dev->gl_buffer_data = (gl_bdata_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBufferData");
-            dev->gl_buffer_sub_data = (gl_bsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBufferSubData");
-            dev->gl_gen_textures = (gl_gen_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glGenTextures");
-            dev->gl_delete_textures = (gl_del_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteTextures");
-            dev->gl_active_texture = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glActiveTexture");
-            dev->gl_bind_texture = (gl_bind_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glBindTexture");
-            dev->gl_tex_image_2d = (gl_tex2d_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexImage2D");
-            dev->gl_tex_sub_image_2d = (gl_texsub_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexSubImage2D");
-            dev->gl_tex_parameter_i = (gl_texparam_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glTexParameteri");
-            dev->gl_create_shader = (gl_mk_sh_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCreateShader");
-            dev->gl_shader_source = (gl_sh_src_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glShaderSource");
-            dev->gl_compile_shader = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCompileShader");
-            dev->gl_delete_shader = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteShader");
-            dev->gl_create_program = (gl_mk_prog_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glCreateProgram");
-            dev->gl_attach_shader = (gl_attach_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glAttachShader");
-            dev->gl_link_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glLinkProgram");
-            dev->gl_use_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glUseProgram");
-            dev->gl_delete_program = (gl_u32_fn)(uintptr_t)twd_dynlib_sym(dev->gl_lib, "glDeleteProgram");
-            if (dev->gl_gen_buffers && dev->gl_buffer_data && dev->gl_gen_textures &&
-                dev->gl_tex_image_2d && dev->gl_create_shader && dev->gl_create_program) {
-                dev->driver_caps |= 8;
+            if (dev->native_window && !twd_window_is_valid((const twd_window_t *)dev->native_window)) {
+                dev->win_user_lib = twd_dynlib_open("user32.dll");
+                dev->win_gdi_lib = twd_dynlib_open("gdi32.dll");
+                typedef BOOL (WINAPI *is_win_fn)(HWND);
+                typedef HDC (WINAPI *get_dc_fn)(HWND);
+                typedef int (WINAPI *rel_dc_fn)(HWND, HDC);
+                typedef int (WINAPI *choose_pf_fn)(HDC, const PIXELFORMATDESCRIPTOR *);
+                typedef BOOL (WINAPI *set_pf_fn)(HDC, int, const PIXELFORMATDESCRIPTOR *);
+                typedef BOOL (WINAPI *swap_buf_fn)(HDC);
+                is_win_fn pIsWin = dev->win_user_lib
+                    ? (is_win_fn)(uintptr_t)twd_dynlib_sym(dev->win_user_lib, "IsWindow") : NULL;
+                get_dc_fn pGetDC = dev->win_user_lib
+                    ? (get_dc_fn)(uintptr_t)twd_dynlib_sym(dev->win_user_lib, "GetDC") : NULL;
+                rel_dc_fn pRelDC = dev->win_user_lib
+                    ? (rel_dc_fn)(uintptr_t)twd_dynlib_sym(dev->win_user_lib, "ReleaseDC") : NULL;
+                choose_pf_fn pChoosePF = dev->win_gdi_lib
+                    ? (choose_pf_fn)(uintptr_t)twd_dynlib_sym(dev->win_gdi_lib, "ChoosePixelFormat") : NULL;
+                set_pf_fn pSetPF = dev->win_gdi_lib
+                    ? (set_pf_fn)(uintptr_t)twd_dynlib_sym(dev->win_gdi_lib, "SetPixelFormat") : NULL;
+                swap_buf_fn pSwap = dev->win_gdi_lib
+                    ? (swap_buf_fn)(uintptr_t)twd_dynlib_sym(dev->win_gdi_lib, "SwapBuffers") : NULL;
+                HWND hwnd = (HWND)dev->native_window;
+                if (pIsWin && pIsWin(hwnd) && pGetDC && pRelDC && pChoosePF && pSetPF &&
+                    wglCreate && wglCur) {
+                    HDC hdc = pGetDC(hwnd);
+                    if (hdc) {
+                        PIXELFORMATDESCRIPTOR pfd;
+                        memset(&pfd, 0, sizeof(pfd));
+                        pfd.nSize = (WORD)sizeof(pfd);
+                        pfd.nVersion = 1;
+                        pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+                        pfd.iPixelType = PFD_TYPE_RGBA;
+                        pfd.cColorBits = 32;
+                        pfd.cDepthBits = 24;
+                        pfd.cStencilBits = 8;
+                        pfd.iLayerType = PFD_MAIN_PLANE;
+                        int pf = pChoosePF(hdc, &pfd);
+                        if (pf > 0 && pSetPF(hdc, pf, &pfd)) {
+                            HGLRC rc = wglCreate(hdc);
+                            if (rc && wglCur(hdc, rc)) {
+                                dev->win_hwnd = hwnd;
+                                dev->win_hdc = hdc;
+                                dev->wgl_hglrc = rc;
+                                dev->user_release_dc = pRelDC;
+                                dev->gdi_swap_buffers = pSwap;
+                                dev->gl_ctx_ready = 1;
+                                dev->gpu_count = 1u;
+                            } else {
+                                if (rc && wglDel) wglDel(rc);
+                                pRelDC(hwnd, hdc);
+                            }
+                        } else {
+                            pRelDC(hwnd, hdc);
+                        }
+                    }
+                }
+            }
+            if (dev->gl_ctx_ready && wglProc) {
+                g_active_wgl_get_proc = wglProc;
+                gfx_load_gl_procs_from_lib(dev, dev->gl_lib, gfx_wgl_proc_adapter, 0);
+                g_active_wgl_get_proc = NULL;
+            } else {
+                gfx_load_gl_procs_from_lib(dev, dev->gl_lib, NULL, 0);
+            }
+        }
+    }
+#else
+    if (dev->backend == TWD_GFX_BACKEND_GLES3) {
+        dev->gl_lib = twd_dynlib_open("libGLESv3.so");
+        if (!dev->gl_lib) dev->gl_lib = twd_dynlib_open("libGLESv2.so");
+        if (dev->gl_lib) {
+            gfx_load_gl_procs_from_lib(dev, dev->gl_lib, NULL, 1);
+        } else {
+            dev->gl_lib = twd_dynlib_open("libGL.so.1");
+            if (dev->gl_lib) {
+                gfx_load_gl_procs_from_lib(dev, dev->gl_lib, NULL, 0);
             }
         }
     }
@@ -324,7 +589,7 @@ int twd_gfx_has_gl_dispatch(const twd_gfx_device_t *dev) {
 }
 
 uint32_t twd_gfx_gl_compile_glsl(twd_gfx_device_t *dev, uint32_t stage, const char *glsl_src) {
-    if (!dev || !glsl_src || !dev->egl_surface || !dev->gl_create_shader ||
+    if (!dev || !glsl_src || !gfx_is_gl_active(dev) || !dev->gl_create_shader ||
         !dev->gl_shader_source || !dev->gl_compile_shader) {
         return 0u;
     }
@@ -333,7 +598,122 @@ uint32_t twd_gfx_gl_compile_glsl(twd_gfx_device_t *dev, uint32_t stage, const ch
     if (!sh) return 0u;
     dev->gl_shader_source(sh, 1, &glsl_src, NULL);
     dev->gl_compile_shader(sh);
+    if (dev->gl_get_shader_iv) {
+        int32_t ok = 1;
+        dev->gl_get_shader_iv(sh, 0x8B81u, &ok); /* GL_COMPILE_STATUS */
+        if (!ok) {
+            if (dev->gl_delete_shader) dev->gl_delete_shader(sh);
+            return 0u;
+        }
+    }
     return sh;
+}
+
+int twd_gfx_attach_gl_procs(
+    twd_gfx_device_t *dev, const twd_gfx_gl_procs_t *procs, void *swap_user, int is_gles) {
+    if (!dev || !procs) return -1;
+    if (dev->tri_gl_program && dev->gl_delete_program) {
+        dev->gl_delete_program(dev->tri_gl_program);
+        dev->tri_gl_program = 0u;
+    }
+    if (dev->tri_gl_vbo && dev->gl_delete_buffers) {
+        dev->gl_delete_buffers(1, &dev->tri_gl_vbo);
+        dev->tri_gl_vbo = 0u;
+    }
+    if (dev->tri_gl_vao && dev->gl_delete_vertex_arrays) {
+        dev->gl_delete_vertex_arrays(1, &dev->tri_gl_vao);
+        dev->tri_gl_vao = 0u;
+    }
+    if (dev->tri_gl_white_tex && dev->gl_delete_textures) {
+        dev->gl_delete_textures(1, &dev->tri_gl_white_tex);
+        dev->tri_gl_white_tex = 0u;
+    }
+    if (dev->overlay_gl_tex && dev->gl_delete_textures) {
+        dev->gl_delete_textures(1, &dev->overlay_gl_tex);
+        dev->overlay_gl_tex = 0u;
+    }
+    dev->tri_pipeline_failed = 0;
+
+    dev->gl_viewport = procs->glViewport;
+    dev->gl_scissor = procs->glScissor;
+    dev->gl_clear_color = procs->glClearColor;
+    dev->gl_clear = procs->glClear;
+    dev->gl_draw_arrays = procs->glDrawArrays;
+    dev->gl_draw_elements = procs->glDrawElements;
+    dev->gl_gen_buffers = procs->glGenBuffers;
+    dev->gl_delete_buffers = procs->glDeleteBuffers;
+    dev->gl_bind_buffer = procs->glBindBuffer;
+    dev->gl_buffer_data = procs->glBufferData;
+    dev->gl_buffer_sub_data = procs->glBufferSubData;
+    dev->gl_gen_textures = procs->glGenTextures;
+    dev->gl_delete_textures = procs->glDeleteTextures;
+    dev->gl_active_texture = procs->glActiveTexture;
+    dev->gl_bind_texture = procs->glBindTexture;
+    dev->gl_tex_image_2d = procs->glTexImage2D;
+    dev->gl_tex_sub_image_2d = procs->glTexSubImage2D;
+    dev->gl_tex_parameter_i = procs->glTexParameteri;
+    dev->gl_create_shader = procs->glCreateShader;
+    dev->gl_shader_source = procs->glShaderSource;
+    dev->gl_compile_shader = procs->glCompileShader;
+    dev->gl_delete_shader = procs->glDeleteShader;
+    dev->gl_get_shader_iv = procs->glGetShaderiv;
+    dev->gl_create_program = procs->glCreateProgram;
+    dev->gl_attach_shader = procs->glAttachShader;
+    dev->gl_link_program = procs->glLinkProgram;
+    dev->gl_use_program = procs->glUseProgram;
+    dev->gl_delete_program = procs->glDeleteProgram;
+    dev->gl_get_program_iv = procs->glGetProgramiv;
+    dev->gl_get_attrib_location = procs->glGetAttribLocation;
+    dev->gl_get_uniform_location = procs->glGetUniformLocation;
+    dev->gl_enable_vertex_attrib_array = procs->glEnableVertexAttribArray;
+    dev->gl_disable_vertex_attrib_array = procs->glDisableVertexAttribArray;
+    dev->gl_vertex_attrib_pointer = procs->glVertexAttribPointer;
+    dev->gl_uniform_1i = procs->glUniform1i;
+    dev->gl_uniform_1f = procs->glUniform1f;
+    dev->gl_uniform_2f = procs->glUniform2f;
+    dev->gl_uniform_4f = procs->glUniform4f;
+    dev->gl_enable = procs->glEnable;
+    dev->gl_disable = procs->glDisable;
+    dev->gl_depth_func = procs->glDepthFunc;
+    dev->gl_depth_mask = procs->glDepthMask;
+    dev->gl_blend_func = procs->glBlendFunc;
+    dev->gl_gen_vertex_arrays = procs->glGenVertexArrays;
+    dev->gl_delete_vertex_arrays = procs->glDeleteVertexArrays;
+    dev->gl_bind_vertex_array = procs->glBindVertexArray;
+    dev->custom_swap_buffers = procs->swap_buffers;
+    dev->custom_swap_user = swap_user;
+    dev->is_gles = is_gles ? 1 : 0;
+
+    dev->driver_caps &= ~(4 | 8);
+    if (dev->gl_clear_color && dev->gl_clear && dev->gl_draw_arrays) {
+        dev->driver_caps |= 4;
+    }
+    if (dev->gl_gen_buffers && dev->gl_buffer_data && dev->gl_gen_textures &&
+        dev->gl_tex_image_2d && dev->gl_create_shader && dev->gl_create_program) {
+        dev->driver_caps |= 8;
+    }
+    if (dev->driver_caps & 4) {
+        dev->backend = TWD_GFX_BACKEND_GLES3;
+        dev->gl_ctx_ready = 1;
+        if (dev->gpu_count == 0u) dev->gpu_count = 1u;
+    }
+    return 0;
+}
+
+void twd_gfx_get_hw_stats(const twd_gfx_device_t *dev, twd_gfx_hw_stats_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!dev) return;
+    out->hw_tri_flushes = dev->hw_tri_flushes;
+    out->hw_tri_verts = dev->hw_tri_verts_submitted;
+    out->hw_overlay_blits = dev->hw_overlay_blits;
+    out->pending_tri_verts = (uint32_t)dev->gpu_tri_vert_count;
+    out->pending_tri_batches = (uint32_t)dev->gpu_tri_batch_count;
+    out->tri_program = dev->tri_gl_program;
+    out->tri_vbo = dev->tri_gl_vbo;
+    out->overlay_tex = dev->overlay_gl_tex;
+    out->hw_active = gfx_can_hw_triangles(dev);
+    out->backbuffer_dirty = dev->backbuffer_dirty;
 }
 
 int twd_gfx_has_driver_symbols(const twd_gfx_device_t *dev) {
@@ -359,6 +739,26 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
     if (--dev->refs > 0) return;
     twd_shader_cache_destroy(dev->shader_cache);
     dev->shader_cache = NULL;
+    if (dev->tri_gl_program && dev->gl_delete_program) {
+        dev->gl_delete_program(dev->tri_gl_program);
+        dev->tri_gl_program = 0u;
+    }
+    if (dev->tri_gl_vbo && dev->gl_delete_buffers) {
+        dev->gl_delete_buffers(1, &dev->tri_gl_vbo);
+        dev->tri_gl_vbo = 0u;
+    }
+    if (dev->tri_gl_vao && dev->gl_delete_vertex_arrays) {
+        dev->gl_delete_vertex_arrays(1, &dev->tri_gl_vao);
+        dev->tri_gl_vao = 0u;
+    }
+    if (dev->tri_gl_white_tex && dev->gl_delete_textures) {
+        dev->gl_delete_textures(1, &dev->tri_gl_white_tex);
+        dev->tri_gl_white_tex = 0u;
+    }
+    if (dev->overlay_gl_tex && dev->gl_delete_textures) {
+        dev->gl_delete_textures(1, &dev->overlay_gl_tex);
+        dev->overlay_gl_tex = 0u;
+    }
     if (dev->gl_active_program && dev->gl_delete_program) {
         dev->gl_delete_program(dev->gl_active_program);
         dev->gl_active_program = 0u;
@@ -375,6 +775,25 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
         }
         dev->egl_display = NULL;
     }
+#ifdef _WIN32
+    if (dev->wgl_hglrc) {
+        if (dev->wgl_make_current) dev->wgl_make_current(NULL, NULL);
+        if (dev->wgl_delete_context) dev->wgl_delete_context(dev->wgl_hglrc);
+        dev->wgl_hglrc = NULL;
+    }
+    if (dev->win_hwnd && dev->win_hdc && dev->user_release_dc) {
+        dev->user_release_dc(dev->win_hwnd, dev->win_hdc);
+        dev->win_hdc = NULL;
+    }
+    if (dev->win_gdi_lib) {
+        twd_dynlib_close(dev->win_gdi_lib);
+        dev->win_gdi_lib = NULL;
+    }
+    if (dev->win_user_lib) {
+        twd_dynlib_close(dev->win_user_lib);
+        dev->win_user_lib = NULL;
+    }
+#endif
     if (dev->vk_instance && dev->vk_destroy_instance) {
         dev->vk_destroy_instance(dev->vk_instance, NULL);
         dev->vk_instance = NULL;
@@ -387,6 +806,10 @@ void twd_gfx_device_destroy(twd_gfx_device_t *dev) {
         twd_dynlib_close(dev->backend_lib);
         dev->backend_lib = NULL;
     }
+    free(dev->gpu_tri_verts);
+    dev->gpu_tri_verts = NULL;
+    free(dev->gpu_tri_batches);
+    dev->gpu_tri_batches = NULL;
     free(dev->backbuffer);
     dev->backbuffer = NULL;
     dev->backbuffer_size = 0u;
@@ -458,7 +881,8 @@ static uint32_t buf_kind_to_gl_target(uint32_t kind) {
 }
 
 static void sync_gl_buffer(twd_gfx_buffer_t *buf) {
-    if (!buf || !buf->dev || !buf->dev->egl_surface || !buf->dev->gl_bind_buffer || !buf->dev->gl_buffer_sub_data) {
+    if (!buf || !buf->dev || !gfx_is_gl_active(buf->dev) ||
+        !buf->dev->gl_bind_buffer || !buf->dev->gl_buffer_sub_data) {
         return;
     }
     if (!buf->gl_handle) return;
@@ -468,13 +892,33 @@ static void sync_gl_buffer(twd_gfx_buffer_t *buf) {
 }
 
 static void sync_gl_texture(twd_gfx_texture_t *tex) {
-    if (!tex || !tex->dev || !tex->dev->egl_surface || !tex->dev->gl_bind_texture || !tex->dev->gl_tex_sub_image_2d) {
+    if (!tex || !tex->dev || !gfx_is_gl_active(tex->dev) ||
+        !tex->dev->gl_bind_texture || !tex->dev->gl_tex_sub_image_2d) {
         return;
     }
     if (!tex->gl_handle || !tex->pixels) return;
     tex->dev->gl_bind_texture(0x0DE1u, tex->gl_handle); /* GL_TEXTURE_2D */
     tex->dev->gl_tex_sub_image_2d(0x0DE1u, 0, 0, 0, (int32_t)tex->width, (int32_t)tex->height,
                                   0x1908u, 0x1401u, tex->pixels); /* GL_RGBA, GL_UNSIGNED_BYTE */
+}
+
+static uint32_t ensure_tex_gl_handle(twd_gfx_device_t *dev, twd_gfx_texture_t *tex) {
+    if (!dev || !tex) return 0u;
+    if (tex->gl_handle != 0u) return tex->gl_handle;
+    if (!gfx_is_gl_active(dev) || !dev->gl_gen_textures || !dev->gl_bind_texture || !dev->gl_tex_image_2d) {
+        return 0u;
+    }
+    dev->gl_gen_textures(1, &tex->gl_handle);
+    if (tex->gl_handle) {
+        dev->gl_bind_texture(0x0DE1u, tex->gl_handle);
+        if (dev->gl_tex_parameter_i) {
+            dev->gl_tex_parameter_i(0x0DE1u, 0x2801u, 0x2601); /* MIN_FILTER = LINEAR */
+            dev->gl_tex_parameter_i(0x0DE1u, 0x2800u, 0x2601); /* MAG_FILTER = LINEAR */
+        }
+        dev->gl_tex_image_2d(0x0DE1u, 0, 0x1908, (int32_t)tex->width, (int32_t)tex->height,
+                             0, 0x1908u, 0x1401u, tex->pixels);
+    }
+    return tex->gl_handle;
 }
 
 twd_gfx_buffer_t *twd_gfx_buffer_create(
@@ -495,7 +939,7 @@ twd_gfx_buffer_t *twd_gfx_buffer_create(
     buf->dev = dev;
     buf->kind = kind;
     buf->byte_size = byte_size;
-    if (dev->egl_surface && dev->gl_gen_buffers && dev->gl_bind_buffer && dev->gl_buffer_data) {
+    if (gfx_is_gl_active(dev) && dev->gl_gen_buffers && dev->gl_bind_buffer && dev->gl_buffer_data) {
         uint32_t tgt = buf_kind_to_gl_target(kind);
         dev->gl_gen_buffers(1, &buf->gl_handle);
         if (buf->gl_handle) {
@@ -553,18 +997,7 @@ twd_gfx_texture_t *twd_gfx_texture_create(
     tex->width = width;
     tex->height = height;
     tex->format = format;
-    if (dev->egl_surface && dev->gl_gen_textures && dev->gl_bind_texture && dev->gl_tex_image_2d) {
-        dev->gl_gen_textures(1, &tex->gl_handle);
-        if (tex->gl_handle) {
-            dev->gl_bind_texture(0x0DE1u, tex->gl_handle);
-            if (dev->gl_tex_parameter_i) {
-                dev->gl_tex_parameter_i(0x0DE1u, 0x2801u, 0x2601); /* MIN_FILTER = LINEAR */
-                dev->gl_tex_parameter_i(0x0DE1u, 0x2800u, 0x2601); /* MAG_FILTER = LINEAR */
-            }
-            dev->gl_tex_image_2d(0x0DE1u, 0, 0x1908, (int32_t)width, (int32_t)height,
-                                 0, 0x1908u, 0x1401u, tex->pixels);
-        }
-    }
+    (void)ensure_tex_gl_handle(dev, tex);
     dev->active_textures++;
     return tex;
 }
@@ -574,7 +1007,11 @@ int twd_gfx_texture_update(twd_gfx_texture_t *tex, const void *pixels, size_t by
     size_t copy_bytes = byte_size;
     if (copy_bytes > tex->byte_size) copy_bytes = tex->byte_size;
     memcpy(tex->pixels, pixels, copy_bytes);
-    sync_gl_texture(tex);
+    if (tex->gl_handle == 0u && tex->dev) {
+        (void)ensure_tex_gl_handle(tex->dev, tex);
+    } else {
+        sync_gl_texture(tex);
+    }
     return 0;
 }
 
@@ -617,26 +1054,36 @@ static uint8_t clamp_f_u8(float v) {
 
 void twd_gfx_clear(twd_gfx_device_t *dev, const float rgba[4], float depth, uint8_t stencil) {
     if (!dev) return;
+    dev->gpu_tri_vert_count = 0u;
+    dev->gpu_tri_batch_count = 0u;
+    int hw_on = gfx_can_hw_triangles(dev);
     if (rgba) {
         memcpy(dev->last_clear_rgba, rgba, sizeof(dev->last_clear_rgba));
         if (dev->backbuffer && dev->backbuffer_size >= (size_t)dev->width * (size_t)dev->height * 4u) {
-            uint8_t r = clamp_f_u8(rgba[0]);
-            uint8_t g = clamp_f_u8(rgba[1]);
-            uint8_t b = clamp_f_u8(rgba[2]);
-            uint8_t a = clamp_f_u8(rgba[3]);
-            size_t total = (size_t)dev->width * (size_t)dev->height;
-            for (size_t i = 0u; i < total; ++i) {
-                dev->backbuffer[i * 4u + 0u] = r;
-                dev->backbuffer[i * 4u + 1u] = g;
-                dev->backbuffer[i * 4u + 2u] = b;
-                dev->backbuffer[i * 4u + 3u] = a;
+            if (hw_on) {
+                memset(dev->backbuffer, 0, (size_t)dev->width * (size_t)dev->height * 4u);
+            } else {
+                uint8_t r = clamp_f_u8(rgba[0]);
+                uint8_t g = clamp_f_u8(rgba[1]);
+                uint8_t b = clamp_f_u8(rgba[2]);
+                uint8_t a = clamp_f_u8(rgba[3]);
+                size_t total = (size_t)dev->width * (size_t)dev->height;
+                for (size_t i = 0u; i < total; ++i) {
+                    dev->backbuffer[i * 4u + 0u] = r;
+                    dev->backbuffer[i * 4u + 1u] = g;
+                    dev->backbuffer[i * 4u + 2u] = b;
+                    dev->backbuffer[i * 4u + 3u] = a;
+                }
             }
         }
-        if (dev->gl_clear_color && dev->gl_clear && dev->egl_surface) {
+        dev->backbuffer_dirty = 0;
+        if (gfx_is_gl_active(dev) && dev->gl_clear_color && dev->gl_clear) {
+            if (dev->gl_depth_mask) dev->gl_depth_mask(1u);
             dev->gl_clear_color(rgba[0], rgba[1], rgba[2], rgba[3]);
-            dev->gl_clear(0x00004000u); /* GL_COLOR_BUFFER_BIT */
+            dev->gl_clear(0x00004000u | 0x00000100u | 0x00000400u); /* COLOR | DEPTH | STENCIL */
         }
-    } else if (dev->gl_clear && dev->egl_surface) {
+    } else if (gfx_is_gl_active(dev) && dev->gl_clear) {
+        if (dev->gl_depth_mask) dev->gl_depth_mask(1u);
         dev->gl_clear(0x00000100u | 0x00000400u); /* GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT */
     }
     if (dev->depthbuffer) {
@@ -664,6 +1111,362 @@ const uint8_t *twd_gfx_backbuffer_data(
     return dev->backbuffer;
 }
 
+static int gfx_queue_hw_triangle(
+    twd_gfx_device_t *dev,
+    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_vertex2d_t v[3],
+    int use_z) {
+    if (!dev || !v) return -1;
+    uint32_t gl_tex = 0u;
+    if (tex_or_null) {
+        twd_gfx_texture_t *mtex = (twd_gfx_texture_t *)(uintptr_t)tex_or_null;
+        gl_tex = ensure_tex_gl_handle(dev, mtex);
+    }
+    if (dev->gpu_tri_vert_count + 3u > dev->gpu_tri_vert_cap) {
+        size_t new_cap = dev->gpu_tri_vert_cap ? (dev->gpu_tri_vert_cap * 2u) : 1024u;
+        while (new_cap < dev->gpu_tri_vert_count + 3u) new_cap *= 2u;
+        twd_gfx_vertex2d_t *nv = (twd_gfx_vertex2d_t *)realloc(
+            dev->gpu_tri_verts, new_cap * sizeof(twd_gfx_vertex2d_t));
+        if (!nv) return -1;
+        dev->gpu_tri_verts = nv;
+        dev->gpu_tri_vert_cap = new_cap;
+    }
+    uint32_t start_vert = (uint32_t)dev->gpu_tri_vert_count;
+    memcpy(&dev->gpu_tri_verts[start_vert], v, 3u * sizeof(twd_gfx_vertex2d_t));
+    dev->gpu_tri_vert_count += 3u;
+
+    uint8_t uz = use_z ? 1u : 0u;
+    if (dev->gpu_tri_batch_count > 0u) {
+        gfx_hw_batch_t *last = &dev->gpu_tri_batches[dev->gpu_tri_batch_count - 1u];
+        if (last->gl_tex == gl_tex && last->use_z == uz &&
+            last->start_vert + last->vert_count == start_vert) {
+            last->vert_count += 3u;
+            return 0;
+        }
+    }
+    if (dev->gpu_tri_batch_count + 1u > dev->gpu_tri_batch_cap) {
+        size_t new_cap = dev->gpu_tri_batch_cap ? (dev->gpu_tri_batch_cap * 2u) : 64u;
+        gfx_hw_batch_t *nb = (gfx_hw_batch_t *)realloc(
+            dev->gpu_tri_batches, new_cap * sizeof(gfx_hw_batch_t));
+        if (!nb) return -1;
+        dev->gpu_tri_batches = nb;
+        dev->gpu_tri_batch_cap = new_cap;
+    }
+    gfx_hw_batch_t *b = &dev->gpu_tri_batches[dev->gpu_tri_batch_count++];
+    b->start_vert = start_vert;
+    b->vert_count = 3u;
+    b->gl_tex = gl_tex;
+    b->use_z = uz;
+    return 0;
+}
+
+static int ensure_hw_tri_pipeline(twd_gfx_device_t *dev) {
+    if (!dev || !gfx_can_hw_triangles(dev)) return -1;
+    if (dev->tri_gl_program != 0u && dev->tri_gl_vbo != 0u) return 0;
+
+    static const char k_es3_vs[] =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec3 a_pos;\n"
+        "in vec2 a_uv;\n"
+        "in vec4 a_col;\n"
+        "uniform vec2 u_viewport;\n"
+        "uniform float u_use_z;\n"
+        "out vec2 v_uv;\n"
+        "out vec4 v_col;\n"
+        "void main() {\n"
+        "    float nx = (a_pos.x / max(u_viewport.x, 1.0)) * 2.0 - 1.0;\n"
+        "    float ny = 1.0 - (a_pos.y / max(u_viewport.y, 1.0)) * 2.0;\n"
+        "    float nz = (u_use_z > 0.5) ? clamp((a_pos.z - 10.0) / (max(a_pos.z, 0.001) + 10.0), -0.9999, 0.9999) : 0.0;\n"
+        "    gl_Position = vec4(nx, ny, nz, 1.0);\n"
+        "    v_uv = a_uv;\n"
+        "    v_col = a_col;\n"
+        "}\n";
+    static const char k_es3_fs[] =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in vec2 v_uv;\n"
+        "in vec4 v_col;\n"
+        "uniform sampler2D u_tex;\n"
+        "uniform float u_use_tex;\n"
+        "out vec4 o_frag;\n"
+        "void main() {\n"
+        "    vec4 c = v_col;\n"
+        "    if (u_use_tex > 0.5) c *= texture(u_tex, v_uv);\n"
+        "    if (c.a <= 0.002) discard;\n"
+        "    o_frag = c;\n"
+        "}\n";
+    static const char k_gl120_vs[] =
+        "#version 120\n"
+        "attribute vec3 a_pos;\n"
+        "attribute vec2 a_uv;\n"
+        "attribute vec4 a_col;\n"
+        "uniform vec2 u_viewport;\n"
+        "uniform float u_use_z;\n"
+        "varying vec2 v_uv;\n"
+        "varying vec4 v_col;\n"
+        "void main() {\n"
+        "    float nx = (a_pos.x / max(u_viewport.x, 1.0)) * 2.0 - 1.0;\n"
+        "    float ny = 1.0 - (a_pos.y / max(u_viewport.y, 1.0)) * 2.0;\n"
+        "    float nz = (u_use_z > 0.5) ? clamp((a_pos.z - 10.0) / (max(a_pos.z, 0.001) + 10.0), -0.9999, 0.9999) : 0.0;\n"
+        "    gl_Position = vec4(nx, ny, nz, 1.0);\n"
+        "    v_uv = a_uv;\n"
+        "    v_col = a_col;\n"
+        "}\n";
+    static const char k_gl120_fs[] =
+        "#version 120\n"
+        "varying vec2 v_uv;\n"
+        "varying vec4 v_col;\n"
+        "uniform sampler2D u_tex;\n"
+        "uniform float u_use_tex;\n"
+        "void main() {\n"
+        "    vec4 c = v_col;\n"
+        "    if (u_use_tex > 0.5) c *= texture2D(u_tex, v_uv);\n"
+        "    if (c.a <= 0.002) discard;\n"
+        "    gl_FragColor = c;\n"
+        "}\n";
+
+    const char *vs_src = dev->is_gles ? k_es3_vs : k_gl120_vs;
+    const char *fs_src = dev->is_gles ? k_es3_fs : k_gl120_fs;
+    uint32_t vs = twd_gfx_gl_compile_glsl(dev, TWD_SHADER_STAGE_VS, vs_src);
+    uint32_t fs = twd_gfx_gl_compile_glsl(dev, TWD_SHADER_STAGE_PS, fs_src);
+    if (!vs || !fs) {
+        if (vs && dev->gl_delete_shader) dev->gl_delete_shader(vs);
+        if (fs && dev->gl_delete_shader) dev->gl_delete_shader(fs);
+        dev->tri_pipeline_failed = 1;
+        return -1;
+    }
+    uint32_t prog = dev->gl_create_program();
+    if (!prog) {
+        if (dev->gl_delete_shader) {
+            dev->gl_delete_shader(vs);
+            dev->gl_delete_shader(fs);
+        }
+        dev->tri_pipeline_failed = 1;
+        return -1;
+    }
+    dev->gl_attach_shader(prog, vs);
+    dev->gl_attach_shader(prog, fs);
+    dev->gl_link_program(prog);
+    if (dev->gl_delete_shader) {
+        dev->gl_delete_shader(vs);
+        dev->gl_delete_shader(fs);
+    }
+    if (dev->gl_get_program_iv) {
+        int32_t ok = 1;
+        dev->gl_get_program_iv(prog, 0x8B82u, &ok); /* GL_LINK_STATUS */
+        if (!ok) {
+            if (dev->gl_delete_program) dev->gl_delete_program(prog);
+            dev->tri_pipeline_failed = 1;
+            return -1;
+        }
+    }
+
+    dev->tri_gl_program = prog;
+    dev->tri_a_pos = dev->gl_get_attrib_location(prog, "a_pos");
+    dev->tri_a_uv = dev->gl_get_attrib_location(prog, "a_uv");
+    dev->tri_a_col = dev->gl_get_attrib_location(prog, "a_col");
+    dev->tri_u_viewport = dev->gl_get_uniform_location(prog, "u_viewport");
+    dev->tri_u_tex = dev->gl_get_uniform_location(prog, "u_tex");
+    dev->tri_u_use_tex = dev->gl_get_uniform_location(prog, "u_use_tex");
+    dev->tri_u_use_z = dev->gl_get_uniform_location(prog, "u_use_z");
+
+    if (dev->gl_gen_vertex_arrays && !dev->tri_gl_vao) {
+        dev->gl_gen_vertex_arrays(1, &dev->tri_gl_vao);
+    }
+    if (!dev->tri_gl_vbo) {
+        dev->gl_gen_buffers(1, &dev->tri_gl_vbo);
+    }
+    if (!dev->tri_gl_white_tex) {
+        static const uint8_t k_white_px[4] = {255u, 255u, 255u, 255u};
+        dev->gl_gen_textures(1, &dev->tri_gl_white_tex);
+        if (dev->tri_gl_white_tex) {
+            dev->gl_bind_texture(0x0DE1u, dev->tri_gl_white_tex);
+            if (dev->gl_tex_parameter_i) {
+                dev->gl_tex_parameter_i(0x0DE1u, 0x2801u, 0x2600); /* NEAREST */
+                dev->gl_tex_parameter_i(0x0DE1u, 0x2800u, 0x2600);
+            }
+            dev->gl_tex_image_2d(0x0DE1u, 0, 0x1908, 1, 1, 0, 0x1908u, 0x1401u, k_white_px);
+        }
+    }
+    if (!dev->tri_gl_vbo) {
+        dev->tri_pipeline_failed = 1;
+        return -1;
+    }
+    return 0;
+}
+
+static void gfx_draw_gl_vertex_batches(
+    twd_gfx_device_t *dev,
+    const twd_gfx_vertex2d_t *verts,
+    size_t vert_count,
+    const gfx_hw_batch_t *batches,
+    size_t batch_count) {
+    if (!dev || !verts || vert_count == 0u || !batches || batch_count == 0u) return;
+    if (ensure_hw_tri_pipeline(dev) != 0) return;
+
+    if (dev->gl_viewport) {
+        dev->gl_viewport(0, 0, (int32_t)dev->width, (int32_t)dev->height);
+    }
+    dev->gl_disable(0x0B44u); /* GL_CULL_FACE */
+    dev->gl_disable(0x0C11u); /* GL_SCISSOR_TEST */
+    dev->gl_enable(0x0BE2u);  /* GL_BLEND */
+    dev->gl_blend_func(0x0302u, 0x0303u); /* GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA */
+
+    dev->gl_use_program(dev->tri_gl_program);
+    if (dev->tri_u_viewport >= 0) {
+        dev->gl_uniform_2f(dev->tri_u_viewport, (float)dev->width, (float)dev->height);
+    }
+    if (dev->tri_u_tex >= 0) {
+        dev->gl_uniform_1i(dev->tri_u_tex, 0);
+    }
+
+    if (dev->tri_gl_vao && dev->gl_bind_vertex_array) {
+        dev->gl_bind_vertex_array(dev->tri_gl_vao);
+    }
+    dev->gl_bind_buffer(0x8892u, dev->tri_gl_vbo);
+    dev->gl_buffer_data(
+        0x8892u,
+        (ptrdiff_t)(vert_count * sizeof(twd_gfx_vertex2d_t)),
+        verts,
+        0x88E0u); /* GL_STREAM_DRAW */
+
+    int32_t stride = (int32_t)sizeof(twd_gfx_vertex2d_t);
+    if (dev->tri_a_pos >= 0) {
+        dev->gl_enable_vertex_attrib_array((uint32_t)dev->tri_a_pos);
+        dev->gl_vertex_attrib_pointer(
+            (uint32_t)dev->tri_a_pos, 3, 0x1406u, 0u, stride,
+            (const void *)(uintptr_t)offsetof(twd_gfx_vertex2d_t, x));
+    }
+    if (dev->tri_a_uv >= 0) {
+        dev->gl_enable_vertex_attrib_array((uint32_t)dev->tri_a_uv);
+        dev->gl_vertex_attrib_pointer(
+            (uint32_t)dev->tri_a_uv, 2, 0x1406u, 0u, stride,
+            (const void *)(uintptr_t)offsetof(twd_gfx_vertex2d_t, u));
+    }
+    if (dev->tri_a_col >= 0) {
+        dev->gl_enable_vertex_attrib_array((uint32_t)dev->tri_a_col);
+        dev->gl_vertex_attrib_pointer(
+            (uint32_t)dev->tri_a_col, 4, 0x1401u, 1u, stride,
+            (const void *)(uintptr_t)offsetof(twd_gfx_vertex2d_t, rgba));
+    }
+
+    for (size_t i = 0u; i < batch_count; ++i) {
+        const gfx_hw_batch_t *b = &batches[i];
+        if (b->use_z) {
+            dev->gl_enable(0x0B71u); /* GL_DEPTH_TEST */
+            dev->gl_depth_func(0x0201u); /* GL_LESS */
+            dev->gl_depth_mask(1u);
+            if (dev->tri_u_use_z >= 0 && dev->gl_uniform_1f) {
+                dev->gl_uniform_1f(dev->tri_u_use_z, 1.0f);
+            }
+        } else {
+            dev->gl_disable(0x0B71u);
+            dev->gl_depth_mask(0u);
+            if (dev->tri_u_use_z >= 0 && dev->gl_uniform_1f) {
+                dev->gl_uniform_1f(dev->tri_u_use_z, 0.0f);
+            }
+        }
+        if (dev->gl_active_texture) dev->gl_active_texture(0x84C0u); /* GL_TEXTURE0 */
+        uint32_t bind_tex = b->gl_tex ? b->gl_tex : dev->tri_gl_white_tex;
+        dev->gl_bind_texture(0x0DE1u, bind_tex);
+        if (dev->tri_u_use_tex >= 0 && dev->gl_uniform_1f) {
+            dev->gl_uniform_1f(dev->tri_u_use_tex, b->gl_tex ? 1.0f : 0.0f);
+        }
+        dev->gl_draw_arrays(0x0004u, (int32_t)b->start_vert, (int32_t)b->vert_count);
+    }
+
+    if (dev->gl_disable_vertex_attrib_array) {
+        if (dev->tri_a_pos >= 0) dev->gl_disable_vertex_attrib_array((uint32_t)dev->tri_a_pos);
+        if (dev->tri_a_uv >= 0) dev->gl_disable_vertex_attrib_array((uint32_t)dev->tri_a_uv);
+        if (dev->tri_a_col >= 0) dev->gl_disable_vertex_attrib_array((uint32_t)dev->tri_a_col);
+    }
+    if (dev->tri_gl_vao && dev->gl_bind_vertex_array) {
+        dev->gl_bind_vertex_array(0u);
+    }
+}
+
+static void gfx_flush_hw_triangles(twd_gfx_device_t *dev) {
+    if (!dev || dev->gpu_tri_vert_count == 0u || !gfx_can_hw_triangles(dev)) return;
+    gfx_draw_gl_vertex_batches(
+        dev,
+        dev->gpu_tri_verts,
+        dev->gpu_tri_vert_count,
+        dev->gpu_tri_batches,
+        dev->gpu_tri_batch_count);
+    dev->hw_tri_flushes++;
+    dev->hw_tri_verts_submitted += dev->gpu_tri_vert_count;
+    dev->gpu_tri_vert_count = 0u;
+    dev->gpu_tri_batch_count = 0u;
+}
+
+static void gfx_fill_quad_verts(
+    twd_gfx_vertex2d_t q[6],
+    float x0, float y0, float x1, float y1,
+    float u0, float v0, float u1, float v1,
+    const uint8_t rgba[4]) {
+    float px[6];
+    float py[6];
+    float pu[6];
+    float pv[6];
+    px[0] = x0; px[1] = x1; px[2] = x1; px[3] = x0; px[4] = x1; px[5] = x0;
+    py[0] = y0; py[1] = y0; py[2] = y1; py[3] = y0; py[4] = y1; py[5] = y1;
+    pu[0] = u0; pu[1] = u1; pu[2] = u1; pu[3] = u0; pu[4] = u1; pu[5] = u0;
+    pv[0] = v0; pv[1] = v0; pv[2] = v1; pv[3] = v0; pv[4] = v1; pv[5] = v1;
+    for (int i = 0; i < 6; ++i) {
+        q[i].x = px[i];
+        q[i].y = py[i];
+        q[i].z = 0.0f;
+        q[i].u = pu[i];
+        q[i].v = pv[i];
+        q[i].rgba[0] = rgba[0];
+        q[i].rgba[1] = rgba[1];
+        q[i].rgba[2] = rgba[2];
+        q[i].rgba[3] = rgba[3];
+    }
+}
+
+static void gfx_blit_backbuffer_overlay(twd_gfx_device_t *dev) {
+    if (!dev || !dev->backbuffer_dirty || !dev->backbuffer || !gfx_can_hw_triangles(dev)) return;
+    if (dev->width == 0u || dev->height == 0u) return;
+
+    if (!dev->overlay_gl_tex) {
+        dev->gl_gen_textures(1, &dev->overlay_gl_tex);
+        dev->overlay_tex_w = 0u;
+        dev->overlay_tex_h = 0u;
+    }
+    if (!dev->overlay_gl_tex) return;
+
+    dev->gl_bind_texture(0x0DE1u, dev->overlay_gl_tex);
+    if (dev->gl_tex_parameter_i) {
+        dev->gl_tex_parameter_i(0x0DE1u, 0x2801u, 0x2601); /* LINEAR */
+        dev->gl_tex_parameter_i(0x0DE1u, 0x2800u, 0x2601);
+    }
+    if (dev->overlay_tex_w != dev->width || dev->overlay_tex_h != dev->height || !dev->gl_tex_sub_image_2d) {
+        dev->gl_tex_image_2d(0x0DE1u, 0, 0x1908, (int32_t)dev->width, (int32_t)dev->height,
+                             0, 0x1908u, 0x1401u, dev->backbuffer);
+        dev->overlay_tex_w = dev->width;
+        dev->overlay_tex_h = dev->height;
+    } else {
+        dev->gl_tex_sub_image_2d(0x0DE1u, 0, 0, 0, (int32_t)dev->width, (int32_t)dev->height,
+                                 0x1908u, 0x1401u, dev->backbuffer);
+    }
+
+    static const uint8_t k_white[4] = {255u, 255u, 255u, 255u};
+    twd_gfx_vertex2d_t quad[6];
+    gfx_fill_quad_verts(quad, 0.0f, 0.0f, (float)dev->width, (float)dev->height,
+                        0.0f, 0.0f, 1.0f, 1.0f, k_white);
+    gfx_hw_batch_t b;
+    b.start_vert = 0u;
+    b.vert_count = 6u;
+    b.gl_tex = dev->overlay_gl_tex;
+    b.use_z = 0u;
+    memset(b._pad, 0, sizeof(b._pad));
+    gfx_draw_gl_vertex_batches(dev, quad, 6u, &b, 1u);
+    dev->hw_overlay_blits++;
+    dev->backbuffer_dirty = 0;
+}
+
 static void blend_pixel_rgba8(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     if (a == 0u) return;
     if (a == 255u) {
@@ -683,7 +1486,17 @@ static void blend_pixel_rgba8(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b, uin
 
 int twd_gfx_draw_rect(
     twd_gfx_device_t *dev, int32_t dx, int32_t dy, int32_t dw, int32_t dh, const uint8_t rgba[4]) {
-    if (!dev || !dev->backbuffer || !rgba || dw <= 0 || dh <= 0) return -1;
+    if (!dev || !rgba || dw <= 0 || dh <= 0) return -1;
+    if (gfx_can_hw_triangles(dev)) {
+        twd_gfx_vertex2d_t q[6];
+        gfx_fill_quad_verts(q, (float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+                            0.0f, 0.0f, 0.0f, 0.0f, rgba);
+        if (gfx_queue_hw_triangle(dev, NULL, &q[0], 0) != 0) return -1;
+        if (gfx_queue_hw_triangle(dev, NULL, &q[3], 0) != 0) return -1;
+        dev->draw_calls++;
+        return 0;
+    }
+    if (!dev->backbuffer) return -1;
     int32_t x0 = (dx < 0) ? 0 : dx;
     int32_t y0 = (dy < 0) ? 0 : dy;
     int32_t x1 = dx + dw;
@@ -696,6 +1509,7 @@ int twd_gfx_draw_rect(
             blend_pixel_rgba8(p, rgba[0], rgba[1], rgba[2], rgba[3]);
         }
     }
+    dev->backbuffer_dirty = 1;
     dev->draw_calls++;
     return 0;
 }
@@ -726,6 +1540,7 @@ int twd_gfx_draw_line(
             cy += sy;
         }
     }
+    dev->backbuffer_dirty = 1;
     dev->draw_calls++;
     return 0;
 }
@@ -736,7 +1551,7 @@ int twd_gfx_draw_sprite(
     int32_t sx, int32_t sy, int32_t sw, int32_t sh,
     int32_t dx, int32_t dy, int32_t dw, int32_t dh,
     const uint8_t rgba_tint[4]) {
-    if (!dev || !dev->backbuffer || !tex || !tex->pixels ||
+    if (!dev || !tex || !tex->pixels ||
         tex->width == 0u || tex->height == 0u || dw <= 0 || dh <= 0) {
         return -1;
     }
@@ -748,6 +1563,23 @@ int twd_gfx_draw_sprite(
     uint8_t tg = rgba_tint ? rgba_tint[1] : 255u;
     uint8_t tb = rgba_tint ? rgba_tint[2] : 255u;
     uint8_t ta = rgba_tint ? rgba_tint[3] : 255u;
+
+    if (gfx_can_hw_triangles(dev)) {
+        static const uint8_t k_def_white[4] = {255u, 255u, 255u, 255u};
+        twd_gfx_vertex2d_t q[6];
+        gfx_fill_quad_verts(
+            q,
+            (float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+            (float)sx / (float)tex->width, (float)sy / (float)tex->height,
+            (float)(sx + sw) / (float)tex->width, (float)(sy + sh) / (float)tex->height,
+            rgba_tint ? rgba_tint : k_def_white);
+        if (gfx_queue_hw_triangle(dev, tex, &q[0], 0) != 0) return -1;
+        if (gfx_queue_hw_triangle(dev, tex, &q[3], 0) != 0) return -1;
+        dev->draw_calls++;
+        return 0;
+    }
+
+    if (!dev->backbuffer) return -1;
     const uint8_t *src_px = (const uint8_t *)tex->pixels;
 
     int32_t x0 = (dx < 0) ? 0 : dx;
@@ -774,6 +1606,7 @@ int twd_gfx_draw_sprite(
             blend_pixel_rgba8(dp, sr, sg, sb, sa);
         }
     }
+    dev->backbuffer_dirty = 1;
     dev->draw_calls++;
     return 0;
 }
@@ -814,6 +1647,7 @@ int twd_gfx_draw_alpha8(
             drow += 4u;
         }
     }
+    dev->backbuffer_dirty = 1;
     dev->draw_calls++;
     return 0;
 }
@@ -840,10 +1674,17 @@ static int gfx_draw_triangle_impl(
     const twd_gfx_texture_t *tex_or_null,
     const twd_gfx_vertex2d_t v[3],
     int use_z) {
-    if (!dev || !dev->backbuffer || !v) return -1;
+    if (!dev || !v) return -1;
     float area = tri_edge(v[0].x, v[0].y, v[1].x, v[1].y, v[2].x, v[2].y);
     if (area > -1e-5f && area < 1e-5f) return 0;
 
+    if (gfx_can_hw_triangles(dev)) {
+        if (gfx_queue_hw_triangle(dev, tex_or_null, v, use_z) != 0) return -1;
+        dev->draw_calls++;
+        return 0;
+    }
+
+    if (!dev->backbuffer) return -1;
     if (use_z) {
         size_t need = (size_t)dev->width * (size_t)dev->height;
         if (!dev->depthbuffer || dev->depthbuffer_elems < need) {
@@ -920,6 +1761,7 @@ static int gfx_draw_triangle_impl(
             blend_pixel_rgba8(dev->backbuffer + pidx * 4u, cr, cg, cb, ca);
         }
     }
+    dev->backbuffer_dirty = 1;
     dev->draw_calls++;
     return 0;
 }
@@ -947,7 +1789,7 @@ void twd_gfx_set_viewport(
     dev->viewport.height = h;
     dev->viewport.min_depth = min_d;
     dev->viewport.max_depth = max_d;
-    if (dev->gl_viewport && dev->egl_surface) {
+    if (dev->gl_viewport && gfx_is_gl_active(dev)) {
         dev->gl_viewport((int32_t)x, (int32_t)y, (int32_t)w, (int32_t)h);
     }
 }
@@ -961,7 +1803,7 @@ static uint32_t d3d_topo_to_gl_mode(uint32_t topo) {
 }
 
 static void bind_gl_pipeline(twd_gfx_device_t *dev) {
-    if (!dev || !dev->egl_surface) return;
+    if (!dev || !gfx_is_gl_active(dev)) return;
     if (dev->bound_vs_hash && dev->bound_ps_hash &&
         (dev->bound_vs_hash != dev->linked_vs_hash || dev->bound_ps_hash != dev->linked_ps_hash) &&
         dev->gl_create_program && dev->gl_attach_shader && dev->gl_link_program &&
@@ -1006,7 +1848,7 @@ static void bind_gl_pipeline(twd_gfx_device_t *dev) {
 void twd_gfx_draw(twd_gfx_device_t *dev, uint32_t vertex_count, uint32_t start_vertex) {
     if (!dev) return;
     bind_gl_pipeline(dev);
-    if (dev->gl_draw_arrays && dev->egl_surface) {
+    if (dev->gl_draw_arrays && gfx_is_gl_active(dev)) {
         dev->gl_draw_arrays(d3d_topo_to_gl_mode(dev->topology), (int32_t)start_vertex, (int32_t)vertex_count);
     }
     dev->draw_calls++;
@@ -1017,7 +1859,7 @@ void twd_gfx_draw_indexed(
     (void)base_vertex;
     if (!dev) return;
     bind_gl_pipeline(dev);
-    if (dev->gl_draw_elements && dev->egl_surface) {
+    if (dev->gl_draw_elements && gfx_is_gl_active(dev)) {
         const void *off_ptr = (const void *)(uintptr_t)((size_t)start_index * sizeof(uint16_t));
         dev->gl_draw_elements(d3d_topo_to_gl_mode(dev->topology), (int32_t)index_count, 0x1403u, off_ptr);
     }
@@ -1027,8 +1869,16 @@ void twd_gfx_draw_indexed(
 int twd_gfx_present(twd_gfx_device_t *dev, uint32_t sync_interval) {
     (void)sync_interval;
     if (!dev) return -1;
-    if (dev->egl_display && dev->egl_surface && dev->egl_swap_buffers) {
+    gfx_flush_hw_triangles(dev);
+    gfx_blit_backbuffer_overlay(dev);
+    if (dev->custom_swap_buffers) {
+        (void)dev->custom_swap_buffers(dev->custom_swap_user);
+    } else if (dev->egl_display && dev->egl_surface && dev->egl_swap_buffers) {
         dev->egl_swap_buffers(dev->egl_display, dev->egl_surface);
+#ifdef _WIN32
+    } else if (dev->win_hdc && dev->gdi_swap_buffers) {
+        (void)dev->gdi_swap_buffers(dev->win_hdc);
+#endif
     }
     dev->frame_index++;
     return 0;

@@ -411,6 +411,78 @@ int twd_gfx_draw_triangle_z(
     const twd_gfx_texture_t *tex_or_null,
     const twd_gfx_vertex2d_t v[3]);
 
+typedef struct twd_gfx_gl_procs {
+    void (*glViewport)(int32_t x, int32_t y, int32_t w, int32_t h);
+    void (*glScissor)(int32_t x, int32_t y, int32_t w, int32_t h);
+    void (*glClearColor)(float r, float g, float b, float a);
+    void (*glClear)(uint32_t mask);
+    void (*glDrawArrays)(uint32_t mode, int32_t first, int32_t count);
+    void (*glDrawElements)(uint32_t mode, int32_t count, uint32_t type, const void *indices);
+    void (*glGenBuffers)(int32_t n, uint32_t *buffers);
+    void (*glDeleteBuffers)(int32_t n, const uint32_t *buffers);
+    void (*glBindBuffer)(uint32_t target, uint32_t buffer);
+    void (*glBufferData)(uint32_t target, ptrdiff_t size, const void *data, uint32_t usage);
+    void (*glBufferSubData)(uint32_t target, ptrdiff_t offset, ptrdiff_t size, const void *data);
+    void (*glGenTextures)(int32_t n, uint32_t *textures);
+    void (*glDeleteTextures)(int32_t n, const uint32_t *textures);
+    void (*glActiveTexture)(uint32_t texture);
+    void (*glBindTexture)(uint32_t target, uint32_t texture);
+    void (*glTexImage2D)(uint32_t target, int32_t level, int32_t internalformat,
+                         int32_t width, int32_t height, int32_t border,
+                         uint32_t format, uint32_t type, const void *pixels);
+    void (*glTexSubImage2D)(uint32_t target, int32_t level, int32_t xoff, int32_t yoff,
+                            int32_t width, int32_t height, uint32_t format,
+                            uint32_t type, const void *pixels);
+    void (*glTexParameteri)(uint32_t target, uint32_t pname, int32_t param);
+    uint32_t (*glCreateShader)(uint32_t type);
+    void (*glShaderSource)(uint32_t shader, int32_t count, const char *const *str, const int32_t *len);
+    void (*glCompileShader)(uint32_t shader);
+    void (*glDeleteShader)(uint32_t shader);
+    void (*glGetShaderiv)(uint32_t shader, uint32_t pname, int32_t *params);
+    uint32_t (*glCreateProgram)(void);
+    void (*glAttachShader)(uint32_t program, uint32_t shader);
+    void (*glLinkProgram)(uint32_t program);
+    void (*glUseProgram)(uint32_t program);
+    void (*glDeleteProgram)(uint32_t program);
+    void (*glGetProgramiv)(uint32_t program, uint32_t pname, int32_t *params);
+    int32_t (*glGetAttribLocation)(uint32_t program, const char *name);
+    int32_t (*glGetUniformLocation)(uint32_t program, const char *name);
+    void (*glEnableVertexAttribArray)(uint32_t index);
+    void (*glDisableVertexAttribArray)(uint32_t index);
+    void (*glVertexAttribPointer)(uint32_t index, int32_t size, uint32_t type,
+                                  uint8_t normalized, int32_t stride, const void *pointer);
+    void (*glUniform1i)(int32_t location, int32_t v0);
+    void (*glUniform1f)(int32_t location, float v0);
+    void (*glUniform2f)(int32_t location, float v0, float v1);
+    void (*glUniform4f)(int32_t location, float v0, float v1, float v2, float v3);
+    void (*glEnable)(uint32_t cap);
+    void (*glDisable)(uint32_t cap);
+    void (*glDepthFunc)(uint32_t func);
+    void (*glDepthMask)(uint8_t flag);
+    void (*glBlendFunc)(uint32_t sfactor, uint32_t dfactor);
+    void (*glGenVertexArrays)(int32_t n, uint32_t *arrays);
+    void (*glDeleteVertexArrays)(int32_t n, const uint32_t *arrays);
+    void (*glBindVertexArray)(uint32_t array);
+    int (*swap_buffers)(void *user);
+} twd_gfx_gl_procs_t;
+
+typedef struct twd_gfx_hw_stats {
+    uint64_t hw_tri_flushes;
+    uint64_t hw_tri_verts;
+    uint64_t hw_overlay_blits;
+    uint32_t pending_tri_verts;
+    uint32_t pending_tri_batches;
+    uint32_t tri_program;
+    uint32_t tri_vbo;
+    uint32_t overlay_tex;
+    int hw_active;
+    int backbuffer_dirty;
+} twd_gfx_hw_stats_t;
+
+int twd_gfx_attach_gl_procs(
+    twd_gfx_device_t *dev, const twd_gfx_gl_procs_t *procs, void *swap_user, int is_gles);
+void twd_gfx_get_hw_stats(const twd_gfx_device_t *dev, twd_gfx_hw_stats_t *out);
+
 /* DXBC -> GLSL ES 3.00 / SPIR-V Shader Translation & Cache */
 #define TWD_SHADER_STAGE_VS 0u
 #define TWD_SHADER_STAGE_PS 1u

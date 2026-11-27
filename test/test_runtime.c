@@ -84,6 +84,158 @@ static int synthetic_xor_decrypt(uint32_t chunk_index, void *buf, size_t len, vo
     return 0;
 }
 
+typedef struct mock_gl_state {
+    uint32_t next_id;
+    int32_t active_buffers;
+    int32_t active_textures;
+    int32_t active_programs;
+    int32_t active_vaos;
+    uint32_t shader_compiles;
+    uint32_t program_links;
+    uint32_t buffer_uploads;
+    size_t last_vbo_bytes;
+    twd_gfx_vertex2d_t last_verts[64];
+    size_t last_vert_count;
+    uint32_t tex_uploads;
+    uint32_t clear_calls;
+    uint32_t last_clear_mask;
+    uint32_t draw_arrays_calls;
+    uint32_t draw_arrays_verts_total;
+    uint32_t saw_depth_enabled_draws;
+    uint32_t saw_depth_disabled_draws;
+    uint32_t saw_tex_enabled_draws;
+    uint32_t saw_tex_disabled_draws;
+    int depth_enabled;
+    float u_use_z;
+    float u_use_tex;
+    float vp_w, vp_h;
+    uint32_t swap_calls;
+} mock_gl_state_t;
+
+static mock_gl_state_t s_mgl;
+
+static void mgl_viewport(int32_t x, int32_t y, int32_t w, int32_t h) {
+    (void)x; (void)y; s_mgl.vp_w = (float)w; s_mgl.vp_h = (float)h;
+}
+static void mgl_clear_color(float r, float g, float b, float a) {
+    (void)r; (void)g; (void)b; (void)a;
+}
+static void mgl_clear(uint32_t mask) {
+    s_mgl.clear_calls++; s_mgl.last_clear_mask = mask;
+}
+static void mgl_gen_buffers(int32_t n, uint32_t *out) {
+    for (int32_t i = 0; i < n; ++i) { out[i] = s_mgl.next_id++; s_mgl.active_buffers++; }
+}
+static void mgl_del_buffers(int32_t n, const uint32_t *ids) {
+    for (int32_t i = 0; i < n; ++i) { if (ids[i]) s_mgl.active_buffers--; }
+}
+static void mgl_bind_buffer(uint32_t tgt, uint32_t buf) { (void)tgt; (void)buf; }
+static void mgl_buffer_data(uint32_t tgt, ptrdiff_t sz, const void *data, uint32_t usage) {
+    (void)tgt; (void)usage;
+    s_mgl.buffer_uploads++;
+    s_mgl.last_vbo_bytes = (size_t)sz;
+    if (data && sz > 0) {
+        size_t vc = (size_t)sz / sizeof(twd_gfx_vertex2d_t);
+        if (vc > 64u) vc = 64u;
+        memcpy(s_mgl.last_verts, data, vc * sizeof(twd_gfx_vertex2d_t));
+        s_mgl.last_vert_count = vc;
+    }
+}
+static void mgl_buffer_sub_data(uint32_t tgt, ptrdiff_t off, ptrdiff_t sz, const void *d) {
+    (void)tgt; (void)off; (void)sz; (void)d;
+}
+static void mgl_gen_textures(int32_t n, uint32_t *out) {
+    for (int32_t i = 0; i < n; ++i) { out[i] = s_mgl.next_id++; s_mgl.active_textures++; }
+}
+static void mgl_del_textures(int32_t n, const uint32_t *ids) {
+    for (int32_t i = 0; i < n; ++i) { if (ids[i]) s_mgl.active_textures--; }
+}
+static void mgl_active_texture(uint32_t tex) { (void)tex; }
+static void mgl_bind_texture(uint32_t tgt, uint32_t tex) { (void)tgt; (void)tex; }
+static void mgl_tex_image_2d(uint32_t t, int32_t l, int32_t ifmt, int32_t w, int32_t h,
+                             int32_t b, uint32_t fmt, uint32_t ty, const void *px) {
+    (void)t; (void)l; (void)ifmt; (void)w; (void)h; (void)b; (void)fmt; (void)ty; (void)px;
+    s_mgl.tex_uploads++;
+}
+static void mgl_tex_sub_image_2d(uint32_t t, int32_t l, int32_t x, int32_t y, int32_t w, int32_t h,
+                                 uint32_t fmt, uint32_t ty, const void *px) {
+    (void)t; (void)l; (void)x; (void)y; (void)w; (void)h; (void)fmt; (void)ty; (void)px;
+    s_mgl.tex_uploads++;
+}
+static void mgl_tex_param(uint32_t t, uint32_t p, int32_t v) { (void)t; (void)p; (void)v; }
+static uint32_t mgl_create_shader(uint32_t ty) { (void)ty; return s_mgl.next_id++; }
+static void mgl_shader_src(uint32_t s, int32_t c, const char *const *str, const int32_t *l) {
+    (void)s; (void)c; (void)str; (void)l;
+}
+static void mgl_compile_shader(uint32_t s) { (void)s; s_mgl.shader_compiles++; }
+static void mgl_delete_shader(uint32_t s) { (void)s; }
+static void mgl_get_shader_iv(uint32_t s, uint32_t p, int32_t *out) {
+    (void)s; (void)p; if (out) *out = 1;
+}
+static uint32_t mgl_create_program(void) { s_mgl.active_programs++; return s_mgl.next_id++; }
+static void mgl_attach_shader(uint32_t p, uint32_t s) { (void)p; (void)s; }
+static void mgl_link_program(uint32_t p) { (void)p; s_mgl.program_links++; }
+static void mgl_use_program(uint32_t p) { (void)p; }
+static void mgl_delete_program(uint32_t p) { if (p) s_mgl.active_programs--; }
+static void mgl_get_program_iv(uint32_t p, uint32_t pn, int32_t *out) {
+    (void)p; (void)pn; if (out) *out = 1;
+}
+static int32_t mgl_get_attrib(uint32_t p, const char *name) {
+    (void)p;
+    if (strcmp(name, "a_pos") == 0) return 0;
+    if (strcmp(name, "a_uv") == 0) return 1;
+    if (strcmp(name, "a_col") == 0) return 2;
+    return -1;
+}
+static int32_t mgl_get_unif(uint32_t p, const char *name) {
+    (void)p;
+    if (strcmp(name, "u_viewport") == 0) return 10;
+    if (strcmp(name, "u_tex") == 0) return 11;
+    if (strcmp(name, "u_use_tex") == 0) return 12;
+    if (strcmp(name, "u_use_z") == 0) return 13;
+    return -1;
+}
+static void mgl_enable_vaa(uint32_t idx) { (void)idx; }
+static void mgl_disable_vaa(uint32_t idx) { (void)idx; }
+static void mgl_vap(uint32_t idx, int32_t sz, uint32_t ty, uint8_t norm, int32_t st, const void *ptr) {
+    (void)idx; (void)sz; (void)ty; (void)norm; (void)st; (void)ptr;
+}
+static void mgl_u1i(int32_t loc, int32_t v) { (void)loc; (void)v; }
+static void mgl_u1f(int32_t loc, float v) {
+    if (loc == 12) s_mgl.u_use_tex = v;
+    else if (loc == 13) s_mgl.u_use_z = v;
+}
+static void mgl_u2f(int32_t loc, float x, float y) { (void)loc; (void)x; (void)y; }
+static void mgl_u4f(int32_t loc, float x, float y, float z, float w) {
+    (void)loc; (void)x; (void)y; (void)z; (void)w;
+}
+static void mgl_enable(uint32_t cap) { if (cap == 0x0B71u) s_mgl.depth_enabled = 1; }
+static void mgl_disable(uint32_t cap) { if (cap == 0x0B71u) s_mgl.depth_enabled = 0; }
+static void mgl_depth_func(uint32_t fn) { (void)fn; }
+static void mgl_depth_mask(uint8_t m) { (void)m; }
+static void mgl_blend_func(uint32_t s, uint32_t d) { (void)s; (void)d; }
+static void mgl_gen_vaos(int32_t n, uint32_t *out) {
+    for (int32_t i = 0; i < n; ++i) { out[i] = s_mgl.next_id++; s_mgl.active_vaos++; }
+}
+static void mgl_del_vaos(int32_t n, const uint32_t *ids) {
+    for (int32_t i = 0; i < n; ++i) { if (ids[i]) s_mgl.active_vaos--; }
+}
+static void mgl_bind_vao(uint32_t vao) { (void)vao; }
+static void mgl_draw_arrays(uint32_t mode, int32_t first, int32_t count) {
+    (void)mode; (void)first;
+    s_mgl.draw_arrays_calls++;
+    s_mgl.draw_arrays_verts_total += (uint32_t)count;
+    if (s_mgl.depth_enabled && s_mgl.u_use_z > 0.5f) s_mgl.saw_depth_enabled_draws++;
+    if (!s_mgl.depth_enabled && s_mgl.u_use_z < 0.5f) s_mgl.saw_depth_disabled_draws++;
+    if (s_mgl.u_use_tex > 0.5f) s_mgl.saw_tex_enabled_draws++;
+    else s_mgl.saw_tex_disabled_draws++;
+}
+static int mgl_swap(void *user) {
+    (void)user;
+    s_mgl.swap_calls++;
+    return 1;
+}
+
 int main(void) {
     TWD_CHECK(twd_platform_init() == 0);
     uint64_t t0 = twd_time_now_ns();
@@ -2550,6 +2702,127 @@ int main(void) {
         twd_gfx_texture_destroy(tarr[1]);
         twd_d3dmesh_free(&mm);
         twd_gfx_device_destroy(mg);
+    }
+
+    /* Hardware GL/GLES3 triangle batching, shader/VBO upload, Z-test & present overlay test */
+    {
+        memset(&s_mgl, 0, sizeof(s_mgl));
+        s_mgl.next_id = 1u;
+
+        twd_gfx_desc_t hdesc;
+        memset(&hdesc, 0, sizeof(hdesc));
+        hdesc.width = 64u;
+        hdesc.height = 64u;
+        hdesc.preferred_backend = TWD_GFX_BACKEND_NONE;
+        twd_gfx_device_t *hw = twd_gfx_device_create(&hdesc);
+        TWD_CHECK(hw != NULL);
+
+        twd_gfx_gl_procs_t mprocs;
+        memset(&mprocs, 0, sizeof(mprocs));
+        mprocs.glViewport = mgl_viewport;
+        mprocs.glClearColor = mgl_clear_color;
+        mprocs.glClear = mgl_clear;
+        mprocs.glDrawArrays = mgl_draw_arrays;
+        mprocs.glGenBuffers = mgl_gen_buffers;
+        mprocs.glDeleteBuffers = mgl_del_buffers;
+        mprocs.glBindBuffer = mgl_bind_buffer;
+        mprocs.glBufferData = mgl_buffer_data;
+        mprocs.glBufferSubData = mgl_buffer_sub_data;
+        mprocs.glGenTextures = mgl_gen_textures;
+        mprocs.glDeleteTextures = mgl_del_textures;
+        mprocs.glActiveTexture = mgl_active_texture;
+        mprocs.glBindTexture = mgl_bind_texture;
+        mprocs.glTexImage2D = mgl_tex_image_2d;
+        mprocs.glTexSubImage2D = mgl_tex_sub_image_2d;
+        mprocs.glTexParameteri = mgl_tex_param;
+        mprocs.glCreateShader = mgl_create_shader;
+        mprocs.glShaderSource = mgl_shader_src;
+        mprocs.glCompileShader = mgl_compile_shader;
+        mprocs.glDeleteShader = mgl_delete_shader;
+        mprocs.glGetShaderiv = mgl_get_shader_iv;
+        mprocs.glCreateProgram = mgl_create_program;
+        mprocs.glAttachShader = mgl_attach_shader;
+        mprocs.glLinkProgram = mgl_link_program;
+        mprocs.glUseProgram = mgl_use_program;
+        mprocs.glDeleteProgram = mgl_delete_program;
+        mprocs.glGetProgramiv = mgl_get_program_iv;
+        mprocs.glGetAttribLocation = mgl_get_attrib;
+        mprocs.glGetUniformLocation = mgl_get_unif;
+        mprocs.glEnableVertexAttribArray = mgl_enable_vaa;
+        mprocs.glDisableVertexAttribArray = mgl_disable_vaa;
+        mprocs.glVertexAttribPointer = mgl_vap;
+        mprocs.glUniform1i = mgl_u1i;
+        mprocs.glUniform1f = mgl_u1f;
+        mprocs.glUniform2f = mgl_u2f;
+        mprocs.glUniform4f = mgl_u4f;
+        mprocs.glEnable = mgl_enable;
+        mprocs.glDisable = mgl_disable;
+        mprocs.glDepthFunc = mgl_depth_func;
+        mprocs.glDepthMask = mgl_depth_mask;
+        mprocs.glBlendFunc = mgl_blend_func;
+        mprocs.glGenVertexArrays = mgl_gen_vaos;
+        mprocs.glDeleteVertexArrays = mgl_del_vaos;
+        mprocs.glBindVertexArray = mgl_bind_vao;
+        mprocs.swap_buffers = mgl_swap;
+
+        TWD_CHECK(twd_gfx_attach_gl_procs(hw, &mprocs, &s_mgl, 1) == 0);
+        TWD_CHECK(twd_gfx_has_gl_dispatch(hw) == 2);
+        char hdrv[32];
+        TWD_CHECK(twd_gfx_probe_driver(hw, hdrv, sizeof(hdrv)) == TWD_GFX_BACKEND_GLES3);
+
+        static const float k_hw_bg[4] = {0.1f, 0.2f, 0.3f, 1.0f};
+        twd_gfx_clear(hw, k_hw_bg, 1.0f, 0u);
+        TWD_CHECK(s_mgl.clear_calls == 1u && (s_mgl.last_clear_mask & 0x4100u) == 0x4100u);
+
+        static const uint8_t k_hw_tex_px[16] = {
+            255u,255u,255u,255u, 255u,255u,255u,255u,
+            255u,255u,255u,255u, 255u,255u,255u,255u
+        };
+        twd_gfx_texture_t *hw_tex = twd_gfx_texture_create(hw, 2u, 2u, 0u);
+        TWD_CHECK(hw_tex != NULL);
+        TWD_CHECK(twd_gfx_texture_update(hw_tex, k_hw_tex_px, sizeof(k_hw_tex_px)) == 0);
+
+        static const uint8_t k_rect_rgba[4] = {20u, 30u, 40u, 200u};
+        static const uint8_t k_alpha_mask[4] = {255u, 255u, 255u, 255u};
+        TWD_CHECK(twd_gfx_draw_sprite(hw, hw_tex, 0, 0, 2, 2, 0, 0, 64, 64, NULL) == 0);
+        twd_gfx_vertex2d_t hw_t1[3] = {
+            {8.0f, 8.0f, 1.5f, 0.0f, 0.0f, {255u, 0u, 0u, 255u}},
+            {48.0f, 8.0f, 1.5f, 1.0f, 0.0f, {0u, 255u, 0u, 255u}},
+            {28.0f, 48.0f, 1.5f, 0.5f, 1.0f, {0u, 0u, 255u, 255u}}
+        };
+        twd_gfx_vertex2d_t hw_t2[3] = {
+            {10.0f, 10.0f, 3.0f, 0.0f, 0.0f, {200u, 200u, 200u, 255u}},
+            {40.0f, 10.0f, 3.0f, 1.0f, 0.0f, {200u, 200u, 200u, 255u}},
+            {25.0f, 40.0f, 3.0f, 0.5f, 1.0f, {200u, 200u, 200u, 255u}}
+        };
+        TWD_CHECK(twd_gfx_draw_triangle_z(hw, hw_tex, hw_t1) == 0);
+        TWD_CHECK(twd_gfx_draw_triangle_z(hw, hw_tex, hw_t2) == 0);
+        TWD_CHECK(twd_gfx_draw_rect(hw, 4, 4, 16, 8, k_rect_rgba) == 0);
+        TWD_CHECK(twd_gfx_draw_alpha8(hw, k_alpha_mask, 2, 2, 12, 12, k_rect_rgba) == 0);
+
+        twd_gfx_hw_stats_t hws_pre;
+        twd_gfx_get_hw_stats(hw, &hws_pre);
+        /* sprite (6) + 2 coalesced Z triangles (6) + rect (6) = 18 queued verts across 3 batches */
+        TWD_CHECK(hws_pre.hw_active == 1 && hws_pre.pending_tri_verts == 18u);
+        TWD_CHECK(hws_pre.pending_tri_batches == 3u && hws_pre.backbuffer_dirty == 1);
+
+        TWD_CHECK(twd_gfx_present(hw, 1u) == 0);
+
+        twd_gfx_hw_stats_t hws_post;
+        twd_gfx_get_hw_stats(hw, &hws_post);
+        TWD_CHECK(hws_post.hw_tri_flushes == 1ULL && hws_post.hw_tri_verts == 18ULL);
+        TWD_CHECK(hws_post.hw_overlay_blits == 1ULL && hws_post.backbuffer_dirty == 0);
+        TWD_CHECK(hws_post.pending_tri_verts == 0u && hws_post.tri_program != 0u && hws_post.tri_vbo != 0u);
+        TWD_CHECK(s_mgl.shader_compiles == 2u && s_mgl.program_links == 1u);
+        TWD_CHECK(s_mgl.draw_arrays_calls == 4u && s_mgl.draw_arrays_verts_total == 24u);
+        TWD_CHECK(s_mgl.saw_depth_enabled_draws == 1u && s_mgl.saw_depth_disabled_draws == 3u);
+        TWD_CHECK(s_mgl.saw_tex_enabled_draws == 3u && s_mgl.saw_tex_disabled_draws == 1u);
+        TWD_CHECK(s_mgl.swap_calls == 1u);
+
+        twd_gfx_texture_destroy(hw_tex);
+        twd_gfx_device_destroy(hw);
+        TWD_CHECK(s_mgl.active_buffers == 0 && s_mgl.active_textures == 0 &&
+                  s_mgl.active_programs == 0 && s_mgl.active_vaos == 0);
     }
 
     twd_platform_shutdown();
