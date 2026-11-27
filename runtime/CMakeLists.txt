@@ -24,11 +24,11 @@ target_include_directories(twdrt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if(UNIX AND NOT ANDROID)
     find_package(Threads REQUIRED)
-    target_link_libraries(twdrt PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_libraries(twdrt PUBLIC Threads::Threads ${CMAKE_DL_LIBS} m)
 endif()
 
 if(ANDROID)
     find_library(ANDROID_LIB android)
     find_library(LOG_LIB log)
-    target_link_libraries(twdrt PUBLIC ${ANDROID_LIB} ${LOG_LIB})
+    target_link_libraries(twdrt PUBLIC ${ANDROID_LIB} ${LOG_LIB} m)
 endif()
