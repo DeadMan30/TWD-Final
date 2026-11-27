@@ -55,6 +55,14 @@ typedef struct twd_boot_loop_state {
     int has_boot_landb;
     twd_landb_t menu_landb;
     int has_menu_landb;
+    twd_landb_t scene_landb;
+    int has_scene_landb;
+    uint32_t dlg_cursor;
+    uint32_t dlg_step;
+    char dlg_line[160];
+    char dlg_node[64];
+    char dlg_last_choice[64];
+    int dlg_choices_open;
     twd_d3dmesh_t boot_mesh;
     twd_d3dmesh_gpu_t boot_mesh_gpu;
     int has_boot_mesh;
@@ -545,7 +553,13 @@ static int boot_on_init(void *user) {
     twd_gfx_set_viewport(st->gfx, 0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f);
 
     if (st->audio) {
-        (void)twd_audio_load_bank_vfs(st->audio, "Master.bank");
+        (void)twd_audio_load_bank_vfs(st->audio, "Master Bank.bank");
+        (void)twd_audio_load_bank_vfs(st->audio, "Master Bank.strings.bank");
+        twd_audio_bank_t *mm = twd_audio_load_bank_vfs(st->audio, "CommonMenuMusic.bank");
+        if (!mm) mm = twd_audio_load_bank_vfs(st->audio, "Master.bank");
+        if (mm && twd_audio_play_bank_event(st->audio, mm, 0u, 0.35f) == 0) {
+            (void)twd_kv_set("audio", "menu_music_started", "1");
+        }
     }
     twd_kv_set("Engine", "BootPhase", "LoopActive");
     return 0;
@@ -694,6 +708,9 @@ static void boot_activate_menu_button(twd_boot_loop_state_t *st, uint32_t idx) {
     }
 }
 
+static void boot_copy_trunc(char *dst, size_t cap, const char *src);
+static void boot_advance_dialogue(twd_boot_loop_state_t *st, int step_forward);
+
 static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *ev) {
     if (!st || !ev) return;
     st->input_events++;
@@ -768,6 +785,15 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                     st->cam_pan_z = 0.0f;
                     st->cam_yaw = 0.0f;
                     st->cam_pitch = 0.0f;
+                } else if (ev->param1 == 32ULL || ev->param1 == 78ULL) {
+                    boot_advance_dialogue(st, 1);
+                } else if (st->dlg_choices_open && ev->param1 >= 49ULL && ev->param1 <= 51ULL) {
+                    static const char *const k_choices[3] = {"Help AJ", "Check Area", "Stay Silent"};
+                    uint32_t ci = (uint32_t)(ev->param1 - 49ULL);
+                    boot_copy_trunc(st->dlg_last_choice, sizeof(st->dlg_last_choice), k_choices[ci]);
+                    (void)twd_kv_set("scene", "last_choice", st->dlg_last_choice);
+                    st->dlg_choices_open = 0;
+                    boot_advance_dialogue(st, 1);
                 } else if (ev->param1 == 8ULL) {
                     if (twd_ttarch2_exists_mounted("ui_episodes.scene")) {
                         st->menu_page = TWD_MENU_PAGE_EPISODES;
@@ -843,6 +869,9 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                     memcpy(st->selected_agent, st->scene_items[best_idx].agent_name, nl);
                     st->selected_agent[nl] = '\0';
                     (void)twd_kv_set("ui", "last_hit", st->selected_agent);
+                    if (st->has_scene_landb) {
+                        boot_advance_dialogue(st, 1);
+                    }
                     return;
                 }
             }
@@ -918,37 +947,57 @@ static void boot_agent_world_transform(twd_scene_t *sc, const twd_scene_agent_t 
 
 static twd_gfx_texture_t *boot_load_mesh_texture(
     twd_gfx_device_t *gfx, const twd_d3dmesh_t *mesh, const char *agent_or_mesh_name) {
-    char cand[2][160];
-    memset(cand, 0, sizeof(cand));
     if (mesh && mesh->texture_count > 0u && mesh->textures[0][0] != '\0') {
+        char nm[160];
         size_t tn = strlen(mesh->textures[0]);
         if (tn < 144u) {
-            memcpy(cand[0], mesh->textures[0], tn + 1u);
-            if (tn < 6u || strcmp(cand[0] + tn - 6u, ".d3dtx") != 0) {
-                memcpy(cand[0] + tn, ".d3dtx", 7u);
+            memcpy(nm, mesh->textures[0], tn + 1u);
+            if (tn < 6u || strcmp(nm + tn - 6u, ".d3dtx") != 0) {
+                memcpy(nm + tn, ".d3dtx", 7u);
+            }
+            size_t mts = 0u;
+            void *mtb = twd_asset_read_alloc(nm, &mts);
+            if (mtb && mts > 0u) {
+                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
+                twd_asset_free(mtb);
+                if (tex) return tex;
+            } else if (mtb) {
+                twd_asset_free(mtb);
+            }
+        }
+    }
+    if (mesh) {
+        for (uint32_t ti = 0u; ti < mesh->texture_count; ++ti) {
+            if (mesh->texture_crcs[ti] == 0ULL) continue;
+            size_t mts = 0u;
+            void *mtb = twd_ttarch2_lookup_mounted_crc64_alloc(mesh->texture_crcs[ti], &mts);
+            if (mtb && mts > 0u) {
+                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
+                twd_ttarch2_free(mtb);
+                if (tex) return tex;
+            } else if (mtb) {
+                twd_ttarch2_free(mtb);
             }
         }
     }
     if (agent_or_mesh_name && agent_or_mesh_name[0] != '\0') {
+        char cand[160];
         size_t al = strlen(agent_or_mesh_name);
         if (al >= 8u && strcmp(agent_or_mesh_name + al - 8u, ".d3dmesh") == 0) {
             al -= 8u;
         }
         if (al > 0u && al < 144u) {
-            memcpy(cand[1], agent_or_mesh_name, al);
-            memcpy(cand[1] + al, ".d3dtx", 7u);
-        }
-    }
-    for (int ci = 0; ci < 2; ++ci) {
-        if (cand[ci][0] == '\0') continue;
-        size_t mts = 0u;
-        void *mtb = twd_asset_read_alloc(cand[ci], &mts);
-        if (mtb && mts > 0u) {
-            twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
-            twd_asset_free(mtb);
-            if (tex) return tex;
-        } else if (mtb) {
-            twd_asset_free(mtb);
+            memcpy(cand, agent_or_mesh_name, al);
+            memcpy(cand + al, ".d3dtx", 7u);
+            size_t mts = 0u;
+            void *mtb = twd_asset_read_alloc(cand, &mts);
+            if (mtb && mts > 0u) {
+                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
+                twd_asset_free(mtb);
+                if (tex) return tex;
+            } else if (mtb) {
+                twd_asset_free(mtb);
+            }
         }
     }
     return NULL;
@@ -1154,9 +1203,48 @@ static void boot_populate_menu_buttons(twd_boot_loop_state_t *st, const char *sc
     boot_layout_menu_buttons(st);
 }
 
+static void boot_advance_dialogue(twd_boot_loop_state_t *st, int step_forward);
+
+static int lua_dlg_set_node(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm;
+    twd_boot_loop_state_t *st = (twd_boot_loop_state_t *)user;
+    if (st && argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        boot_copy_trunc(st->dlg_node, sizeof(st->dlg_node), argv[0].u.str);
+        (void)twd_kv_set("scene", "dialog_node", st->dlg_node);
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = 1; }
+    return 0;
+}
+
+static int lua_logic_set(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm; (void)user;
+    if (argc >= 2 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str) {
+        if (argv[1].kind == TWD_LUA_T_STR && argv[1].u.str) {
+            (void)twd_kv_set("logic", argv[0].u.str, argv[1].u.str);
+        } else if (argv[1].kind == TWD_LUA_T_BOOL) {
+            (void)twd_kv_set("logic", argv[0].u.str, argv[1].u.b ? "1" : "0");
+        }
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = 1; }
+    return 0;
+}
+
+static int lua_logic_get(twd_lua_vm_t *vm, void *user, int argc, const twd_lua_val_t *argv, twd_lua_val_t *ret) {
+    (void)vm; (void)user;
+    char buf[32];
+    if (argc >= 1 && argv[0].kind == TWD_LUA_T_STR && argv[0].u.str &&
+        twd_kv_get("logic", argv[0].u.str, buf, sizeof(buf)) > 0) {
+        if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = (buf[0] != '0') ? 1 : 0; }
+        return 0;
+    }
+    if (ret) { ret->kind = TWD_LUA_T_BOOL; ret->u.b = 0; }
+    return 0;
+}
+
 static void boot_register_lua_api(twd_lua_vm_t *lvm, twd_boot_loop_state_t *st, boot_lua_ctx_t *bctx) {
     if (!lvm || !st || !bctx) return;
     (void)twd_lua_vm_register(lvm, "SceneOpen", lua_scene_open, st->scenes);
+    (void)twd_lua_vm_register(lvm, "Game_SceneOpen", lua_scene_open, st->scenes);
     (void)twd_lua_vm_register(lvm, "SceneAdd", lua_scene_add, st->scenes);
     (void)twd_lua_vm_register(lvm, "SceneIsActive", lua_scene_is_active, st->scenes);
     (void)twd_lua_vm_register(lvm, "SceneHide", lua_scene_hide, st->scenes);
@@ -1166,6 +1254,14 @@ static void boot_register_lua_api(twd_lua_vm_t *lvm, twd_boot_loop_state_t *st, 
     (void)twd_lua_vm_register(lvm, "SceneAddAgent", lua_scene_add_agent, st->scenes);
     (void)twd_lua_vm_register(lvm, "AgentFind", lua_agent_find, st->scenes);
     (void)twd_lua_vm_register(lvm, "AgentSetPos", lua_agent_set_pos, st->scenes);
+    (void)twd_lua_vm_register(lvm, "Game_SetSceneDialogNode", lua_dlg_set_node, st);
+    (void)twd_lua_vm_register(lvm, "Game_RunSceneDialog", lua_dlg_set_node, st);
+    (void)twd_lua_vm_register(lvm, "Game_GetLoaded", lua_ret_const_bool, (void *)(uintptr_t)1u);
+    (void)twd_lua_vm_register(lvm, "Game_GetSkipEnterCutscenes", lua_ret_const_bool, NULL);
+    (void)twd_lua_vm_register(lvm, "Game_GetPlayerDialog", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "DlgPreloadAll", lua_ret_nil, NULL);
+    (void)twd_lua_vm_register(lvm, "LogicGet", lua_logic_get, NULL);
+    (void)twd_lua_vm_register(lvm, "LogicSet", lua_logic_set, NULL);
     (void)twd_lua_vm_register(lvm, "Input_IsKeyDown", lua_input_is_key_down, NULL);
     (void)twd_lua_vm_register(lvm, "CursorGetPos", lua_cursor_get_pos, NULL);
     (void)twd_lua_vm_register(lvm, "GameEngine_Quit", lua_engine_quit, NULL);
@@ -1238,6 +1334,126 @@ static void boot_exec_menu_main(twd_boot_loop_state_t *st) {
     twd_lua_vm_destroy(mvm);
 }
 
+static void boot_u32_to_dec(uint32_t v, char *buf, size_t cap) {
+    char tmp[16];
+    size_t i = sizeof(tmp);
+    tmp[--i] = '\0';
+    do {
+        tmp[--i] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v != 0u && i > 0u);
+    boot_copy_trunc(buf, cap, &tmp[i]);
+}
+
+static void boot_advance_dialogue(twd_boot_loop_state_t *st, int step_forward) {
+    if (!st || !st->has_scene_landb || st->scene_landb.entry_count == 0u) return;
+    uint32_t n = st->scene_landb.entry_count;
+    uint32_t start = step_forward ? ((st->dlg_cursor + 1u) % n) : (st->dlg_cursor % n);
+    if (step_forward) {
+        st->dlg_step++;
+        if ((st->dlg_step % 3u) == 0u) {
+            st->dlg_choices_open = 1;
+        }
+    }
+    for (uint32_t off = 0u; off < n; ++off) {
+        uint32_t idx = (start + off) % n;
+        const twd_landb_entry_t *e = &st->scene_landb.entries[idx];
+        if (!e->text || e->text[0] == '\0') continue;
+        char cleaned[160];
+        boot_format_single_line(cleaned, sizeof(cleaned), e->text);
+        if (cleaned[0] == '\0') continue;
+        st->dlg_cursor = idx;
+        boot_copy_trunc(st->dlg_line, sizeof(st->dlg_line), cleaned);
+        (void)twd_kv_set("scene", "subtitle", st->dlg_line);
+        if (e->res_id != 0u) {
+            char wav[32];
+            boot_u32_to_dec(e->res_id, wav, sizeof(wav));
+            size_t wl = strlen(wav);
+            if (wl + 5u <= sizeof(wav)) {
+                memcpy(wav + wl, ".wav", 5u);
+                if (twd_ttarch2_exists_mounted(wav)) {
+                    (void)twd_kv_set("audio", "last_voice", wav);
+                }
+            }
+        }
+        return;
+    }
+}
+
+static void boot_start_gameplay_scene(twd_boot_loop_state_t *st, const char *scene_name) {
+    if (!st || !scene_name) return;
+    if (st->has_scene_landb) {
+        twd_landb_free(&st->scene_landb);
+        st->has_scene_landb = 0;
+    }
+    st->dlg_cursor = 0u;
+    st->dlg_step = 0u;
+    st->dlg_line[0] = '\0';
+    st->dlg_node[0] = '\0';
+    st->dlg_choices_open = 0;
+
+    const char *base = scene_name;
+    if (strncmp(base, "adv_", 4u) == 0) base += 4u;
+    size_t blen = strlen(base);
+    if (blen >= 6u && strcmp(base + blen - 6u, ".scene") == 0) blen -= 6u;
+    if (blen > 0u && blen < 96u) {
+        char base_name[96];
+        memcpy(base_name, base, blen);
+        base_name[blen] = '\0';
+
+        char lua_name[112];
+        memcpy(lua_name, base_name, blen);
+        memcpy(lua_name + blen, ".lua", 5u);
+        if (twd_ttarch2_exists_mounted(lua_name)) {
+            twd_lua_vm_t *svm = twd_lua_vm_create();
+            if (svm) {
+                boot_lua_ctx_t bctx;
+                memset(&bctx, 0, sizeof(bctx));
+                boot_register_lua_api(svm, st, &bctx);
+                if (twd_lua_vm_exec_vfs(svm, lua_name) == 0) {
+                    if (st->stats) st->stats->boot_scripts_executed += twd_lua_vm_executed_count(svm);
+                    (void)twd_kv_set("scene", "script_loaded", lua_name);
+                    if (twd_lua_vm_get_global(svm, base_name) != NULL) {
+                        (void)twd_lua_vm_call_global(svm, base_name, 0, NULL, NULL);
+                    }
+                    if (twd_lua_vm_get_global(svm, "OnLogicReady") != NULL) {
+                        (void)twd_lua_vm_call_global(svm, "OnLogicReady", 0, NULL, NULL);
+                    }
+                }
+                twd_lua_vm_destroy(svm);
+            }
+        }
+
+        static const char *const k_acts[4] = {
+            "_act1_english.landb", "_act2_english.landb", "_act3_english.landb", "_english.landb"
+        };
+        for (int ai = 0; ai < 4 && !st->has_scene_landb; ++ai) {
+            char lb_name[144];
+            size_t lo = 0u;
+            if (ai < 3) {
+                memcpy(lb_name, "env_", 4u);
+                lo = 4u;
+            }
+            memcpy(lb_name + lo, base_name, blen);
+            lo += blen;
+            size_t suf_l = strlen(k_acts[ai]);
+            if (lo + suf_l < sizeof(lb_name)) {
+                memcpy(lb_name + lo, k_acts[ai], suf_l + 1u);
+                size_t lsz = 0u;
+                void *lbuf = twd_asset_read_alloc(lb_name, &lsz);
+                if (lbuf && lsz > 0u && twd_landb_parse_memory(lbuf, lsz, &st->scene_landb) == 0) {
+                    st->has_scene_landb = 1;
+                    (void)twd_kv_set("scene", "landb", lb_name);
+                }
+                if (lbuf) twd_asset_free(lbuf);
+            }
+        }
+        if (st->has_scene_landb) {
+            boot_advance_dialogue(st, 0);
+        }
+    }
+}
+
 static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_name) {
     if (!st || !st->scenes || !scene_name || scene_name[0] == '\0') return;
     if (strcmp(scene_name, "ui_menuMain.scene") == 0) {
@@ -1245,6 +1461,14 @@ static void boot_switch_to_scene(twd_boot_loop_state_t *st, const char *scene_na
     }
     if (twd_scene_mgr_open(st->scenes, scene_name) != 0) return;
     boot_populate_scene_items(st);
+    if (boot_is_gameplay_3d(st, scene_name)) {
+        boot_start_gameplay_scene(st, scene_name);
+    } else if (st->has_scene_landb) {
+        twd_landb_free(&st->scene_landb);
+        st->has_scene_landb = 0;
+        st->dlg_line[0] = '\0';
+        st->dlg_choices_open = 0;
+    }
     if (st->stats) {
         st->stats->boot_scenes_active = twd_scene_mgr_scene_count(st->scenes);
         st->stats->boot_scene_agents = twd_scene_mgr_total_agent_count(st->scenes);
@@ -1357,7 +1581,7 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         if (st->menu_btn_count == 0u && strcmp(label, "ui_boot.scene") != 0 &&
             strncmp(label, "ui_", 3u) != 0) {
             (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 40.0f, 0.85f, k_muted,
-                                     "WASD: Move  Q/E: Orbit  Click: Inspect  Backspace: Menu");
+                                     "WASD: Move  Q/E: Orbit  Space/N: Next Line  Click: Inspect  Backspace: Menu");
             if (st->selected_agent[0] != '\0') {
                 char sel_buf[96];
                 static const char k_spfx[] = "Selected: ";
@@ -1365,6 +1589,21 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
                 memcpy(sel_buf, k_spfx, sp);
                 boot_copy_trunc(sel_buf + sp, sizeof(sel_buf) - sp, st->selected_agent);
                 (void)twd_font_draw_text(gfx, hdr_font, 16.0f, 64.0f, 0.9f, k_accent, sel_buf);
+            }
+            if (st->opt_subtitles && (st->dlg_line[0] != '\0' || st->dlg_choices_open)) {
+                static const uint8_t k_sub_bg[4] = {10u, 12u, 16u, 215u};
+                int32_t bar_h = st->dlg_choices_open ? 96 : 64;
+                int32_t bar_y = (int32_t)dh - bar_h - 12;
+                if (bar_y < 80) bar_y = 80;
+                (void)twd_gfx_draw_rect(gfx, 24, bar_y, (int32_t)dw - 48, bar_h, k_sub_bg);
+                if (st->dlg_line[0] != '\0') {
+                    (void)twd_font_draw_text(gfx, menu_font, 40.0f, (float)(bar_y + 14),
+                                             (dh >= 480u) ? 0.72f : 0.6f, k_white, st->dlg_line);
+                }
+                if (st->dlg_choices_open) {
+                    (void)twd_font_draw_text(gfx, hdr_font, 40.0f, (float)(bar_y + 54), 0.9f, k_accent,
+                                             "[1] Help AJ    [2] Check Area    [3] Stay Silent");
+                }
             }
         }
         if (st->menu_btn_count > 0u) {
@@ -1470,6 +1709,21 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
                 int ma = twd_ttarch2_mount_dir(arch_dir);
                 if (ma > 0) local_stats.mounted_archives += ma;
             }
+        }
+        if ((local_stats.audio_caps & TWD_AUDIO_CAP_FMOD_STUDIO) == 0 && gl + 24u < sizeof(dir_buf)) {
+            char fmod_c[540], fmod_s[540];
+#ifdef _WIN32
+            static const char k_fc[] = "/fmod64.dll";
+            static const char k_fs[] = "/fmodstudio64.dll";
+#else
+            static const char k_fc[] = "/libfmod.so";
+            static const char k_fs[] = "/libfmodstudio.so";
+#endif
+            memcpy(fmod_c, game_dir, gl);
+            memcpy(fmod_c + gl, k_fc, sizeof(k_fc));
+            memcpy(fmod_s, game_dir, gl);
+            memcpy(fmod_s + gl, k_fs, sizeof(k_fs));
+            local_stats.audio_caps = twd_audio_init(fmod_s, fmod_c);
         }
     }
     twd_boot_loop_state_t st;
@@ -1741,6 +1995,7 @@ int twd_game_boot_run(const twd_boot_config_t *cfg, twd_boot_stats_t *out_stats)
     if (st.has_menu_font) twd_font_free(&st.menu_font);
     if (st.has_boot_landb) twd_landb_free(&st.boot_landb);
     if (st.has_menu_landb) twd_landb_free(&st.menu_landb);
+    if (st.has_scene_landb) twd_landb_free(&st.scene_landb);
     if (st.boot_font_page_tex) twd_gfx_texture_destroy(st.boot_font_page_tex);
     if (st.boot_mesh_tex) twd_gfx_texture_destroy(st.boot_mesh_tex);
     if (st.splash_tex) twd_gfx_texture_destroy(st.splash_tex);

@@ -5,6 +5,7 @@ add_library(twdrt STATIC
     gfx_shim.c
     shader_cache.c
     subsystems.c
+    win32_compat.c
     ttarch2.c
     audio_shim.c
     lua_vm.c

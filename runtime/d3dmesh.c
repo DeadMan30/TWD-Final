@@ -252,6 +252,35 @@ int twd_d3dmesh_parse_memory(const void *data, size_t size, twd_d3dmesh_t *out) 
     }
     size_t mp = md_start;
 
+    /* Scan embedded mInternalResources (saved_after_header .. md_start) for material diffuse texture Handle CRC64s */
+    if (saved_after_header < md_start && md_start - saved_after_header >= 16u) {
+        static const uint64_t k_diff_keys[3] = {
+            0x8648fa82d1dbee1aULL, /* "Material - Diffuse Texture" */
+            0xa6d9cf9425366f5fULL, /* "Diffuse Texture" */
+            0xb38c7b2d005540eeULL  /* "Base Texture" */
+        };
+        size_t scan_end = md_start - 16u;
+        for (size_t si = saved_after_header; si <= scan_end && out->texture_count < TWD_D3DMESH_MAX_TEXTURES; ++si) {
+            uint64_t kcrc = dm_rd_u64(buf + si);
+            int is_key = 0;
+            for (int ki = 0; ki < 3; ++ki) {
+                if (kcrc == k_diff_keys[ki]) { is_key = 1; break; }
+            }
+            if (!is_key) continue;
+            uint64_t tcrc = dm_rd_u64(buf + si + 8u);
+            if (tcrc != 0ULL && tcrc != 0xffffffffffffffffULL) {
+                int dup = 0;
+                for (uint32_t ti = 0u; ti < out->texture_count; ++ti) {
+                    if (out->texture_crcs[ti] == tcrc) { dup = 1; break; }
+                }
+                if (!dup) {
+                    out->texture_crcs[out->texture_count] = tcrc;
+                    out->texture_count++;
+                }
+            }
+        }
+    }
+
     /* mLODs (blocked DCArray<T3MeshLOD>) */
     size_t lods_s = 0u, lods_e = 0u;
     if (dm_read_block(buf, md_end, &mp, &lods_s, &lods_e) != 0) return -1;

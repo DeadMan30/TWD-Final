@@ -854,6 +854,8 @@ int main(void) {
     TWD_CHECK(mix_out[0] == 500 && mix_out[1] == 500 && mix_out[4] == 1000 && mix_out[5] == 1000);
     TWD_CHECK(twd_audio_system_mixer_suspend(asys) == 0 && twd_audio_system_is_suspended(asys) == 1);
     TWD_CHECK(twd_audio_system_mixer_resume(asys) == 0 && twd_audio_system_is_suspended(asys) == 0);
+    TWD_CHECK(twd_audio_bank_event_count(abank) == 0u);
+    TWD_CHECK(twd_audio_play_bank_event(asys, abank, 0u, 1.0f) == -1);
     TWD_CHECK(twd_audio_bank_unload(abank) == 0 && twd_audio_bank_count(asys) == 0u);
     twd_audio_sound_release(asnd);
     twd_audio_system_release(asys);
@@ -2316,6 +2318,87 @@ int main(void) {
             }
             TWD_CHECK(cam_lit > 10);
             twd_d3dmesh_free(&m41);
+
+            /* MSV6 internal resources Material - Diffuse Texture CRC64 handle + textured camera draw */
+            uint8_t mtex[512];
+            memset(mtex, 0, sizeof(mtex));
+            size_t to = 0u;
+            memcpy(mtex + to, "6VSM", 4u); to += 4u;
+            size_t t_def_off = to; to += 4u;
+            to += 4u;
+            size_t t_async_off = to; to += 4u;
+            to += 4u;
+            size_t t_start = to;
+            ttarch_wr_u32(mtex + to, 11u); to += 4u;
+            ttarch_wr_u32(mtex + to, 4u); to += 4u;
+            memcpy(mtex + to, "mtex", 4u); to += 4u;
+            ttarch_wr_u32(mtex + to, 55u); to += 4u;
+            to += 1u;
+            { float one = 1.0f; memcpy(mtex + to, &one, 4u); } to += 4u;
+            to += 4u + 8u;
+            to += 4u + 1u; /* dep_cnt=0, has_cp=0 */
+            /* Inject CRC64("Material - Diffuse Texture") = 0x8648fa82d1dbee1a + diffuse handle */
+            ttarch_wr_u32(mtex + to, 0xd1dbee1au); ttarch_wr_u32(mtex + to + 4u, 0x8648fa82u); to += 8u;
+            ttarch_wr_u32(mtex + to, 0x9abcdef0u); ttarch_wr_u32(mtex + to + 4u, 0x12345678u); to += 8u;
+            size_t t_md_off = to; to += 4u;
+            size_t t_md_st = to;
+            size_t t_lod_off = to; to += 4u;
+            size_t t_lod_st = to;
+            ttarch_wr_u32(mtex + to, 1u); to += 4u;
+            ttarch_wr_u32(mtex + to, 8u); to += 8u;
+            ttarch_wr_u32(mtex + to, 8u); to += 8u;
+            to += 4u + 24u + 16u + 4u;
+            { float f1 = 1.0f, f2 = 2.0f;
+              memcpy(mtex + to + 0u, &f1, 4u); memcpy(mtex + to + 4u, &f1, 4u); memcpy(mtex + to + 8u, &f1, 4u);
+              memcpy(mtex + to + 16u, &f2, 4u);
+            }
+            to += 12u + 12u + 12u + 8u;
+            ttarch_wr_u32(mtex + to, 3u); to += 8u;
+            ttarch_wr_u32(mtex + t_lod_off, (uint32_t)(to - t_lod_st) + 4u);
+            for (int ci = 0; ci < 6; ++ci) { ttarch_wr_u32(mtex + to, 8u); to += 8u; }
+            to += 4u;
+            { float f1 = 1.0f, f2 = 2.0f;
+              memcpy(mtex + to + 48u, &f1, 4u); memcpy(mtex + to + 52u, &f1, 4u); memcpy(mtex + to + 56u, &f1, 4u);
+              memcpy(mtex + to + 64u, &f2, 4u);
+            }
+            to += 84u;
+            ttarch_wr_u32(mtex + to + 4u, 16u); ttarch_wr_u32(mtex + to + 8u, 2u);
+            ttarch_wr_u32(mtex + to + 12u, 3u); ttarch_wr_u32(mtex + to + 16u, 2u);
+            to += 20u;
+            ttarch_wr_u32(mtex + to + 4u, 41u); ttarch_wr_u32(mtex + to + 8u, 9u);
+            ttarch_wr_u32(mtex + to + 12u, 3u); ttarch_wr_u32(mtex + to + 16u, 4u);
+            to += 20u;
+            ttarch_wr_u32(mtex + t_md_off, (uint32_t)(to - t_md_st) + 4u);
+            ttarch_wr_u32(mtex + t_def_off, (uint32_t)(to - t_start));
+            ttarch_wr_u32(mtex + t_async_off, 18u);
+            mtex[to + 2] = 1u; mtex[to + 4] = 2u; to += 6u;
+            ttarch_wr_u32(mtex + to + 0u, (2u << 30u));
+            ttarch_wr_u32(mtex + to + 4u, 1023u | (2u << 30u));
+            ttarch_wr_u32(mtex + to + 8u, 512u | (1023u << 10u) | (2u << 30u));
+            to += 12u;
+
+            twd_d3dmesh_t mt;
+            TWD_CHECK(twd_d3dmesh_parse_memory(mtex, to, &mt) == 0);
+            TWD_CHECK(mt.texture_count == 1u && mt.texture_crcs[0] == 0x123456789abcdef0ULL);
+            {
+                static const uint8_t k_rgba2x2[16] = {
+                    255u, 40u, 40u, 255u,  255u, 40u, 40u, 255u,
+                    255u, 40u, 40u, 255u,  255u, 40u, 40u, 255u
+                };
+                twd_gfx_texture_t *gtex = twd_gfx_texture_create(zgdev, 2u, 2u, 0u);
+                TWD_CHECK(gtex != NULL);
+                TWD_CHECK(twd_gfx_texture_update(gtex, k_rgba2x2, sizeof(k_rgba2x2)) == 0);
+                twd_gfx_clear(zgdev, k_zblk, 1.0f, 0u);
+                TWD_CHECK(twd_d3dmesh_draw_camera(zgdev, &mt, gtex, k_cam_p, 0.0f, 0.0f, 55.0f,
+                                                  k_obj_p, NULL, NULL) == 0);
+                int tex_lit = 0;
+                for (size_t pi = 0u; pi < 64u * 64u; ++pi) {
+                    if (zbb[pi * 4u + 0u] > 100u && zbb[pi * 4u + 1u] < 60u) tex_lit++;
+                }
+                TWD_CHECK(tex_lit > 10);
+                twd_gfx_texture_destroy(gtex);
+            }
+            twd_d3dmesh_free(&mt);
             twd_gfx_device_destroy(zgdev);
         }
 
@@ -2324,6 +2407,75 @@ int main(void) {
 
     TWD_CHECK(((uint32_t (*)(void *))(*(void *const **)rd3d)[2])(rd3d) == 0u);
     twd_window_destroy(rwin);
+
+    /* Win32 / CryptoAPI / WinSock2 / Clipboard / Compat Binding PAL checks */
+    {
+        twd_crypt_ctx_t *cctx = twd_crypt_acquire(0u);
+        TWD_CHECK(cctx != NULL);
+        twd_crypt_hash_t *sha = twd_crypt_create_hash(cctx, TWD_CALG_SHA256);
+        TWD_CHECK(sha != NULL);
+        TWD_CHECK(twd_crypt_hash_data(sha, "abc", 3u) == 0);
+        uint8_t dig[32];
+        size_t dlen = sizeof(dig);
+        TWD_CHECK(twd_crypt_get_hash_param(sha, TWD_HP_HASHVAL, dig, &dlen) == 0 && dlen == 32u);
+        static const uint8_t k_sha256_abc[32] = {
+            0xba,0x78,0x16,0xbf, 0x8f,0x01,0xcf,0xea, 0x41,0x41,0x40,0xde, 0x5d,0xae,0x22,0x23,
+            0xb0,0x03,0x61,0xa3, 0x96,0x17,0x7a,0x9c, 0xb4,0x10,0xff,0x61, 0xf2,0x00,0x15,0xad
+        };
+        TWD_CHECK(memcmp(dig, k_sha256_abc, 32u) == 0);
+        twd_crypt_destroy_hash(sha);
+
+        twd_crypt_hash_t *md5 = twd_crypt_create_hash(cctx, TWD_CALG_MD5);
+        TWD_CHECK(md5 != NULL && twd_crypt_hash_data(md5, "abc", 3u) == 0);
+        dlen = sizeof(dig);
+        TWD_CHECK(twd_crypt_get_hash_param(md5, TWD_HP_HASHVAL, dig, &dlen) == 0 && dlen == 16u);
+        static const uint8_t k_md5_abc[16] = {
+            0x90,0x01,0x50,0x98, 0x3c,0xd2,0x4f,0xb0, 0xd6,0x96,0x3f,0x7d, 0x28,0xe1,0x7f,0x72
+        };
+        TWD_CHECK(memcmp(dig, k_md5_abc, 16u) == 0);
+        twd_crypt_destroy_hash(md5);
+        twd_crypt_release(cctx);
+
+        int ptr_sentinel = 42;
+        void *enc = twd_encode_pointer(&ptr_sentinel);
+        TWD_CHECK(enc != &ptr_sentinel && twd_decode_pointer(enc) == &ptr_sentinel);
+
+        twd_slist_head_t slh;
+        twd_slist_entry_t sle1, sle2;
+        twd_slist_init(&slh);
+        twd_slist_push(&slh, &sle1);
+        twd_slist_push(&slh, &sle2);
+        TWD_CHECK(slh.depth == 2u && twd_slist_pop(&slh) == &sle2 && twd_slist_pop(&slh) == &sle1 && twd_slist_pop(&slh) == NULL);
+
+        twd_pipe_t *pp = twd_pipe_create();
+        TWD_CHECK(pp != NULL && twd_pipe_write(pp, "hello", 5u) == 5u);
+        char pbuf[16] = {0};
+        size_t pavail = 0u;
+        TWD_CHECK(twd_pipe_peek(pp, pbuf, 3u, &pavail) == 3u && pavail == 5u && memcmp(pbuf, "hel", 3u) == 0);
+        TWD_CHECK(twd_pipe_read(pp, pbuf, 5u) == 5u && memcmp(pbuf, "hello", 5u) == 0);
+        twd_pipe_close(pp);
+
+        twd_systemtime_t stime;
+        TWD_CHECK(twd_filetime_to_systemtime(0ULL, &stime) == 0 && stime.year == 1601u && stime.month == 1u && stime.day == 1u);
+        const void *ver_ptr = NULL; uint32_t vl = 0u;
+        TWD_CHECK(twd_file_version_query("\\", &ver_ptr, &vl) == 0 && ver_ptr != NULL && vl == 52u);
+
+        TWD_CHECK(twd_clipboard_open() == 0 && twd_clipboard_set_text("Clementine") == 0);
+        char cbuf[32] = {0};
+        TWD_CHECK(twd_clipboard_get_text(cbuf, sizeof(cbuf)) == 10 && strcmp(cbuf, "Clementine") == 0);
+        twd_clipboard_close();
+
+        uint8_t ip4[4] = {0}, ip6[16] = {0};
+        TWD_CHECK(twd_inet_pton(2, "127.0.0.1", ip4) == 1 && ip4[0] == 127u && ip4[3] == 1u);
+        TWD_CHECK(twd_inet_pton(2, "999.0.0.1", ip4) == 0);
+        TWD_CHECK(twd_inet_pton(23, "2001:db8::1", ip6) == 1 && ip6[0] == 0x20u && ip6[1] == 0x01u && ip6[15] == 1u);
+        TWD_CHECK(twd_ntohl(0x11223344u) == 0x44332211u);
+
+        TWD_CHECK(twd_import_binding_count() == 117u);
+        TWD_CHECK(twd_import_lookup("ADVAPI32.dll", "CryptAcquireContextW") != NULL);
+        TWD_CHECK(twd_import_lookup("WS2_32.dll", "inet_pton") != NULL);
+        TWD_CHECK(twd_import_lookup("KERNEL32.dll", "RtlCaptureContext") != NULL);
+    }
 
     twd_platform_shutdown();
     printf("test_runtime: ok\n");

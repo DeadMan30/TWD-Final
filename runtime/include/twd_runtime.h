@@ -1137,6 +1137,9 @@ twd_audio_bank_t *twd_audio_load_bank_vfs(twd_audio_system_t *sys, const char *r
 int twd_audio_bank_unload(twd_audio_bank_t *bank);
 int twd_audio_bank_is_valid(const twd_audio_bank_t *bank);
 uint32_t twd_audio_bank_count(const twd_audio_system_t *sys);
+uint32_t twd_audio_bank_event_count(const twd_audio_bank_t *bank);
+int twd_audio_play_bank_event(
+    twd_audio_system_t *sys, twd_audio_bank_t *bank, uint32_t event_index, float volume);
 
 twd_audio_bus_t *twd_audio_get_bus(twd_audio_system_t *sys, const char *bus_path);
 int twd_audio_bus_set_volume(twd_audio_bus_t *bus, float volume);
@@ -1236,6 +1239,71 @@ void twd_save_get_metadata(
     char *out_display, size_t disp_cap,
     char *out_scene, size_t scene_cap,
     int32_t *out_seq);
+
+/* Portable Win32 / CryptoAPI / WinSock2 / Clipboard / Compat Binding PAL */
+#define TWD_CALG_MD5    0x00008003u
+#define TWD_CALG_SHA1   0x00008004u
+#define TWD_CALG_SHA256 0x0000800Cu
+#define TWD_HP_HASHVAL  0x00000002u
+#define TWD_HP_HASHSIZE 0x00000004u
+
+typedef struct twd_crypt_ctx twd_crypt_ctx_t;
+typedef struct twd_crypt_hash twd_crypt_hash_t;
+typedef struct twd_pipe twd_pipe_t;
+
+typedef struct twd_slist_entry {
+    struct twd_slist_entry *next;
+} twd_slist_entry_t;
+
+typedef struct twd_slist_head {
+    twd_slist_entry_t *first;
+    uint32_t depth;
+} twd_slist_head_t;
+
+typedef struct twd_systemtime {
+    uint16_t year;
+    uint16_t month;
+    uint16_t day_of_week;
+    uint16_t day;
+    uint16_t hour;
+    uint16_t minute;
+    uint16_t second;
+    uint16_t milliseconds;
+} twd_systemtime_t;
+
+twd_crypt_ctx_t *twd_crypt_acquire(uint32_t flags);
+void twd_crypt_release(twd_crypt_ctx_t *ctx);
+twd_crypt_hash_t *twd_crypt_create_hash(twd_crypt_ctx_t *ctx, uint32_t alg_id);
+void twd_crypt_destroy_hash(twd_crypt_hash_t *h);
+int twd_crypt_hash_data(twd_crypt_hash_t *h, const void *data, size_t len);
+int twd_crypt_get_hash_param(
+    twd_crypt_hash_t *h, uint32_t param, void *out_buf, size_t *io_len);
+
+void *twd_encode_pointer(const void *ptr);
+void *twd_decode_pointer(const void *ptr);
+void twd_slist_init(twd_slist_head_t *head);
+void twd_slist_push(twd_slist_head_t *head, twd_slist_entry_t *entry);
+twd_slist_entry_t *twd_slist_pop(twd_slist_head_t *head);
+
+twd_pipe_t *twd_pipe_create(void);
+void twd_pipe_close(twd_pipe_t *pipe);
+size_t twd_pipe_write(twd_pipe_t *pipe, const void *data, size_t len);
+size_t twd_pipe_peek(const twd_pipe_t *pipe, void *dst, size_t cap, size_t *out_avail);
+size_t twd_pipe_read(twd_pipe_t *pipe, void *dst, size_t cap);
+
+int twd_filetime_to_systemtime(uint64_t ft_100ns, twd_systemtime_t *out);
+int twd_file_version_query(const char *sub_block, const void **out_ptr, uint32_t *out_len);
+
+int twd_clipboard_open(void);
+void twd_clipboard_close(void);
+int twd_clipboard_empty(void);
+int twd_clipboard_set_text(const char *utf8_text);
+int twd_clipboard_get_text(char *buf, size_t cap);
+
+uint32_t twd_ntohl(uint32_t netlong);
+int twd_inet_pton(int af, const char *src, void *dst);
+uint32_t twd_import_binding_count(void);
+void *twd_import_lookup(const char *library, const char *symbol);
 
 #ifdef __cplusplus
 }

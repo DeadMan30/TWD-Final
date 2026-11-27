@@ -553,11 +553,14 @@ int main(void) {
         }
     }
 
-    /* Fourth boot pass: Settings toggle -> Episodes menu -> launch adv_trainStation.scene + pan */
+    /* Fourth boot pass: Settings toggle -> Episodes menu -> launch adv_trainStation.scene + script/dialogue/choice */
     {
         static const char ep_lua[] = "SceneOpen(\"ui_boot.scene\")\n";
+        static const char ep_ts_lua[] =
+            "Game_SetSceneDialogNode(\"NodeA\")\nLogicSet(\"bTrainStarted\", true)\n";
         static const char ep_names[] =
-            "Boot.lua\0ui_boot.scene\0ui_menuMain.scene\0ui_episodes.scene\0adv_trainStation.scene\0";
+            "Boot.lua\0ui_boot.scene\0ui_menuMain.scene\0ui_episodes.scene\0"
+            "adv_trainStation.scene\0trainStation.lua\0env_trainStation_act1_english.landb\0";
         uint8_t s_sc0[128], s_sc1[128], s_sc2[128], s_sc3[128];
         size_t l0 = build_min_scene(s_sc0, sizeof(s_sc0), "ui_boot.scene");
         size_t l1 = build_min_scene(s_sc1, sizeof(s_sc1), "ui_menuMain.scene");
@@ -565,57 +568,76 @@ int main(void) {
         size_t l3 = build_min_scene(s_sc3, sizeof(s_sc3), "adv_trainStation.scene");
         if (l0 != 93u || l1 != 97u || l2 != 97u || l3 != 102u) return 34;
 
-        enum {
-            EN_ENT = 5,
-            EN_NAMES = sizeof(ep_names) - 1,
-            EN_BASE = 12 + EN_ENT * 28 + EN_NAMES,
-            EB_LEN = sizeof(ep_lua) - 1,
-            E0_LEN = 93,
-            E1_LEN = 97,
-            E2_LEN = 97,
-            E3_LEN = 102,
-            E_PAY = EN_BASE + EB_LEN + E0_LEN + E1_LEN + E2_LEN + E3_LEN
-        };
-        uint8_t epkg[12 + E_PAY];
-        memset(epkg, 0, sizeof(epkg));
+        uint8_t ldb[256];
+        memset(ldb, 0, sizeof(ldb));
+        size_t ldo = 0u;
+        memcpy(ldb + ldo, "6VSM", 4u); ldo += 4u;
+        size_t l_def = ldo; ldo += 4u;
+        ldo += 8u;
+        wr_u32(ldb + ldo, 0u); ldo += 4u;
+        size_t l_start = ldo;
+        wr_u32(ldb + ldo, 8u); ldo += 4u;
+        wr_u32(ldb + ldo, 4u); ldo += 4u;
+        wr_u32(ldb + ldo, 8u); ldo += 4u;
+        wr_u32(ldb + ldo, 1u); ldo += 4u;
+        size_t l_arr = ldo; ldo += 4u;
+        wr_u32(ldb + ldo, 0x20u); ldo += 4u;
+        wr_u32(ldb + ldo, 0x17a04004u); ldo += 4u;
+        ldo += 16u;
+        for (int bi = 0; bi < 3; ++bi) { wr_u32(ldb + ldo, 8u); ldo += 8u; }
+        ldo += 4u;
+        size_t t_blk = ldo; ldo += 4u;
+        wr_u32(ldb + ldo, 8u); ldo += 8u;
+        static const char k_lb_raw[] = "^font:X^Click ^<img:a>^to Begin  ";
+        uint32_t k_lb_len = (uint32_t)(sizeof(k_lb_raw) - 1u);
+        wr_u32(ldb + ldo, 8u + k_lb_len); ldo += 4u;
+        wr_u32(ldb + ldo, k_lb_len); ldo += 4u;
+        memcpy(ldb + ldo, k_lb_raw, k_lb_len); ldo += k_lb_len;
+        wr_u32(ldb + t_blk, (uint32_t)(ldo - t_blk));
+        wr_u32(ldb + ldo, 8u); ldo += 8u;
+        wr_u32(ldb + l_arr, (uint32_t)(ldo - l_arr));
+        wr_u32(ldb + l_def, (uint32_t)(ldo - l_start));
+
+        size_t en_ent = 7u;
+        size_t en_names = sizeof(ep_names) - 1u;
+        size_t en_base = 12u + en_ent * 28u + en_names;
+        size_t eb_len = sizeof(ep_lua) - 1u;
+        size_t ets_len = sizeof(ep_ts_lua) - 1u;
+        size_t e_pay = en_base + eb_len + l0 + l1 + l2 + l3 + ets_len + ldo;
+        uint8_t epkg[2048];
+        if (12u + e_pay > sizeof(epkg)) return 34;
+        memset(epkg, 0, 12u + e_pay);
         memcpy(epkg, "NCTT", 4u);
-        wr_u64(epkg + 4u, (uint64_t)E_PAY);
+        wr_u64(epkg + 4u, (uint64_t)e_pay);
         uint8_t *etoc = epkg + 12u;
         wr_u32(etoc + 0u, TWD_TTARCH2_TOC_TTA4);
-        wr_u32(etoc + 4u, (uint32_t)EN_NAMES);
-        wr_u32(etoc + 8u, (uint32_t)EN_ENT);
+        wr_u32(etoc + 4u, (uint32_t)en_names);
+        wr_u32(etoc + 8u, (uint32_t)en_ent);
 
-        wr_u64(etoc + 12u + 0u * 28u + 0u, twd_crc64(0ULL, "Boot.lua"));
-        wr_u64(etoc + 12u + 0u * 28u + 8u, 0ULL);
-        wr_u32(etoc + 12u + 0u * 28u + 16u, (uint32_t)EB_LEN);
-        wr_u16(etoc + 12u + 0u * 28u + 26u, 0u);
-
-        wr_u64(etoc + 12u + 1u * 28u + 0u, twd_crc64(0ULL, "ui_boot.scene"));
-        wr_u64(etoc + 12u + 1u * 28u + 8u, (uint64_t)EB_LEN);
-        wr_u32(etoc + 12u + 1u * 28u + 16u, (uint32_t)E0_LEN);
-        wr_u16(etoc + 12u + 1u * 28u + 26u, 9u);
-
-        wr_u64(etoc + 12u + 2u * 28u + 0u, twd_crc64(0ULL, "ui_menuMain.scene"));
-        wr_u64(etoc + 12u + 2u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN));
-        wr_u32(etoc + 12u + 2u * 28u + 16u, (uint32_t)E1_LEN);
-        wr_u16(etoc + 12u + 2u * 28u + 26u, 23u);
-
-        wr_u64(etoc + 12u + 3u * 28u + 0u, twd_crc64(0ULL, "ui_episodes.scene"));
-        wr_u64(etoc + 12u + 3u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN + E1_LEN));
-        wr_u32(etoc + 12u + 3u * 28u + 16u, (uint32_t)E2_LEN);
-        wr_u16(etoc + 12u + 3u * 28u + 26u, 41u);
-
-        wr_u64(etoc + 12u + 4u * 28u + 0u, twd_crc64(0ULL, "adv_trainStation.scene"));
-        wr_u64(etoc + 12u + 4u * 28u + 8u, (uint64_t)(EB_LEN + E0_LEN + E1_LEN + E2_LEN));
-        wr_u32(etoc + 12u + 4u * 28u + 16u, (uint32_t)E3_LEN);
-        wr_u16(etoc + 12u + 4u * 28u + 26u, 59u);
-
-        memcpy(etoc + 12u + EN_ENT * 28u, ep_names, EN_NAMES);
-        memcpy(etoc + EN_BASE, ep_lua, EB_LEN);
-        memcpy(etoc + EN_BASE + EB_LEN, s_sc0, E0_LEN);
-        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN, s_sc1, E1_LEN);
-        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN + E1_LEN, s_sc2, E2_LEN);
-        memcpy(etoc + EN_BASE + EB_LEN + E0_LEN + E1_LEN + E2_LEN, s_sc3, E3_LEN);
+        uint64_t cur_off = 0ULL;
+        const char *en_list[7] = {
+            "Boot.lua", "ui_boot.scene", "ui_menuMain.scene", "ui_episodes.scene",
+            "adv_trainStation.scene", "trainStation.lua", "env_trainStation_act1_english.landb"
+        };
+        const void *ep_data[7];
+        size_t ep_lens[7];
+        static const uint16_t ep_noffs[7] = { 0u, 9u, 23u, 41u, 59u, 82u, 99u };
+        ep_data[0] = ep_lua;   ep_lens[0] = eb_len;
+        ep_data[1] = s_sc0;    ep_lens[1] = l0;
+        ep_data[2] = s_sc1;    ep_lens[2] = l1;
+        ep_data[3] = s_sc2;    ep_lens[3] = l2;
+        ep_data[4] = s_sc3;    ep_lens[4] = l3;
+        ep_data[5] = ep_ts_lua; ep_lens[5] = ets_len;
+        ep_data[6] = ldb;      ep_lens[6] = ldo;
+        for (size_t ei = 0u; ei < en_ent; ++ei) {
+            wr_u64(etoc + 12u + ei * 28u + 0u, twd_crc64(0ULL, en_list[ei]));
+            wr_u64(etoc + 12u + ei * 28u + 8u, cur_off);
+            wr_u32(etoc + 12u + ei * 28u + 16u, (uint32_t)ep_lens[ei]);
+            wr_u16(etoc + 12u + ei * 28u + 26u, ep_noffs[ei]);
+            memcpy(etoc + en_base + (size_t)cur_off, ep_data[ei], ep_lens[ei]);
+            cur_off += (uint64_t)ep_lens[ei];
+        }
+        memcpy(etoc + 12u + en_ent * 28u, ep_names, en_names);
 
         if (twd_mkdir("twd_boot_ep_dir") != 0) return 35;
         twd_file_t ef;
@@ -624,15 +646,15 @@ int main(void) {
             (void)twd_rmdir("twd_boot_ep_dir");
             return 36;
         }
-        int64_t ewr = twd_file_write(&ef, epkg, sizeof(epkg));
+        int64_t ewr = twd_file_write(&ef, epkg, 12u + e_pay);
         int ecl = twd_file_close(&ef);
-        if (ewr != (int64_t)sizeof(epkg) || ecl != 0) {
+        if (ewr != (int64_t)(12u + e_pay) || ecl != 0) {
             (void)twd_file_delete("twd_boot_ep_dir/ep0.ttarch2");
             (void)twd_rmdir("twd_boot_ep_dir");
             return 37;
         }
 
-        twd_win_event_t evs[7];
+        twd_win_event_t evs[12];
         memset(evs, 0, sizeof(evs));
         /* 0: Enter ui_menuMain.scene */
         evs[0].kind = TWD_EVT_KEY; evs[0].param1 = 13u; evs[0].param2 = 1;
@@ -651,11 +673,13 @@ int main(void) {
         evs[5].kind = TWD_EVT_KEY; evs[5].param1 = 13u; evs[5].param2 = 1;
         /* 6: 'D' (68) camera pan in gameplay scene + 'Q' (81) yaw orbit */
         evs[6].kind = TWD_EVT_KEY; evs[6].param1 = 68u; evs[6].param2 = 1;
-        twd_win_event_t orb_ev;
-        memset(&orb_ev, 0, sizeof(orb_ev));
-        orb_ev.kind = TWD_EVT_KEY; orb_ev.param1 = 81u; orb_ev.param2 = 1;
-        for (int ei = 0; ei < 7; ++ei) twd_window_push_event(&evs[ei]);
-        twd_window_push_event(&orb_ev);
+        evs[7].kind = TWD_EVT_KEY; evs[7].param1 = 81u; evs[7].param2 = 1;
+        /* 8..10: 3x Space (32) to step dialogue and open 3-choice prompt; 11: '1' (49) pick Help AJ */
+        evs[8].kind = TWD_EVT_KEY; evs[8].param1 = 32u; evs[8].param2 = 1;
+        evs[9].kind = TWD_EVT_KEY; evs[9].param1 = 32u; evs[9].param2 = 1;
+        evs[10].kind = TWD_EVT_KEY; evs[10].param1 = 32u; evs[10].param2 = 1;
+        evs[11].kind = TWD_EVT_KEY; evs[11].param1 = 49u; evs[11].param2 = 1;
+        for (int ei = 0; ei < 12; ++ei) twd_window_push_event(&evs[ei]);
 
         twd_boot_config_t e4cfg;
         memset(&e4cfg, 0, sizeof(e4cfg));
@@ -674,13 +698,18 @@ int main(void) {
 
         if (e4rc != 0) return 38;
         if (strcmp(e4stats.active_scene, "adv_trainStation.scene") != 0 ||
-            e4stats.input_events_processed < 7u || e4stats.clean_shutdown != 1) {
+            e4stats.input_events_processed < 12u || e4stats.clean_shutdown != 1) {
             return 39;
         }
         {
             char sub[8] = {0}, pan[8] = {0};
+            char dnode[32] = {0}, lval[8] = {0}, dsub[64] = {0}, chc[32] = {0};
             if (twd_kv_get("prefs", "subtitles", sub, sizeof(sub)) <= 0 || strcmp(sub, "0") != 0 ||
-                twd_kv_get("scene", "cam_panned", pan, sizeof(pan)) <= 0 || strcmp(pan, "1") != 0) {
+                twd_kv_get("scene", "cam_panned", pan, sizeof(pan)) <= 0 || strcmp(pan, "1") != 0 ||
+                twd_kv_get("scene", "dialog_node", dnode, sizeof(dnode)) <= 0 || strcmp(dnode, "NodeA") != 0 ||
+                twd_kv_get("logic", "bTrainStarted", lval, sizeof(lval)) <= 0 || strcmp(lval, "1") != 0 ||
+                twd_kv_get("scene", "subtitle", dsub, sizeof(dsub)) <= 0 || strcmp(dsub, "Click to Begin") != 0 ||
+                twd_kv_get("scene", "last_choice", chc, sizeof(chc)) <= 0 || strcmp(chc, "Help AJ") != 0) {
                 return 40;
             }
         }
