@@ -856,6 +856,15 @@ int main(void) {
     TWD_CHECK(twd_audio_system_mixer_resume(asys) == 0 && twd_audio_system_is_suspended(asys) == 0);
     TWD_CHECK(twd_audio_bank_event_count(abank) == 0u);
     TWD_CHECK(twd_audio_play_bank_event(asys, abank, 0u, 1.0f) == -1);
+    {
+        static const uint8_t k_test_wav[52] = {
+            'R','I','F','F', 44,0,0,0, 'W','A','V','E', 'f','m','t',' ',
+            16,0,0,0, 1,0, 1,0, 0x80,0xbb,0,0, 0x00,0x77,1,0, 2,0, 16,0,
+            'd','a','t','a', 8,0,0,0, 0,0, 0,0, 0,0, 0,0
+        };
+        TWD_CHECK(twd_audio_play_fsb_memory(asys, "line.wav", k_test_wav, sizeof(k_test_wav), 0.75f) == 0);
+        TWD_CHECK(twd_audio_voice_play_count(asys) == 1u);
+    }
     TWD_CHECK(twd_audio_bank_unload(abank) == 0 && twd_audio_bank_count(asys) == 0u);
     twd_audio_sound_release(asnd);
     twd_audio_system_release(asys);
@@ -2475,6 +2484,72 @@ int main(void) {
         TWD_CHECK(twd_import_lookup("ADVAPI32.dll", "CryptAcquireContextW") != NULL);
         TWD_CHECK(twd_import_lookup("WS2_32.dll", "inet_pton") != NULL);
         TWD_CHECK(twd_import_lookup("KERNEL32.dll", "RtlCaptureContext") != NULL);
+    }
+
+    /* Multi-material batch texture camera draw check */
+    {
+        twd_gfx_desc_t mdesc;
+        memset(&mdesc, 0, sizeof(mdesc));
+        mdesc.width = 64u; mdesc.height = 64u; mdesc.preferred_backend = TWD_GFX_BACKEND_NONE;
+        twd_gfx_device_t *mg = twd_gfx_device_create(&mdesc);
+        TWD_CHECK(mg != NULL);
+
+        static const float k_verts[6 * 5] = {
+            /* Batch 0 (left tri -> red tex): x, y, z, u, v */
+            -1.2f, 3.8f, 0.0f, 0.5f, 0.5f,
+            -0.2f, 3.8f, 0.0f, 0.5f, 0.5f,
+            -0.7f, 4.8f, 0.0f, 0.5f, 0.5f,
+            /* Batch 1 (right tri -> blue tex): */
+             0.2f, 3.8f, 0.0f, 0.5f, 0.5f,
+             1.2f, 3.8f, 0.0f, 0.5f, 0.5f,
+             0.7f, 4.8f, 0.0f, 0.5f, 0.5f
+        };
+        static const uint16_t k_inds[6] = {0u, 1u, 2u, 3u, 4u, 5u};
+        twd_d3dmesh_batch_t batches[2];
+        memset(batches, 0, sizeof(batches));
+        batches[0].start_index = 0u; batches[0].num_indices = 3u; batches[0].material_index = 0;
+        batches[1].start_index = 3u; batches[1].num_indices = 3u; batches[1].material_index = 1;
+
+        twd_d3dmesh_t mm;
+        memset(&mm, 0, sizeof(mm));
+        mm.vertex_count = 6u; mm.vertex_stride = 20u;
+        mm.vertex_data = (uint8_t *)malloc(sizeof(k_verts));
+        mm.vertex_bytes = sizeof(k_verts);
+        memcpy(mm.vertex_data, k_verts, sizeof(k_verts));
+        mm.index_count = 6u; mm.index_stride = 2u;
+        mm.index_data = (uint8_t *)malloc(sizeof(k_inds));
+        mm.index_bytes = sizeof(k_inds);
+        memcpy(mm.index_data, k_inds, sizeof(k_inds));
+        mm.batch_count = 2u;
+        mm.batches = (twd_d3dmesh_batch_t *)malloc(sizeof(batches));
+        memcpy(mm.batches, batches, sizeof(batches));
+
+        static const uint8_t k_red[16] = {255u,20u,20u,255u, 255u,20u,20u,255u, 255u,20u,20u,255u, 255u,20u,20u,255u};
+        static const uint8_t k_blu[16] = {20u,20u,255u,255u, 20u,20u,255u,255u, 20u,20u,255u,255u, 20u,20u,255u,255u};
+        twd_gfx_texture_t *tarr[2];
+        tarr[0] = twd_gfx_texture_create(mg, 2u, 2u, 0u);
+        tarr[1] = twd_gfx_texture_create(mg, 2u, 2u, 0u);
+        TWD_CHECK(tarr[0] != NULL && tarr[1] != NULL);
+        TWD_CHECK(twd_gfx_texture_update(tarr[0], k_red, sizeof(k_red)) == 0);
+        TWD_CHECK(twd_gfx_texture_update(tarr[1], k_blu, sizeof(k_blu)) == 0);
+
+        static const float k_blk[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        static const float k_cp[3] = {0.0f, 4.3f, 4.0f};
+        twd_gfx_clear(mg, k_blk, 1.0f, 0u);
+        TWD_CHECK(twd_d3dmesh_draw_camera_multi(
+            mg, &mm, (const twd_gfx_texture_t *const *)tarr, 2u, k_cp, 0.0f, 0.0f, 55.0f, NULL, NULL, NULL) == 0);
+        size_t mbsz = 0u;
+        const uint8_t *mbb = twd_gfx_backbuffer_data(mg, NULL, NULL, &mbsz);
+        int red_px = 0, blu_px = 0;
+        for (size_t pi = 0u; pi < 64u * 64u; ++pi) {
+            if (mbb[pi * 4u + 0u] > 120u && mbb[pi * 4u + 2u] < 40u) red_px++;
+            if (mbb[pi * 4u + 2u] > 120u && mbb[pi * 4u + 0u] < 40u) blu_px++;
+        }
+        TWD_CHECK(red_px > 5 && blu_px > 5);
+        twd_gfx_texture_destroy(tarr[0]);
+        twd_gfx_texture_destroy(tarr[1]);
+        twd_d3dmesh_free(&mm);
+        twd_gfx_device_destroy(mg);
     }
 
     twd_platform_shutdown();

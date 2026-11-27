@@ -719,10 +719,32 @@ int twd_d3dmesh_draw_shaded(
     return 0;
 }
 
-int twd_d3dmesh_draw_camera(
+static const twd_gfx_texture_t *dm_batch_texture(
+    const twd_d3dmesh_t *mesh,
+    uint32_t tri_idx_off,
+    const twd_gfx_texture_t *const *batch_textures,
+    uint32_t batch_texture_count) {
+    if (!batch_textures || batch_texture_count == 0u) return NULL;
+    if (batch_texture_count > 1u && mesh && mesh->batches && mesh->batch_count > 0u) {
+        for (uint32_t bi = 0u; bi < mesh->batch_count; ++bi) {
+            const twd_d3dmesh_batch_t *b = &mesh->batches[bi];
+            uint32_t blen = b->num_indices ? b->num_indices : (b->num_primitives * 3u);
+            if (tri_idx_off >= b->start_index && tri_idx_off + 3u <= b->start_index + blen) {
+                uint32_t mi = (b->material_index >= 0) ? (uint32_t)b->material_index : bi;
+                if (mi < batch_texture_count && batch_textures[mi]) return batch_textures[mi];
+                if (bi < batch_texture_count && batch_textures[bi]) return batch_textures[bi];
+                break;
+            }
+        }
+    }
+    return batch_textures[0];
+}
+
+int twd_d3dmesh_draw_camera_multi(
     twd_gfx_device_t *dev,
     const twd_d3dmesh_t *mesh,
-    const twd_gfx_texture_t *tex_or_null,
+    const twd_gfx_texture_t *const *batch_textures,
+    uint32_t batch_texture_count,
     const float cam_pos[3],
     float cam_yaw,
     float cam_pitch,
@@ -800,7 +822,26 @@ int twd_d3dmesh_draw_camera(
             continue;
         }
         dm_shade_triangle(vx, vy, vz, base_rgba, tv);
-        (void)twd_gfx_draw_triangle_z(dev, tex_or_null, tv);
+        const twd_gfx_texture_t *btex = dm_batch_texture(mesh, t * 3u, batch_textures, batch_texture_count);
+        (void)twd_gfx_draw_triangle_z(dev, btex, tv);
     }
     return 0;
+}
+
+int twd_d3dmesh_draw_camera(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *tex_or_null,
+    const float cam_pos[3],
+    float cam_yaw,
+    float cam_pitch,
+    float fov_deg,
+    const float obj_pos[3],
+    const float obj_scale[3],
+    const uint8_t rgba[4]) {
+    const twd_gfx_texture_t *arr[1];
+    arr[0] = tex_or_null;
+    return twd_d3dmesh_draw_camera_multi(
+        dev, mesh, tex_or_null ? arr : NULL, tex_or_null ? 1u : 0u,
+        cam_pos, cam_yaw, cam_pitch, fov_deg, obj_pos, obj_scale, rgba);
 }

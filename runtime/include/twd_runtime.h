@@ -1016,6 +1016,18 @@ int twd_d3dmesh_draw_camera(
     const float obj_pos[3],
     const float obj_scale[3],
     const uint8_t rgba[4]);
+int twd_d3dmesh_draw_camera_multi(
+    twd_gfx_device_t *dev,
+    const twd_d3dmesh_t *mesh,
+    const twd_gfx_texture_t *const *batch_textures,
+    uint32_t batch_texture_count,
+    const float cam_pos[3],
+    float cam_yaw,
+    float cam_pitch,
+    float fov_deg,
+    const float obj_pos[3],
+    const float obj_scale[3],
+    const uint8_t rgba[4]);
 
 /* --- Lua 5.2 script chunk unwrapper & lightweight boot VM --- */
 typedef enum twd_lua_chunk_kind {
@@ -1140,6 +1152,11 @@ uint32_t twd_audio_bank_count(const twd_audio_system_t *sys);
 uint32_t twd_audio_bank_event_count(const twd_audio_bank_t *bank);
 int twd_audio_play_bank_event(
     twd_audio_system_t *sys, twd_audio_bank_t *bank, uint32_t event_index, float volume);
+int twd_audio_play_fsb_memory(
+    twd_audio_system_t *sys, const char *name, const void *data, size_t len, float volume);
+int twd_audio_play_fsb_vfs(
+    twd_audio_system_t *sys, const char *rel_path, float volume);
+uint32_t twd_audio_voice_play_count(const twd_audio_system_t *sys);
 
 twd_audio_bus_t *twd_audio_get_bus(twd_audio_system_t *sys, const char *bus_path);
 int twd_audio_bus_set_volume(twd_audio_bus_t *bus, float volume);

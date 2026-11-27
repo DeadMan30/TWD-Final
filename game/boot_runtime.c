@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TWD_BOOT_MAX_SCENE_ITEMS 32u
+#define TWD_BOOT_MAX_SCENE_ITEMS 48u
 #define TWD_BOOT_MAX_MENU_BTNS   8u
 
 typedef struct twd_boot_menu_btn {
@@ -27,7 +27,8 @@ typedef struct twd_boot_menu_btn {
 typedef struct twd_boot_scene_item {
     twd_d3dmesh_t mesh;
     twd_d3dmesh_gpu_t gpu;
-    twd_gfx_texture_t *tex;
+    twd_gfx_texture_t *batch_tex[TWD_D3DMESH_MAX_TEXTURES];
+    uint32_t batch_tex_count;
     char agent_name[64];
     float world_pos[3];
     float scale[3];
@@ -847,7 +848,7 @@ static void boot_handle_event(twd_boot_loop_state_t *st, const twd_win_event_t *
                 int best_idx = -1;
                 for (uint32_t ii = 0u; ii < st->scene_item_count; ++ii) {
                     const twd_boot_scene_item_t *it = &st->scene_items[ii];
-                    if (!it->active || it->agent_name[0] == '\0') continue;
+                    if (!it->active || it->is_bg || it->agent_name[0] == '\0') continue;
                     float dx = it->world_pos[0] - cp[0];
                     float dy = it->world_pos[1] - cp[1];
                     float dz = it->world_pos[2] - cp[2];
@@ -945,68 +946,88 @@ static void boot_agent_world_transform(twd_scene_t *sc, const twd_scene_agent_t 
     *out_visible = vis;
 }
 
-static twd_gfx_texture_t *boot_load_mesh_texture(
-    twd_gfx_device_t *gfx, const twd_d3dmesh_t *mesh, const char *agent_or_mesh_name) {
-    if (mesh && mesh->texture_count > 0u && mesh->textures[0][0] != '\0') {
-        char nm[160];
-        size_t tn = strlen(mesh->textures[0]);
-        if (tn < 144u) {
-            memcpy(nm, mesh->textures[0], tn + 1u);
-            if (tn < 6u || strcmp(nm + tn - 6u, ".d3dtx") != 0) {
-                memcpy(nm + tn, ".d3dtx", 7u);
-            }
-            size_t mts = 0u;
-            void *mtb = twd_asset_read_alloc(nm, &mts);
-            if (mtb && mts > 0u) {
-                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
-                twd_asset_free(mtb);
-                if (tex) return tex;
-            } else if (mtb) {
-                twd_asset_free(mtb);
-            }
-        }
-    }
+static twd_gfx_texture_t *boot_upload_d3dtx_vfs(twd_gfx_device_t *gfx, const char *name) {
+    size_t mts = 0u;
+    void *mtb = twd_asset_read_alloc(name, &mts);
+    if (!mtb) return NULL;
+    twd_gfx_texture_t *tex = (mts > 0u) ? twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL) : NULL;
+    twd_asset_free(mtb);
+    return tex;
+}
+
+static uint32_t boot_load_mesh_textures(
+    twd_gfx_device_t *gfx,
+    const twd_d3dmesh_t *mesh,
+    const char *agent_or_mesh_name,
+    twd_gfx_texture_t **out_texs,
+    uint32_t max_texs,
+    uint32_t *out_uploaded) {
+    uint32_t highest = 0u, uploaded = 0u;
+    if (out_uploaded) *out_uploaded = 0u;
+    if (!gfx || !out_texs || max_texs == 0u) return 0u;
+    for (uint32_t ti = 0u; ti < max_texs; ++ti) out_texs[ti] = NULL;
+
     if (mesh) {
-        for (uint32_t ti = 0u; ti < mesh->texture_count; ++ti) {
+        for (uint32_t ti = 0u; ti < mesh->texture_count && ti < max_texs; ++ti) {
             if (mesh->texture_crcs[ti] == 0ULL) continue;
             size_t mts = 0u;
             void *mtb = twd_ttarch2_lookup_mounted_crc64_alloc(mesh->texture_crcs[ti], &mts);
-            if (mtb && mts > 0u) {
-                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
+            if (mtb) {
+                twd_gfx_texture_t *tex = (mts > 0u) ? twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL) : NULL;
                 twd_ttarch2_free(mtb);
-                if (tex) return tex;
-            } else if (mtb) {
-                twd_ttarch2_free(mtb);
+                if (tex) {
+                    out_texs[ti] = tex;
+                    highest = ti + 1u;
+                    uploaded++;
+                }
+            }
+        }
+        if (!out_texs[0] && mesh->texture_count > 0u && mesh->textures[0][0] != '\0') {
+            char nm[160];
+            size_t tn = strlen(mesh->textures[0]);
+            if (tn < 144u) {
+                memcpy(nm, mesh->textures[0], tn + 1u);
+                if (tn < 6u || strcmp(nm + tn - 6u, ".d3dtx") != 0) memcpy(nm + tn, ".d3dtx", 7u);
+                out_texs[0] = boot_upload_d3dtx_vfs(gfx, nm);
+                if (out_texs[0]) { if (highest == 0u) highest = 1u; uploaded++; }
             }
         }
     }
-    if (agent_or_mesh_name && agent_or_mesh_name[0] != '\0') {
+    if (!out_texs[0] && agent_or_mesh_name && agent_or_mesh_name[0] != '\0') {
         char cand[160];
         size_t al = strlen(agent_or_mesh_name);
-        if (al >= 8u && strcmp(agent_or_mesh_name + al - 8u, ".d3dmesh") == 0) {
-            al -= 8u;
-        }
+        if (al >= 8u && strcmp(agent_or_mesh_name + al - 8u, ".d3dmesh") == 0) al -= 8u;
         if (al > 0u && al < 144u) {
             memcpy(cand, agent_or_mesh_name, al);
             memcpy(cand + al, ".d3dtx", 7u);
-            size_t mts = 0u;
-            void *mtb = twd_asset_read_alloc(cand, &mts);
-            if (mtb && mts > 0u) {
-                twd_gfx_texture_t *tex = twd_d3dtx_upload_gfx_texture(gfx, mtb, mts, NULL);
-                twd_asset_free(mtb);
-                if (tex) return tex;
-            } else if (mtb) {
-                twd_asset_free(mtb);
-            }
+            out_texs[0] = boot_upload_d3dtx_vfs(gfx, cand);
+            if (out_texs[0]) { if (highest == 0u) highest = 1u; uploaded++; }
         }
     }
-    return NULL;
+    if (!out_texs[0] && highest > 1u) {
+        for (uint32_t ti = 1u; ti < highest; ++ti) {
+            if (out_texs[ti]) { out_texs[0] = out_texs[ti]; out_texs[ti] = NULL; break; }
+        }
+    }
+    if (out_uploaded) *out_uploaded = uploaded;
+    return highest;
+}
+
+static twd_gfx_texture_t *boot_load_mesh_texture(
+    twd_gfx_device_t *gfx, const twd_d3dmesh_t *mesh, const char *agent_or_mesh_name) {
+    twd_gfx_texture_t *one = NULL;
+    (void)boot_load_mesh_textures(gfx, mesh, agent_or_mesh_name, &one, 1u, NULL);
+    return one;
 }
 
 static void boot_free_scene_items(twd_boot_loop_state_t *st) {
     if (!st) return;
     for (uint32_t ii = 0u; ii < st->scene_item_count; ++ii) {
-        if (st->scene_items[ii].tex) twd_gfx_texture_destroy(st->scene_items[ii].tex);
+        for (uint32_t ti = 0u; ti < TWD_D3DMESH_MAX_TEXTURES; ++ti) {
+            if (st->scene_items[ii].batch_tex[ti]) {
+                twd_gfx_texture_destroy(st->scene_items[ii].batch_tex[ti]);
+            }
+        }
         twd_d3dmesh_gpu_free(&st->scene_items[ii].gpu);
         twd_d3dmesh_free(&st->scene_items[ii].mesh);
     }
@@ -1053,8 +1074,10 @@ static void boot_populate_scene_items(twd_boot_loop_state_t *st) {
             memset(it, 0, sizeof(*it));
             if (twd_d3dmesh_parse_memory(mbuf, msz, &it->mesh) == 0 &&
                 twd_d3dmesh_upload_gfx(st->gfx, &it->mesh, &it->gpu) == 0) {
-                it->tex = boot_load_mesh_texture(st->gfx, &it->mesh, ag->name);
-                if (it->tex && st->stats) st->stats->boot_textures_loaded++;
+                uint32_t up_cnt = 0u;
+                it->batch_tex_count = boot_load_mesh_textures(
+                    st->gfx, &it->mesh, ag->name, it->batch_tex, TWD_D3DMESH_MAX_TEXTURES, &up_cnt);
+                if (st->stats) st->stats->boot_textures_loaded += up_cnt;
                 {
                     size_t anl = strlen(ag->name);
                     if (anl >= sizeof(it->agent_name)) anl = sizeof(it->agent_name) - 1u;
@@ -1373,6 +1396,9 @@ static void boot_advance_dialogue(twd_boot_loop_state_t *st, int step_forward) {
                 memcpy(wav + wl, ".wav", 5u);
                 if (twd_ttarch2_exists_mounted(wav)) {
                     (void)twd_kv_set("audio", "last_voice", wav);
+                    if (st->audio && twd_audio_play_fsb_vfs(st->audio, wav, 0.85f) == 0) {
+                        (void)twd_kv_set("audio", "voice_started", "1");
+                    }
                 }
             }
         }
@@ -1534,12 +1560,12 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
         for (uint32_t ii = 0u; ii < st->scene_item_count; ++ii) {
             const twd_boot_scene_item_t *it = &st->scene_items[ii];
             if (!it->active) continue;
-            if (it->is_bg && it->tex) {
+            if (it->is_bg && it->batch_tex[0]) {
                 uint32_t tw = 0u, th = 0u;
-                twd_gfx_texture_get_size(it->tex, &tw, &th);
+                twd_gfx_texture_get_size(it->batch_tex[0], &tw, &th);
                 if (tw > 0u && th > 0u) {
                     (void)twd_gfx_draw_sprite(
-                        gfx, it->tex, 0, 0, (int32_t)tw, (int32_t)th,
+                        gfx, it->batch_tex[0], 0, 0, (int32_t)tw, (int32_t)th,
                         0, 0, (int32_t)dw, (int32_t)dh, NULL);
                     continue;
                 }
@@ -1548,15 +1574,16 @@ static void boot_on_render(void *user, twd_gfx_device_t *gfx) {
                                    strcmp(st->selected_agent, it->agent_name) == 0)
                 ? k_sel_tint : k_ui_tint;
             if (is_3d) {
-                (void)twd_d3dmesh_draw_camera(
-                    gfx, &it->mesh, it->tex, cpos, cyaw, cpitch, 55.0f,
+                (void)twd_d3dmesh_draw_camera_multi(
+                    gfx, &it->mesh, (const twd_gfx_texture_t *const *)it->batch_tex,
+                    it->batch_tex_count, cpos, cyaw, cpitch, 55.0f,
                     it->world_pos, it->scale, tint);
             } else {
                 float sx = (float)dw * 0.5f + (it->world_pos[0] - cam_x) * ppu;
                 float sy = (float)dh * 0.5f - (it->world_pos[1] - cam_y) * ppu;
                 float sc = it->scale[0] > 0.0f ? it->scale[0] : 1.0f;
                 (void)twd_d3dmesh_draw_shaded(
-                    gfx, &it->mesh, it->tex, sx, sy, ppu * 3.0f * sc, tint);
+                    gfx, &it->mesh, it->batch_tex[0], sx, sy, ppu * 3.0f * sc, tint);
             }
         }
     } else if (st->has_boot_mesh) {

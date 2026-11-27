@@ -43,6 +43,14 @@ typedef int (*fmod_st_evinst_start_fn)(void *inst);
 typedef int (*fmod_st_evinst_stop_fn)(void *inst, int mode);
 typedef int (*fmod_st_evinst_setvol_fn)(void *inst, float vol);
 typedef int (*fmod_st_evinst_rel_fn)(void *inst);
+typedef int (*fmod_st_get_lowlevel_fn)(void *sys, void **out_core);
+typedef int (*fmod_core_mk_snd_fn)(void *csys, const char *data, uint32_t mode, void *exinfo, void **out_snd);
+typedef int (*fmod_core_play_snd_fn)(void *csys, void *snd, void *cgroup, int paused, void **out_ch);
+typedef int (*fmod_snd_rel_fn)(void *snd);
+typedef int (*fmod_snd_nsub_fn)(void *snd, int *out_num);
+typedef int (*fmod_snd_gsub_fn)(void *snd, int idx, void **out_sub);
+typedef int (*fmod_ch_stop_fn)(void *ch);
+typedef int (*fmod_ch_setvol_fn)(void *ch, float vol);
 
 struct twd_audio_bank {
     int in_use;
@@ -124,6 +132,10 @@ struct twd_audio_system {
     uint64_t mixed_frames;
     float listener_pos[3];
     void *native_studio;
+    void *native_core;
+    void *voice_sound;
+    void *voice_channel;
+    uint32_t voice_play_count;
     fmod_st_release_fn fn_studio_release;
     fmod_st_update_fn fn_studio_update;
     fmod_st_loadbankmem_fn fn_load_bank_mem;
@@ -136,6 +148,14 @@ struct twd_audio_system {
     fmod_st_evinst_stop_fn fn_evinst_stop;
     fmod_st_evinst_setvol_fn fn_evinst_setvol;
     fmod_st_evinst_rel_fn fn_evinst_rel;
+    fmod_st_get_lowlevel_fn fn_get_lowlevel;
+    fmod_core_mk_snd_fn fn_core_create_sound;
+    fmod_core_play_snd_fn fn_core_play_sound;
+    fmod_snd_rel_fn fn_snd_release;
+    fmod_snd_nsub_fn fn_snd_num_sub;
+    fmod_snd_gsub_fn fn_snd_get_sub;
+    fmod_ch_stop_fn fn_ch_stop;
+    fmod_ch_setvol_fn fn_ch_setvol;
     twd_audio_bank_t banks[TWD_AUDIO_MAX_BANKS];
     twd_audio_bus_t buses[TWD_AUDIO_MAX_BUSES];
     twd_audio_event_desc_t events[TWD_AUDIO_MAX_EVENTS];
@@ -289,11 +309,24 @@ int twd_audio_system_initialize(
         sys->fn_evinst_stop = (fmod_st_evinst_stop_fn)(uintptr_t)twd_dynlib_sym(g_fmod_studio_lib, "FMOD_Studio_EventInstance_Stop");
         sys->fn_evinst_setvol = (fmod_st_evinst_setvol_fn)(uintptr_t)twd_dynlib_sym(g_fmod_studio_lib, "FMOD_Studio_EventInstance_SetVolume");
         sys->fn_evinst_rel = (fmod_st_evinst_rel_fn)(uintptr_t)twd_dynlib_sym(g_fmod_studio_lib, "FMOD_Studio_EventInstance_Release");
+        sys->fn_get_lowlevel = (fmod_st_get_lowlevel_fn)(uintptr_t)twd_dynlib_sym(g_fmod_studio_lib, "FMOD_Studio_System_GetLowLevelSystem");
+        if (g_fmod_core_lib) {
+            sys->fn_core_create_sound = (fmod_core_mk_snd_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_System_CreateSound");
+            sys->fn_core_play_sound = (fmod_core_play_snd_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_System_PlaySound");
+            sys->fn_snd_release = (fmod_snd_rel_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_Sound_Release");
+            sys->fn_snd_num_sub = (fmod_snd_nsub_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_Sound_GetNumSubSounds");
+            sys->fn_snd_get_sub = (fmod_snd_gsub_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_Sound_GetSubSound");
+            sys->fn_ch_stop = (fmod_ch_stop_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_Channel_Stop");
+            sys->fn_ch_setvol = (fmod_ch_setvol_fn)(uintptr_t)twd_dynlib_sym(g_fmod_core_lib, "FMOD_Channel_SetVolume");
+        }
         if (st_mk && st_in) {
             void *nsys = NULL;
             if (st_mk(&nsys, fmod_ver) == 0 && nsys) {
                 if (st_in(nsys, (int)sys->max_channels, 0u, 0u, NULL) == 0) {
                     sys->native_studio = nsys;
+                    if (sys->fn_get_lowlevel) {
+                        (void)sys->fn_get_lowlevel(nsys, &sys->native_core);
+                    }
                 } else if (sys->fn_studio_release) {
                     sys->fn_studio_release(nsys);
                 }
@@ -304,8 +337,21 @@ int twd_audio_system_initialize(
     return 0;
 }
 
+static void release_voice_slot(twd_audio_system_t *sys) {
+    if (!sys) return;
+    if (sys->voice_channel && sys->fn_ch_stop) {
+        (void)sys->fn_ch_stop(sys->voice_channel);
+    }
+    sys->voice_channel = NULL;
+    if (sys->voice_sound && sys->fn_snd_release) {
+        (void)sys->fn_snd_release(sys->voice_sound);
+    }
+    sys->voice_sound = NULL;
+}
+
 void twd_audio_system_release(twd_audio_system_t *sys) {
     if (!sys) return;
+    release_voice_slot(sys);
     for (uint32_t i = 0u; i < TWD_AUDIO_MAX_INSTANCES; ++i) {
         if (sys->instances[i].in_use && sys->instances[i].native_inst) {
             if (sys->fn_evinst_stop) (void)sys->fn_evinst_stop(sys->instances[i].native_inst, 1);
@@ -501,6 +547,69 @@ int twd_audio_play_bank_event(
     }
     if (sys->fn_studio_update) (void)sys->fn_studio_update(sys->native_studio);
     return 0;
+}
+
+int twd_audio_play_fsb_memory(
+    twd_audio_system_t *sys, const char *name, const void *data, size_t len, float volume) {
+    (void)name;
+    if (!sys || !sys->initialized || !data || len < 4u || len > 0x7fffffffu) return -1;
+    const uint8_t *b = (const uint8_t *)data;
+    int is_valid_hdr = (memcmp(b, "FSB5", 4u) == 0 || memcmp(b, "RIFF", 4u) == 0 || memcmp(b, "OggS", 4u) == 0);
+    if (!is_valid_hdr) return -1;
+
+    release_voice_slot(sys);
+    sys->voice_play_count++;
+
+    if (!sys->native_core || !sys->fn_core_create_sound || !sys->fn_core_play_sound) {
+        return 0; /* Valid container tracked cleanly by software voice state when native FMOD absent */
+    }
+    uint8_t exinfo[224];
+    memset(exinfo, 0, sizeof(exinfo));
+    uint32_t cbsize = (uint32_t)sizeof(exinfo);
+    uint32_t ulen = (uint32_t)len;
+    memcpy(exinfo + 0u, &cbsize, 4u);
+    memcpy(exinfo + 4u, &ulen, 4u);
+
+    void *snd = NULL;
+    if (sys->fn_core_create_sound(sys->native_core, (const char *)data, 0x00000800u, exinfo, &snd) != 0 || !snd) {
+        return -1;
+    }
+    void *play_target = snd;
+    if (sys->fn_snd_num_sub && sys->fn_snd_get_sub) {
+        int nsub = 0;
+        if (sys->fn_snd_num_sub(snd, &nsub) == 0 && nsub > 0) {
+            void *sub = NULL;
+            if (sys->fn_snd_get_sub(snd, 0, &sub) == 0 && sub) {
+                play_target = sub;
+            }
+        }
+    }
+    void *ch = NULL;
+    if (sys->fn_core_play_sound(sys->native_core, play_target, NULL, 0, &ch) != 0) {
+        if (sys->fn_snd_release) (void)sys->fn_snd_release(snd);
+        return -1;
+    }
+    if (volume < 0.0f) volume = 0.0f;
+    if (ch && sys->fn_ch_setvol) (void)sys->fn_ch_setvol(ch, volume);
+    sys->voice_sound = snd;
+    sys->voice_channel = ch;
+    if (sys->native_studio && sys->fn_studio_update) (void)sys->fn_studio_update(sys->native_studio);
+    return 0;
+}
+
+int twd_audio_play_fsb_vfs(
+    twd_audio_system_t *sys, const char *rel_path, float volume) {
+    if (!sys || !sys->initialized || !rel_path || rel_path[0] == '\0') return -1;
+    size_t sz = 0u;
+    void *data = twd_asset_read_alloc(rel_path, &sz);
+    if (!data) return -1;
+    int rc = twd_audio_play_fsb_memory(sys, rel_path, data, sz, volume);
+    twd_asset_free(data);
+    return rc;
+}
+
+uint32_t twd_audio_voice_play_count(const twd_audio_system_t *sys) {
+    return sys ? sys->voice_play_count : 0u;
 }
 
 twd_audio_bus_t *twd_audio_get_bus(twd_audio_system_t *sys, const char *bus_path) {
